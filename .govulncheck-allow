@@ -1,0 +1,11 @@
+# govulncheck has no native suppression mechanism, so this file is one. `make vuln` fails on a
+# vulnerability govulncheck reports as reachable from messq's own code, unless a live entry
+# here names it.
+#
+# Every field is mandatory. The expiry is the last day the entry is honoured; past it the build
+# fails whether or not the vulnerability is still reported, so a suppression rots loudly instead
+# of becoming a list nobody reads. The reason names the issue that removes it.
+#
+# An empty file is the expected steady state.
+#
+# osv-id         expires      reason

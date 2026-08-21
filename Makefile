@@ -28,9 +28,11 @@ DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
 #
 # not with `go mod tidy`: -modfile keeps the module root here, so tidy would try to resolve this
 # repository's own packages as dependencies of the tool module.
-GOFUMPT    := go tool -modfile=tools/gofumpt.mod gofumpt
-GOLANGCI   := go tool -modfile=tools/golangci-lint.mod golangci-lint
-ACTIONLINT := go tool -modfile=tools/actionlint.mod actionlint
+GOFUMPT     := go tool -modfile=tools/gofumpt.mod gofumpt
+GOLANGCI    := go tool -modfile=tools/golangci-lint.mod golangci-lint
+ACTIONLINT  := go tool -modfile=tools/actionlint.mod actionlint
+GOVULNCHECK := go tool -modfile=tools/govulncheck.mod govulncheck
+VULNGATE    := go run ./internal/tools/vulngate -allow .govulncheck-allow
 
 LDFLAGS := -s -w \
   -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' \
@@ -43,13 +45,13 @@ GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
-        fmt fmt-check fmt-list vet tidy-check dep-budget layers static-check repro hooks \
-        ci clean
+        vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
+        static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
 	@echo
-	@awk 'BEGIN {FS = ":.*## "} /^[a-z][a-z-]*:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-z][a-z-]*:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build a static host binary into dist/messq.
 	@mkdir -p dist
@@ -111,6 +113,21 @@ lint: ## Verify .golangci.yml, run the pinned golangci-lint, and lint the workfl
 	$(GOLANGCI) run
 	$(ACTIONLINT) .github/workflows/*.yml
 
+# Source mode reports the vulnerabilities reachable from messq's own code, which is the right
+# signal-to-noise for a gate. With -format sarif govulncheck always exits 0, so vulngate makes
+# the decision. The expiry check runs first: it needs no network and it is what makes a stale
+# suppression fail before the scan is even attempted.
+#
+# Unlike every other target, this one needs network access on every run: a CVE published today
+# is not in yesterday's database.
+vuln: ## Fail on a reachable vulnerability or an expired suppression.
+	$(VULNGATE) -check-expiry
+	$(GOVULNCHECK) -format sarif ./... | $(VULNGATE)
+
+vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matches anything.
+	$(VULNGATE) -check-expiry
+	$(GOVULNCHECK) -format sarif ./... | $(VULNGATE) -strict
+
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .
 
@@ -165,7 +182,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers lint test cover cover-ratchet-check build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers lint test cover cover-ratchet-check vuln build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
