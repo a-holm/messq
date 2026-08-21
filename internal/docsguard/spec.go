@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,7 +19,6 @@ const (
 	boundsHeading     = "A1."
 	specVocabHeading  = "S2.4"
 	planVocabHeading  = "9.2 Event vocabulary"
-	planTransHeading  = "5.1 Transition rules"
 )
 
 // Transition is one row of the delivery state machine, docs/SEMANTICS.md S6.1.
@@ -158,57 +156,6 @@ func ParsePlanVocabulary(md []byte) ([]string, error) {
 		return nil, err
 	}
 	return fields(lines), nil
-}
-
-// ParsePlanTransitionIDs reads the first column of PLAN.md section 5.1. PLAN.md section 11.1
-// requires the conformance tests to mirror that table one row to one row, so the specification's
-// table has to mirror it first.
-func ParsePlanTransitionIDs(md []byte) ([]string, error) {
-	t, err := firstTableAfter(md, planTransHeading)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(t.rows))
-	for _, r := range t.rows {
-		out = append(out, untick(r[0]))
-	}
-	return out, nil
-}
-
-// CheckMirrorsPlan verifies that the specification's transition table carries the same IDs as
-// PLAN.md section 5.1, in the same order.
-func CheckMirrorsPlan(spec []Transition, planIDs []string) error {
-	if len(spec) != len(planIDs) {
-		return fmt.Errorf("docsguard: the specification has %d transitions, PLAN.md section 5.1 has %d",
-			len(spec), len(planIDs))
-	}
-	for i := range spec {
-		if spec[i].ID != planIDs[i] {
-			return fmt.Errorf("docsguard: transition %d is %s in the specification and %s in PLAN.md section 5.1",
-				i+1, spec[i].ID, planIDs[i])
-		}
-	}
-	return nil
-}
-
-// ParsePlanDecisions reads the D-numbers PLAN.md section 2 adjudicates, so that the ADR claim
-// check is driven by the plan rather than by a constant that can fall behind it.
-func ParsePlanDecisions(md []byte) ([]int, error) {
-	re := regexp.MustCompile(`(?m)^###\s+D(\d+)\s`)
-	matches := re.FindAllStringSubmatch(string(md), -1)
-	if len(matches) == 0 {
-		return nil, errors.New("docsguard: PLAN.md declares no D-numbered decisions")
-	}
-	out := make([]int, 0, len(matches))
-	for _, m := range matches {
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			return nil, fmt.Errorf("docsguard: PLAN.md decision %q: %w", m[1], err)
-		}
-		out = append(out, n)
-	}
-	sort.Ints(out)
-	return out, nil
 }
 
 // CheckTransitions verifies that the transition table is a usable index: IDs unique, base
@@ -369,34 +316,36 @@ func CheckInvariants(is []Invariant) error {
 	return nil
 }
 
-// CheckErrorOutcomes verifies that the S13 table and the sentinel registry describe the same
-// closed set. A sentinel added without a row fails, and a row naming an outcome the code cannot
-// produce fails too.
-func CheckErrorOutcomes(outcomes []ErrorOutcome, sentinels []error) error {
-	documented := map[string]string{}
-	for _, o := range outcomes {
+// CheckErrorOutcomes verifies that the S13 table is internal/errs's closed set: the same
+// sentinels, in declaration order, each paired with the message it actually carries. Comparing
+// the pairing rather than two sets is what stops a row from naming errs.ErrConflict against
+// errs.ErrNotFound's message, which reads perfectly well and is wrong.
+func CheckErrorOutcomes(outcomes []ErrorOutcome, sentinels []Sentinel) error {
+	if len(outcomes) != len(sentinels) {
+		return fmt.Errorf("docsguard: the error outcome table has %d rows, internal/errs declares %d sentinels",
+			len(outcomes), len(sentinels))
+	}
+	seen := map[string]bool{}
+	for i, o := range outcomes {
 		if !sentinelRE.MatchString(o.Sentinel) {
 			return fmt.Errorf("docsguard: error outcome %q does not name a sentinel as errs.ErrX", o.Sentinel)
 		}
 		if o.RaisedBy == "" {
 			return fmt.Errorf("docsguard: error outcome %s does not say when it is raised", o.Sentinel)
 		}
-		if prev, dup := documented[o.Message]; dup {
-			return fmt.Errorf("docsguard: message %q is documented twice, for %s and %s", o.Message, prev, o.Sentinel)
+		if seen[o.Sentinel] {
+			return fmt.Errorf("docsguard: error outcome %s has more than one row", o.Sentinel)
 		}
-		documented[o.Message] = o.Sentinel
-	}
+		seen[o.Sentinel] = true
 
-	declared := map[string]bool{}
-	for _, err := range sentinels {
-		declared[err.Error()] = true
-		if _, ok := documented[err.Error()]; !ok {
-			return fmt.Errorf("docsguard: sentinel %q has no row in the error outcome table", err.Error())
+		want := "errs." + sentinels[i].Name
+		if o.Sentinel != want {
+			return fmt.Errorf("docsguard: error outcome row %d names %s; internal/errs declares %s there",
+				i+1, o.Sentinel, want)
 		}
-	}
-	for msg, name := range documented {
-		if !declared[msg] {
-			return fmt.Errorf("docsguard: %s documents the message %q, which no sentinel carries", name, msg)
+		if o.Message != sentinels[i].Message {
+			return fmt.Errorf("docsguard: %s is documented as %q and carries %q",
+				o.Sentinel, o.Message, sentinels[i].Message)
 		}
 	}
 	return nil

@@ -12,6 +12,21 @@
 // through Parse then Check; the sabotage fixtures under testdata run through the same Check with
 // one row broken, which is what proves a checker still bites.
 //
+// # What is checked, and what is not
+//
+// PLAN.md is the other side of most comparisons. Invariant statements are compared verbatim
+// against section 5.2, transition IDs and emitted events against section 5.1, the event
+// vocabulary against section 9.2, and the set of adjudicated decisions against section 2. The
+// error outcome table is compared against internal/errs's source, sentinel by sentinel and
+// message by message, in declaration order.
+//
+// Transition guards and effects are not compared as text, because no tractable grammar separates
+// a reworded cell from a changed rule. Their symbols are: a flag, a reserved header, a dotted
+// name, a snake_case identifier or a relational operator that PLAN.md names must still appear in
+// the specification, or be quoted in the S1.5 register entry that explains its removal. A symbol
+// the specification adds is left to review, and S6.1 says so rather than implying a stronger
+// guarantee than this package delivers.
+//
 // [ParseTransitions] is exported for issue #13: the conformance suite iterates the document and
 // asserts that every transition ID appears in at least one test name, so the table stays
 // load-bearing in both directions.

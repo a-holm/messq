@@ -74,7 +74,23 @@ func TestParse_RejectsMalformedMarkdown(t *testing.T) {
 		{"vocabulary: unclosed fence", parseSpecVocabulary, "### S2.4 Event vocabulary\n\n```\nserver.start\n"},
 		{"vocabulary: no fence at all", parseSpecVocabulary, "### S2.4 Event vocabulary\n\nprose only\n"},
 		{"plan vocabulary: no heading", parsePlanVocabulary, "### 9.3 Volume control\n\n```\nx\n```\n"},
-		{"plan transitions: no heading", parsePlanTransitionIDs, "### 5.2 Invariants\n\n| ID |\n|---|\n| I1 |\n"},
+		{"plan transitions: no heading", parsePlanTransitions, "### 5.3 Notes\n\n| ID |\n|---|\n| T1 |\n"},
+		{
+			"plan transitions: wrong column count",
+			parsePlanTransitions,
+			"### 5.1 Transition rules\n\n| # | From |\n|---|---|\n| T1 | UNSEEN |\n",
+		},
+		{
+			"plan invariants: wrong column count",
+			parsePlanInvariants,
+			"### 5.2 Invariants\n\n| ID | Invariant | Extra |\n|---|---|---|\n| I1 | x | y |\n",
+		},
+		{"clarifications: no heading", parseClarifications, "## S1.4 Sources\n\n| a | b | c | d |\n|---|---|---|---|\n| 1 | 2 | 3 | 4 |\n"},
+		{
+			"clarifications: wrong column count",
+			parseClarifications,
+			"### S1.5 Clarifications register\n\n| ID | Resolution |\n|---|---|\n| C1 | x |\n",
+		},
 		{"plan decisions: none declared", parsePlanDecisions, "## 2. Adjudicated decisions\n\nprose only\n"},
 	}
 
@@ -119,8 +135,18 @@ func parsePlanVocabulary(md []byte) error {
 	return err
 }
 
-func parsePlanTransitionIDs(md []byte) error {
-	_, err := docsguard.ParsePlanTransitionIDs(md)
+func parsePlanTransitions(md []byte) error {
+	_, err := docsguard.ParsePlanTransitions(md)
+	return err
+}
+
+func parsePlanInvariants(md []byte) error {
+	_, err := docsguard.ParsePlanInvariants(md)
+	return err
+}
+
+func parseClarifications(md []byte) error {
+	_, err := docsguard.ParseClarifications(md)
 	return err
 }
 
@@ -181,20 +207,27 @@ func TestCheck_RejectsBrokenTables(t *testing.T) {
 		}},
 		{"outcomes: sentinel not named as errs.ErrX", func() error {
 			return docsguard.CheckErrorOutcomes(
-				[]docsguard.ErrorOutcome{{Sentinel: "NotFound", Message: "not found", RaisedBy: "x"}}, nil)
+				[]docsguard.ErrorOutcome{{Sentinel: "NotFound", Message: "not found", RaisedBy: "x"}},
+				[]docsguard.Sentinel{{Name: "ErrNotFound", Message: "not found"}})
 		}},
 		{"outcomes: no raised-by cell", func() error {
 			return docsguard.CheckErrorOutcomes(
-				[]docsguard.ErrorOutcome{{Sentinel: "errs.ErrNotFound", Message: "not found"}}, nil)
+				[]docsguard.ErrorOutcome{{Sentinel: "errs.ErrNotFound", Message: "not found"}},
+				[]docsguard.Sentinel{{Name: "ErrNotFound", Message: "not found"}})
 		}},
-		{"outcomes: one message documented twice", func() error {
+		{"outcomes: one sentinel documented twice", func() error {
 			row := docsguard.ErrorOutcome{Sentinel: "errs.ErrNotFound", Message: "not found", RaisedBy: "x"}
-			return docsguard.CheckErrorOutcomes([]docsguard.ErrorOutcome{row, row}, nil)
+			return docsguard.CheckErrorOutcomes([]docsguard.ErrorOutcome{row, row},
+				[]docsguard.Sentinel{{Name: "ErrNotFound", Message: "not found"}, {Name: "ErrConflict", Message: "already exists"}})
 		}},
-		{"outcomes: message no sentinel carries", func() error {
+		{"outcomes: row count differs from the sentinel set", func() error {
 			return docsguard.CheckErrorOutcomes(
-				[]docsguard.ErrorOutcome{{Sentinel: "errs.ErrTeapot", Message: "i am a teapot", RaisedBy: "x"}},
-				[]error{os.ErrNotExist})
+				[]docsguard.ErrorOutcome{{Sentinel: "errs.ErrNotFound", Message: "not found", RaisedBy: "x"}}, nil)
+		}},
+		{"outcomes: sentinel out of declaration order", func() error {
+			return docsguard.CheckErrorOutcomes(
+				[]docsguard.ErrorOutcome{{Sentinel: "errs.ErrConflict", Message: "already exists", RaisedBy: "x"}},
+				[]docsguard.Sentinel{{Name: "ErrNotFound", Message: "not found"}})
 		}},
 		{"vocabulary: empty", func() error { return docsguard.CheckVocabulary(nil, []string{"a"}) }},
 		{"vocabulary: length differs", func() error {
@@ -211,10 +244,29 @@ func TestCheck_RejectsBrokenTables(t *testing.T) {
 			return docsguard.CheckBounds([]docsguard.Bound{{Name: "queue", SetBy: "--x", Default: "1", Owner: "later"}})
 		}},
 		{"mirror: count differs", func() error {
-			return docsguard.CheckMirrorsPlan([]docsguard.Transition{full}, []string{"T1", "T2"})
+			return docsguard.CheckMirrorsPlan([]docsguard.Transition{full}, []docsguard.Transition{{ID: "T1"}, {ID: "T2"}})
 		}},
 		{"mirror: order differs", func() error {
-			return docsguard.CheckMirrorsPlan([]docsguard.Transition{full}, []string{"T2"})
+			return docsguard.CheckMirrorsPlan([]docsguard.Transition{full}, []docsguard.Transition{{ID: "T2"}})
+		}},
+		{"invariant statements: count differs", func() error {
+			return docsguard.CheckInvariantStatements(nil, []docsguard.Invariant{{ID: "I1", Statement: "x"}})
+		}},
+		{"invariant statements: ID differs", func() error {
+			return docsguard.CheckInvariantStatements(
+				[]docsguard.Invariant{{ID: "I2", Statement: "x"}}, []docsguard.Invariant{{ID: "I1", Statement: "x"}})
+		}},
+		{"events mirror: count differs", func() error {
+			return docsguard.CheckEventsMirrorPlan([]docsguard.Transition{full}, nil)
+		}},
+		{"symbols: mirror fails first", func() error {
+			return docsguard.CheckNoDroppedSymbols([]docsguard.Transition{full}, nil, nil)
+		}},
+		{"symbols: dropped without a register entry", func() error {
+			return docsguard.CheckNoDroppedSymbols(
+				[]docsguard.Transition{{ID: "T1", Guard: "the deadline passed"}},
+				[]docsguard.Transition{{ID: "T1", Guard: "`now >= visible_at`"}},
+				[]docsguard.Clarification{{ID: "C1", Text: "C1 explains T2, not this one"}})
 		}},
 		{"claims: unparsable D-number", func() error {
 			return docsguard.CheckDecisionsClaimed([]docsguard.ADR{{Adjudicates: "D one", Path: "p"}}, nil)

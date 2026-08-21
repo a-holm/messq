@@ -1,10 +1,11 @@
-# Fixture: a sentinel has no row in the outcome table.
+# Fixture: two sentinels carry each other's messages.
 
 ## S13. Error outcomes
 
 | Sentinel | Message | Raised by |
 |---|---|---|
-| `errs.ErrConflict` | already exists | A create that collides with an existing name, and a redrive past the redrive-count guard (T11). |
+| `errs.ErrNotFound` | already exists | A named stream, consumer or message that does not exist, including a settle whose consumer was deleted (S3.3 step 2). |
+| `errs.ErrConflict` | not found | A create that collides with an existing name, and a redrive past the redrive-count guard (T11). |
 | `errs.ErrBadRequest` | invalid request | A malformed or out-of-range argument: a `delay_ms` outside `[0, 86400000]` (S8.3), an empty `backoff_ms` (S8.2), an extend past `max_ack_wait` (T7), a user header inside the reserved prefix (S3.4), a user stream name ending in `.dlq` (S3.4), an unconfirmed destructive action (T10). |
 | `errs.ErrBadSubject` | subject is not valid or not accepted by this stream | A subject or pattern the grammar rejects, or one the target stream's patterns do not accept. |
 | `errs.ErrTooLarge` | message exceeds max_msg_size | A body above the stream's `max_msg_size`. |

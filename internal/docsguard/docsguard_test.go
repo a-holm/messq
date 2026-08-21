@@ -3,8 +3,10 @@
 package docsguard_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/a-holm/messq/internal/docsguard"
@@ -16,6 +18,7 @@ const (
 	specPath = repoRoot + "/docs/SEMANTICS.md"
 	planPath = repoRoot + "/docs/PLAN.md"
 	adrDir   = repoRoot + "/docs/adr"
+	errsPath = repoRoot + "/internal/errs/errs.go"
 )
 
 func read(t *testing.T, path string) []byte {
@@ -55,18 +58,119 @@ func TestSpec_TransitionIDsUniqueAndComplete(t *testing.T) {
 	}
 }
 
+func planTransitions(t *testing.T) []docsguard.Transition {
+	t.Helper()
+	ts, err := docsguard.ParsePlanTransitions(read(t, planPath))
+	if err != nil {
+		t.Fatalf("ParsePlanTransitions: %v", err)
+	}
+	return ts
+}
+
+func clarifications(t *testing.T) []docsguard.Clarification {
+	t.Helper()
+	cs, err := docsguard.ParseClarifications(read(t, specPath))
+	if err != nil {
+		t.Fatalf("ParseClarifications: %v", err)
+	}
+	return cs
+}
+
 // TestSpec_TransitionTableMirrorsPlan is the check PLAN.md section 11.1 depends on: the
 // conformance suite mirrors section 5.1 one row to one row, and it does that by mirroring this
 // document, so the two tables must carry the same IDs in the same order.
 func TestSpec_TransitionTableMirrorsPlan(t *testing.T) {
 	t.Parallel()
 
-	planIDs, err := docsguard.ParsePlanTransitionIDs(read(t, planPath))
-	if err != nil {
-		t.Fatalf("ParsePlanTransitionIDs: %v", err)
-	}
-	if err := docsguard.CheckMirrorsPlan(transitions(t), planIDs); err != nil {
+	if err := docsguard.CheckMirrorsPlan(transitions(t), planTransitions(t)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSpec_TransitionEventsMirrorPlan pins each event to the transition PLAN.md gives it.
+// Moving one from T4 to T8 leaves both tables well formed and every name in the vocabulary.
+func TestSpec_TransitionEventsMirrorPlan(t *testing.T) {
+	t.Parallel()
+
+	if err := docsguard.CheckEventsMirrorPlan(transitions(t), planTransitions(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSpec_NoPlanSymbolIsDroppedSilently is what makes a flipped comparison or a deleted bound a
+// build failure. A symbol may leave a cell only when an S1.5 entry citing that transition quotes
+// it, which is S1.4's "nothing is resolved silently" made mechanical.
+func TestSpec_NoPlanSymbolIsDroppedSilently(t *testing.T) {
+	t.Parallel()
+
+	if err := docsguard.CheckNoDroppedSymbols(transitions(t), planTransitions(t), clarifications(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSpec_InvariantStatementsAreVerbatim catches a swapped pair of rows, which leaves the IDs
+// contiguous and every cell populated while I5 stops saying what I5 says.
+func TestSpec_InvariantStatementsAreVerbatim(t *testing.T) {
+	t.Parallel()
+
+	spec, err := docsguard.ParseInvariants(read(t, specPath))
+	if err != nil {
+		t.Fatalf("ParseInvariants: %v", err)
+	}
+	plan, err := docsguard.ParsePlanInvariants(read(t, planPath))
+	if err != nil {
+		t.Fatalf("ParsePlanInvariants: %v", err)
+	}
+	if err := docsguard.CheckInvariantStatements(spec, plan); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDocs_NoDanglingCrossReferences resolves every S, A, T, I and C citation in the
+// specification and in every ADR against what the specification defines. Renumbering a section
+// without fixing its callers is the failure this exists for.
+func TestDocs_NoDanglingCrossReferences(t *testing.T) {
+	t.Parallel()
+
+	spec := read(t, specPath)
+	idx, err := docsguard.BuildIDIndex(spec)
+	if err != nil {
+		t.Fatalf("BuildIDIndex: %v", err)
+	}
+	if refErr := docsguard.CheckReferences(specPath, spec, idx); refErr != nil {
+		t.Error(refErr)
+	}
+
+	adrs, err := docsguard.ParseADRs(adrDir)
+	if err != nil {
+		t.Fatalf("ParseADRs: %v", err)
+	}
+	for _, a := range adrs {
+		if refErr := docsguard.CheckReferences(a.Path, read(t, a.Path), idx); refErr != nil {
+			t.Error(refErr)
+		}
+	}
+}
+
+// TestSentinelRegistryMatchesSource keeps errs.All() equal to what internal/errs declares. A
+// sentinel added to the var block but never to the registry would otherwise be invisible to
+// every mapping test that iterates All.
+func TestSentinelRegistryMatchesSource(t *testing.T) {
+	t.Parallel()
+
+	declared, err := docsguard.ParseSentinels(errsPath)
+	if err != nil {
+		t.Fatalf("ParseSentinels: %v", err)
+	}
+	registered := errs.All()
+	if len(declared) != len(registered) {
+		t.Fatalf("internal/errs declares %d sentinels and registers %d", len(declared), len(registered))
+	}
+	for i := range declared {
+		if declared[i].Message != registered[i].Error() {
+			t.Errorf("sentinel %d: source declares %q, All() returns %q",
+				i+1, declared[i].Message, registered[i].Error())
+		}
 	}
 }
 
@@ -132,7 +236,8 @@ func TestSpec_InvariantsComplete(t *testing.T) {
 }
 
 // TestSpec_ErrorOutcomesKnown is the cross-check the merged sentinel set makes cheap: the
-// document and internal/errs must describe the same closed set, in both directions.
+// document and internal/errs must describe the same closed set, sentinel by sentinel, message by
+// message, in declaration order.
 func TestSpec_ErrorOutcomesKnown(t *testing.T) {
 	t.Parallel()
 
@@ -140,7 +245,11 @@ func TestSpec_ErrorOutcomesKnown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseErrorOutcomes: %v", err)
 	}
-	if err := docsguard.CheckErrorOutcomes(outcomes, errs.All()); err != nil {
+	sentinels, err := docsguard.ParseSentinels(errsPath)
+	if err != nil {
+		t.Fatalf("ParseSentinels: %v", err)
+	}
+	if err := docsguard.CheckErrorOutcomes(outcomes, sentinels); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -214,43 +323,74 @@ func TestDocsguard_CatchesSabotage(t *testing.T) {
 
 	cases := []struct {
 		name  string
+		want  string
 		check func(t *testing.T) error
 	}{
-		{"duplicate transition ID", func(t *testing.T) error {
+		{"duplicate transition ID", "appears more than once", func(t *testing.T) error {
 			return docsguard.CheckTransitions(sabotageTransitions(t, "spec-duplicate-transition.md"))
 		}},
-		{"missing transition row", func(t *testing.T) error {
+		{"missing transition row", "the table must be contiguous", func(t *testing.T) error {
 			return docsguard.CheckTransitions(sabotageTransitions(t, "spec-missing-transition.md"))
 		}},
-		{"unknown event name", func(t *testing.T) error {
+		{"unknown event name", "not in the closed event vocabulary", func(t *testing.T) error {
 			vocab, err := docsguard.ParseSpecVocabulary(read(t, specPath))
 			if err != nil {
 				t.Fatalf("ParseSpecVocabulary: %v", err)
 			}
 			return docsguard.CheckTransitionEvents(sabotageTransitions(t, "spec-unknown-event.md"), vocab)
 		}},
-		{"unknown event name in prose", func(t *testing.T) error {
-			vocab, err := docsguard.ParseSpecVocabulary(read(t, specPath))
-			if err != nil {
-				t.Fatalf("ParseSpecVocabulary: %v", err)
-			}
-			return docsguard.CheckDocumentEvents(read(t, fixture("spec-unknown-event-in-prose.md")), vocab)
+		{"unknown event name in prose", "not in the closed event vocabulary", func(t *testing.T) error {
+			return docsguard.CheckDocumentEvents(read(t, fixture("spec-unknown-event-in-prose.md")), vocabulary(t))
 		}},
-		{"missing invariant row", func(t *testing.T) error {
+		// Pins the underscore in the candidate filter. Every merged event name that carries one,
+		// msg.ack_dup and msg.ack_stale, is in the vocabulary, so narrowing the filter to
+		// letters only would break nothing else and would stop catching this class.
+		{"unknown event name with an underscore", "not in the closed event vocabulary", func(t *testing.T) error {
+			return docsguard.CheckDocumentEvents(read(t, fixture("spec-underscore-event.md")), vocabulary(t))
+		}},
+		{"missing invariant row", "the register must be contiguous", func(t *testing.T) error {
 			is, err := docsguard.ParseInvariants(read(t, fixture("spec-missing-invariant.md")))
 			if err != nil {
 				t.Fatalf("ParseInvariants: %v", err)
 			}
 			return docsguard.CheckInvariants(is)
 		}},
-		{"undocumented sentinel", func(t *testing.T) error {
-			outcomes, err := docsguard.ParseErrorOutcomes(read(t, fixture("spec-unknown-sentinel.md")))
-			if err != nil {
-				t.Fatalf("ParseErrorOutcomes: %v", err)
-			}
-			return docsguard.CheckErrorOutcomes(outcomes, errs.All())
+		{"undocumented sentinel", "internal/errs declares", func(t *testing.T) error {
+			return docsguard.CheckErrorOutcomes(sabotageOutcomes(t, "spec-unknown-sentinel.md"), sentinels(t))
 		}},
-		{"event vocabulary drift", func(t *testing.T) error {
+		{"sentinel paired with another sentinel's message", "is documented as", func(t *testing.T) error {
+			return docsguard.CheckErrorOutcomes(sabotageOutcomes(t, "spec-swapped-sentinel-message.md"), sentinels(t))
+		}},
+		{"flipped comparison in a guard cell", "drops", func(t *testing.T) error {
+			return docsguard.CheckNoDroppedSymbols(
+				sabotageTransitions(t, "spec-flipped-guard.md"), planTransitions(t), clarifications(t))
+		}},
+		{"column name deleted from an effect cell", "drops", func(t *testing.T) error {
+			return docsguard.CheckNoDroppedSymbols(
+				sabotageTransitions(t, "spec-dropped-symbol.md"), planTransitions(t), clarifications(t))
+		}},
+		{"event moved to the wrong transition", "PLAN.md section 5.1 gives it", func(t *testing.T) error {
+			return docsguard.CheckEventsMirrorPlan(sabotageTransitions(t, "spec-moved-event.md"), planTransitions(t))
+		}},
+		{"swapped invariant rows", "does not restate PLAN.md section 5.2 verbatim", func(t *testing.T) error {
+			is, err := docsguard.ParseInvariants(read(t, fixture("spec-swapped-invariants.md")))
+			if err != nil {
+				t.Fatalf("ParseInvariants: %v", err)
+			}
+			plan, err := docsguard.ParsePlanInvariants(read(t, planPath))
+			if err != nil {
+				t.Fatalf("ParsePlanInvariants: %v", err)
+			}
+			return docsguard.CheckInvariantStatements(is, plan)
+		}},
+		{"dangling cross-reference", "does not define", func(t *testing.T) error {
+			idx, err := docsguard.BuildIDIndex(read(t, specPath))
+			if err != nil {
+				t.Fatalf("BuildIDIndex: %v", err)
+			}
+			return docsguard.CheckReferences("fixture", read(t, fixture("spec-dangling-reference.md")), idx)
+		}},
+		{"event vocabulary drift", "event vocabulary", func(t *testing.T) error {
 			spec, err := docsguard.ParseSpecVocabulary(read(t, fixture("spec-vocabulary-drift.md")))
 			if err != nil {
 				t.Fatalf("ParseSpecVocabulary: %v", err)
@@ -261,19 +401,19 @@ func TestDocsguard_CatchesSabotage(t *testing.T) {
 			}
 			return docsguard.CheckVocabulary(spec, plan)
 		}},
-		{"ADR number gap", func(t *testing.T) error {
+		{"ADR number gap", "numbering must be contiguous", func(t *testing.T) error {
 			return docsguard.CheckADRs(sabotageADRs(t, "adr-gap"))
 		}},
-		{"ADR missing heading", func(t *testing.T) error {
+		{"ADR missing heading", "is missing the heading", func(t *testing.T) error {
 			return docsguard.CheckADRs(sabotageADRs(t, "adr-missing-heading"))
 		}},
-		{"decision claimed twice", func(t *testing.T) error {
+		{"decision claimed twice", "is claimed by both", func(t *testing.T) error {
 			return docsguard.CheckDecisionsClaimed(sabotageADRs(t, "adr-double-claim"), []int{7})
 		}},
-		{"decision unclaimed", func(t *testing.T) error {
+		{"decision unclaimed", "has no ADR", func(t *testing.T) error {
 			return docsguard.CheckDecisionsClaimed(sabotageADRs(t, "adr-gap"), []int{7})
 		}},
-		{"broken relative link", func(t *testing.T) error {
+		{"broken relative link", "file does not exist", func(t *testing.T) error {
 			broken, err := docsguard.BrokenLinksIn(fixture("spec-broken-link.md"))
 			if err != nil {
 				t.Fatalf("BrokenLinksIn: %v", err)
@@ -289,17 +429,50 @@ func TestDocsguard_CatchesSabotage(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			if err := c.check(t); err == nil {
+			err := c.check(t)
+			if err == nil {
 				t.Fatalf("the %s fixture was accepted; the checker does not bite", c.name)
+			}
+			// Asserting the message, not only the failure: a fixture that goes stale and
+			// trips a different checker would otherwise still look like a working gate.
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("the %s fixture failed with %q, which does not mention %q", c.name, err, c.want)
 			}
 		})
 	}
 }
 
 // errBroken lets the link fixture report through the same error-or-nil shape as every other row.
-var errBroken = os.ErrNotExist
+var errBroken = errors.New("file does not exist")
 
 func fixture(name string) string { return filepath.Join("testdata", name) }
+
+func vocabulary(t *testing.T) []string {
+	t.Helper()
+	v, err := docsguard.ParseSpecVocabulary(read(t, specPath))
+	if err != nil {
+		t.Fatalf("ParseSpecVocabulary: %v", err)
+	}
+	return v
+}
+
+func sentinels(t *testing.T) []docsguard.Sentinel {
+	t.Helper()
+	s, err := docsguard.ParseSentinels(errsPath)
+	if err != nil {
+		t.Fatalf("ParseSentinels: %v", err)
+	}
+	return s
+}
+
+func sabotageOutcomes(t *testing.T, name string) []docsguard.ErrorOutcome {
+	t.Helper()
+	out, err := docsguard.ParseErrorOutcomes(read(t, fixture(name)))
+	if err != nil {
+		t.Fatalf("ParseErrorOutcomes(%s): %v", name, err)
+	}
+	return out
+}
 
 func sabotageTransitions(t *testing.T, name string) []docsguard.Transition {
 	t.Helper()
