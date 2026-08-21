@@ -31,7 +31,7 @@ The hooks call `make` targets rather than repeating commands, so each gate has e
 
 gofumpt is the formatter everywhere: `make fmt`, `make fmt-check`, the `pre-commit` hook, and therefore `make ci`. Plain `gofmt` is not used as a second, weaker check. gofumpt is a strict superset, so gofumpt-clean code is gofmt-clean code; running both would only add a gate that can never fire on its own.
 
-gofumpt is pinned and invoked through `go run mvdan.cc/gofumpt@<version>`. It never enters `go.mod`, so the eight-module dependency budget of PLAN.md section 13 stays untouched.
+gofumpt is pinned in its own module file, `tools/gofumpt.mod`, and invoked as `go tool -modfile=tools/gofumpt.mod gofumpt`. It never enters `go.mod`, so the eight-module dependency budget of PLAN.md section 13 stays untouched. `make lint` pins golangci-lint the same way, which is also what golangci-lint upstream recommends.
 
 ## Alternatives
 
@@ -40,18 +40,22 @@ gofumpt is pinned and invoked through `go run mvdan.cc/gofumpt@<version>`. It ne
 | No hooks, CI is the only gate | Moves a two-second answer onto a runner and into a review cycle. |
 | lefthook or pre-commit framework | Adds an installed dependency and a second configuration language for two shell scripts. |
 | `pre-commit` runs the full `make ci` | Cross-compiling two architectures on every commit is slow enough that people bypass the hook. |
-| `pre-commit` checks the worktree | Gates content that is not what gets committed. That was the first implementation, and it had exactly that hole. |
+| `pre-commit` checks the worktree | Gates content that is not what gets committed. |
 | Plain `gofmt` in `make ci`, gofumpt only locally | Two formatters that disagree by design, with the weaker one in the gate that matters. |
 
-## Network
+## Tool pinning and the network
 
-`make fmt-check`, and therefore `make ci` and both hooks, fetch the pinned gofumpt through the module cache on first use. That first run needs network access.
+Each pinned tool has its own module file and checksum file under `tools/`, and runs through `go tool -modfile=<file> <name>`. That form names no version at the call site, which is what makes the tools behave.
 
-Afterwards `make ci` runs offline, but only because the Makefile sets `GONOPROXY` for the tool module paths. `go run <tool>@<version>` performs a deprecation lookup against the module proxy on *every* invocation, not only the first, so a warm module cache alone is not enough: without `GONOPROXY`, a `GOPROXY=off` run fails with `loading deprecation for mvdan.cc/gofumpt: module lookup disabled by GOPROXY=off`.
+`go run <tool>@<version>`, the obvious alternative, performs a deprecation lookup against the module proxy on *every* invocation, not only the first. A warm module cache is therefore not enough to work offline: a `GOPROXY=off` run fails with `loading deprecation for mvdan.cc/gofumpt: module lookup disabled by GOPROXY=off`.
 
-`GONOPROXY` is the narrow knob for this. `GOPRIVATE` also fixes the lookup, but it sets `GONOSUMDB` as well and would silently drop checksum-database verification when the tool is fetched.
+Setting `GONOPROXY` silences that lookup, but it buys offline capability by giving up the proxy: with a cold module cache it makes the go command fetch the tool straight from upstream VCS. Measured with `GOVCS='*:off'` and an empty `GOMODCACHE`, `GONOPROXY` fails with `unrecognized import path "mvdan.cc/gofumpt": GOVCS disallows using git`, while the default configuration downloads through `proxy.golang.org`. An environment that only permits the proxy, which is the common corporate setup, would break on its first `make ci`. `GOPRIVATE` is worse again: it sets `GONOSUMDB` too and drops checksum-database verification.
 
-`make lint` gets the same treatment for its own module path. It is not part of `make ci`.
+The tool module file avoids the trade entirely. There is no version to resolve, so there is no lookup and no need to touch `GOPROXY` or `GONOPROXY` at all: a warm cache runs offline, and a cold cache fetches through whatever proxy is configured. The tool's whole dependency graph is hash-pinned in `tools/<tool>.sum`, which `go run <tool>@<version>` never gave us.
+
+The first `make ci` after a clone still downloads the tool, so it needs network access.
+
+Update a pin with `go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<version>`, never with `go mod tidy`. `-modfile` keeps the module root at the repository root, so `go mod tidy -modfile=tools/gofumpt.mod` walks this repository's own Go files and tries to resolve `internal/cli` and `internal/buildinfo` as dependencies of the tool module. That is why `make tidy-check` gates `go.mod` only; the `.sum` file is what defends the tool module.
 
 ## Consequences
 

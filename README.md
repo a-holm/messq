@@ -42,7 +42,7 @@ $ ./dist/messq version
 messq <version> (<commit>, <build date>, <go version>, linux/amd64)
 ```
 
-The placeholders are filled in from the checkout. `<version>` is `git describe --tags --always`: a tag once the repository has one, a short commit until then. `<commit>` is 12 hex characters and `<build date>` is the commit timestamp as RFC3339 UTC. Building from a modified worktree appends `+dirty` to the commit.
+The placeholders are filled in from the checkout. `<version>` is `git describe --tags --always`: a tag once the repository has one, a short commit until then. `<commit>` is 12 hex characters and `<build date>` is the commit timestamp as RFC3339 UTC. Building from a modified worktree appends `+dirty` to the commit. Modified follows git's own definition, so it means tracked files that differ from `HEAD`; untracked files do not make a build dirty.
 
 `make build` writes a static, `CGO_ENABLED=0`, `-trimpath` binary to `dist/messq`. `make build-all` cross-compiles `linux/amd64` and `linux/arm64` into the same directory, and `make static-check` verifies both are static. `messq version --output json` is the machine-readable form of the version line.
 

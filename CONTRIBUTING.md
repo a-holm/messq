@@ -42,7 +42,9 @@ $ make ci
 | `make build-all` | Static `linux/amd64` and `linux/arm64` binaries build. |
 | `make static-check` | Both binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
 
-`make fmt`, `make fmt-check` and `make lint` fetch their pinned tool through `go run` on first use, so the first run of any of them, and therefore the first `make ci`, needs network access. The tool never enters `go.mod`. After that fetch, `make ci` works offline.
+`make fmt`, `make fmt-check` and `make lint` run a pinned tool from its own module file under `tools/`, downloaded on first use, so the first run of any of them, and therefore the first `make ci`, needs network access. After that fetch, `make ci` works offline. The tools never enter `go.mod` and never spend the dependency budget.
+
+Update a tool pin with `go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<version>`. Do not run `go mod tidy` against a tool module file; `docs/adr/0001-local-first-gating.md` explains why it cannot work.
 
 ## What the hooks do and do not catch
 
