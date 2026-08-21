@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Enforces the dependency budget of PLAN.md section 13. The budget is an allow-list rather than
+# a count, so a transitive module promoted to a direct require fails loudly instead of quietly
+# spending the budget.
+set -euo pipefail
+
+allowed=(
+	github.com/google/go-cmp
+	github.com/oklog/ulid/v2
+	github.com/prometheus/client_golang
+	github.com/rogpeppe/go-internal
+	github.com/spf13/cobra
+	golang.org/x/sys
+	modernc.org/sqlite
+	pgregory.net/rapid
+)
+
+is_allowed() {
+	local mod="$1" a
+	for a in "${allowed[@]}"; do
+		if [[ "$mod" == "$a" ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+mapfile -t direct < <(go list -m -f '{{if and (not .Main) (not .Indirect)}}{{.Path}}{{end}}' all | grep -v '^$' || true)
+
+status=0
+for mod in ${direct[@]+"${direct[@]}"}; do
+	if ! is_allowed "$mod"; then
+		echo "dep-budget: new direct dependency $mod: add an ADR under docs/adr/ and extend scripts/dep-budget.sh" >&2
+		status=1
+	fi
+done
+
+if ((${#direct[@]} > ${#allowed[@]})); then
+	echo "dep-budget: ${#direct[@]} direct modules, the budget is ${#allowed[@]} (PLAN.md section 13)" >&2
+	status=1
+fi
+
+if ((status == 0)); then
+	echo "dep-budget: ${#direct[@]}/${#allowed[@]} direct modules, all allow-listed"
+fi
+
+exit "$status"
