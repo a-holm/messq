@@ -17,3 +17,4 @@ internal/subject                   95.0    issue #3: a matcher bug misroutes sil
 internal/id                        95.0    issue #3: ids are the spine of messq trace
 internal/errs                      95.0    issue #3: the closed sentinel set
 internal/clock                     90.0    issue #3: the seam every timing test runs through
+internal/docsguard                 95.0    issue #4: the gate that keeps the normative spec honest

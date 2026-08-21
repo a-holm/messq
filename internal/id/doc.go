@@ -5,9 +5,13 @@
 // # Message ids
 //
 // A message id is a ULID (decision D10): 26 Crockford base32 characters, time-sortable, free
-// of ambiguous characters, with the millisecond it was minted embedded in it. It is the spine
-// of `messq trace <id>`, because the same id survives redelivery, the dead-letter copy and a
-// redrive.
+// of ambiguous characters, with the millisecond it was minted embedded in it. It is globally
+// unique across streams, which is what makes it the spine of `messq trace <id>`: the same id
+// survives every redelivery of a message, while the dead-letter copy, a redrive and a replay
+// each mint a fresh id and carry the origin id in a provenance header. The trace id is what
+// makes those hops one story. Decision D3's own text says the id is preserved instead;
+// docs/adr/0004-dlq-as-a-stream.md is the record that overrides it and says why
+// (docs/SEMANTICS.md S4.4).
 //
 // [Gen] is the factory. It never fails and never returns an error: publish must not be able to
 // fail for id reasons. Two policies make that true.
