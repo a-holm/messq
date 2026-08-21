@@ -30,6 +30,27 @@ set -euo pipefail
 module="$(go list -m)"
 status=0
 
+# Every rule below reads an import graph, and an import graph computed from a tree that does not
+# load is not evidence of anything. Load the whole module once, with -e so the failures arrive
+# as data rather than as an exit status, and refuse to judge anything if a package failed.
+# Without this a directory whose files declare two different package names yields an empty
+# dependency list, every rule finds nothing forbidden in it, and the script reports that the
+# directions hold.
+#
+# A syntax error inside a function body is deliberately not covered here: go list parses package
+# clauses and imports, not bodies, so the import graph it returns is still correct. `make vet`
+# is the gate for that, and it has a sabotage row of its own.
+load_errors="$(
+	go list -e -deps -test \
+		-f '{{with .Error}}{{$.ImportPath}}: {{.Err}}{{end}}{{range .DepsErrors}}{{$.ImportPath}}: {{.Err}}{{end}}' \
+		./... 2>&1 | grep -v '^$' || true
+)"
+if [[ -n "$load_errors" ]]; then
+	echo "layers: the tree does not load, so its import graph proves nothing:" >&2
+	echo "$load_errors" >&2
+	exit 1
+fi
+
 # deps_of <scope> <package> lists every package reachable from <package>. Under the test scope,
 # go list appends the test binary's own variants in brackets; the suffix is stripped so the
 # import paths compare as plain lines.
@@ -104,7 +125,11 @@ forbid_deps test internal/model \
 	"$module/internal/queue" "$module/internal/store"
 
 client_reason="Issue #1 design: pkg/client is public and must not depend on internal packages."
-leaked="$(deps_of prod pkg/client | grep "^$module/internal/" || true)"
+# Two steps, for the reason dep-budget.sh gives: grep exits 1 when nothing leaked, which is the
+# expected state, so its status must be tolerated. Tolerating deps_of's status in the same
+# pipeline would report that pkg/client is clean whenever go list could not list it.
+client_deps="$(deps_of prod pkg/client)"
+leaked="$(grep "^$module/internal/" <<<"$client_deps" || true)"
 if [[ -n "$leaked" ]]; then
 	while read -r dep; do
 		echo "layers: pkg/client depends on $dep, directly or transitively. $client_reason" >&2
