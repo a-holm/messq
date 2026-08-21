@@ -45,7 +45,7 @@ GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
-        vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
+        vuln vuln-strict seam-defaults fmt fmt-check fmt-list vet tidy-check dep-budget layers \
         spdx gates-selftest fuzz static-check repro hooks ci clean
 
 help: ## Show this help.
@@ -144,6 +144,31 @@ vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matc
 	$(VULNGATE) -check-expiry
 	$(VULNSCAN) | $(VULNGATE) -strict
 
+# Both seams above are also both ways a reviewed workflow edit could quietly disarm a gate:
+# `VULNSCAN=true` pipes nothing into vulngate and `TEST_COUNT=0` runs no tests at all, each
+# reported as success. This target re-asserts the runner's view of the two, so such an edit
+# fails here by name instead of passing vacuously. The expected values are spelled out rather
+# than derived from the definitions above on purpose: moving a seam's default means moving this
+# assertion in the same reviewed change, which is exactly what a silent override must never be.
+#
+# Compared by value, not with origin: an override through the environment or the command line
+# changes where a variable came from, but the sabotage matrix edits the Makefile itself (rows
+# G35/G36 in test/gates/gates_test.go), where the origin stays "file" while the value walks off
+# the default.
+seam-defaults: ## Assert VULNSCAN and TEST_COUNT still carry their repository defaults.
+	@failed=false; \
+	scan_default='$(GOVULNCHECK) -format sarif ./...'; \
+	if [[ '$(VULNSCAN)' != "$$scan_default" ]]; then \
+		echo "seam-defaults: VULNSCAN is '$(VULNSCAN)', want the repository default '$$scan_default'" >&2; \
+		failed=true; \
+	fi; \
+	if [[ '$(TEST_COUNT)' != '1' ]]; then \
+		echo "seam-defaults: TEST_COUNT is '$(TEST_COUNT)', want the repository default '1'" >&2; \
+		failed=true; \
+	fi; \
+	if [[ "$$failed" == true ]]; then exit 1; fi; \
+	echo "seam-defaults: VULNSCAN and TEST_COUNT hold their defaults"
+
 # One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
 # nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
 # row runs a full lint or test of its own copy.
@@ -230,7 +255,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
 # The gate, in order. static-check pulls in build-all, so the binaries are built once.
-CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx lint test cover \
+CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test cover \
               cover-ratchet-check vuln gates-selftest static-check
 
 # PLAN.md section 11 budgets the whole lane at ten minutes, which is a constraint rather than an
