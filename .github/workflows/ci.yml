@@ -51,6 +51,16 @@ jobs:
   # four minutes, which does not fit inside the ten-minute budget the ci job is held to; running
   # them on a second runner keeps both under their limits. Fuzzing is a generator, not a gate on
   # the diff: the committed seed corpus is what `make ci` replays, and this job is what grows it.
+  #
+  # DECISION (#3): this job is deliberately NOT in branch protection's required checks, and stays
+  # out until #33 hardens the fuzz lane. `go test -fuzz` reports a bare `context deadline
+  # exceeded` when its coordinator cannot collect a worker inside the shutdown deadline, which
+  # reproduces under CPU contention and is indistinguishable by exit code from a real crasher. A
+  # required check that goes red without a reproduction artifact blocks merges on runner load,
+  # and a lane people learn to re-run on red is not a gate. The blocking regression net is
+  # already the committed seed corpus, which `make test` and `make cover` replay inside the
+  # required `ci` job on every push. Revisit when #33 lands: fold this into the required set once
+  # the flake is either fixed or narrowly distinguished from a genuine failure.
   fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 10
