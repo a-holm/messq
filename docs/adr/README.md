@@ -4,7 +4,9 @@ An ADR records one decision that is expensive to reverse: what was decided, the 
 
 ## Numbering
 
-Files are named `NNNN-kebab-case-title.md` with a four-digit, zero-padded number. Numbers are allocated in the order decisions are taken, are contiguous, and are never reused. `0000-template.md` is the template and is not a decision.
+Files are named `NNNN-kebab-case-title.md` with a four-digit, zero-padded number. Numbers are allocated in the order decisions are taken and are contiguous. `0000-template.md` is the template and is not a decision.
+
+Numbers are permanent from v1.0. Before it they were renumbered once: issue #4 needed fifteen consecutive numbers for the decisions of PLAN.md section 2, so `0006`, which had been reserved for the module path, became D5 and the module path moved to `0017`. Nothing outside the repository linked to `0006`. That exception is spent. A published number is never reused for a different decision, and a decision that stops applying is superseded in place rather than renumbered.
 
 ## Required fields
 
