@@ -7,24 +7,36 @@ SHELL       := /usr/bin/env bash
 MAKEFLAGS   += --warn-undefined-variables --no-builtin-rules
 
 MODULE  := github.com/a-holm/messq
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# VERSION carries no dirty marker: DIRTY is the single source for that, so `messq version`
+# reports a modified worktree once rather than in two fields.
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+DIRTY   ?= $(shell if git rev-parse --verify HEAD >/dev/null 2>&1; then git diff-index --quiet HEAD -- && echo false || echo true; else echo false; fi)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || date -u +%s)
 DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
 
 # Pinned tools. Run through `go run tool@version` so they never enter go.mod and never spend
 # the dependency budget of PLAN.md section 13. Both fetch on first use.
-GOFUMPT  := go run mvdan.cc/gofumpt@v0.11.0
-GOLANGCI := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+#
+# GONOPROXY suppresses the deprecation lookup that `go run tool@version` performs against the
+# module proxy on every invocation, which otherwise fails under GOPROXY=off even with a warm
+# module cache. It only bypasses the proxy; checksum-database verification stays on, which
+# GOPRIVATE would have disabled as well.
+GOFUMPT  := GONOPROXY='mvdan.cc/*' go run mvdan.cc/gofumpt@v0.11.0
+GOLANGCI := GONOPROXY='github.com/golangci/*' go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 
 LDFLAGS := -s -w \
   -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' \
   -X '$(MODULE)/internal/buildinfo.commit=$(COMMIT)' \
-  -X '$(MODULE)/internal/buildinfo.date=$(DATE)'
+  -X '$(MODULE)/internal/buildinfo.date=$(DATE)' \
+  -X '$(MODULE)/internal/buildinfo.dirty=$(DIRTY)'
 GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 
-.PHONY: help build build-all test race cover lint fmt fmt-check vet tidy-check dep-budget \
-        layers repro hooks ci clean
+# Directory that fmt-list inspects. The pre-commit hook overrides it with a mirror of the index.
+DIR ?= .
+
+.PHONY: help build build-all test race cover lint fmt fmt-check fmt-list vet tidy-check \
+        dep-budget layers static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -65,6 +77,9 @@ fmt-check: ## Fail when a Go file is not gofumpt-clean.
 	fi; \
 	echo "fmt-check: gofumpt-clean"
 
+fmt-list: ## Print the gofumpt-unclean files under DIR. The pre-commit hook points DIR at staged content.
+	@$(GOFUMPT) -l "$(DIR)"
+
 vet: ## Run go vet over every package.
 	go vet ./...
 
@@ -77,16 +92,21 @@ dep-budget: ## Fail when a direct dependency is outside the PLAN.md section 13 a
 layers: ## Fail when a package imports across a forbidden layer boundary.
 	scripts/layers.sh
 
-repro: ## Build twice from a clean tree and compare sha256.
+static-check: ## Assert the cross-compiled binaries are static, trimmed and cgo-free.
+	scripts/assert-static.sh dist/messq-linux-amd64
+	scripts/assert-static.sh dist/messq-linux-arm64
+
+repro: ## Build twice with cold, isolated caches and compare sha256.
 	@if [[ -n "$$(git status --porcelain)" ]]; then \
 		echo "repro: worktree is dirty; commit or stash before checking reproducibility" >&2; \
 		exit 1; \
 	fi
 	@mkdir -p dist
-	GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/repro-a ./cmd/messq
-	go clean -cache
-	GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/repro-b ./cmd/messq
-	@a="$$(sha256sum dist/repro-a | cut -d' ' -f1)"; \
+	@cache_a="$$(mktemp -d)"; cache_b="$$(mktemp -d)"; \
+	trap 'rm -rf "$$cache_a" "$$cache_b"' EXIT; \
+	GOCACHE="$$cache_a" GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/repro-a ./cmd/messq; \
+	GOCACHE="$$cache_b" GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/repro-b ./cmd/messq; \
+	a="$$(sha256sum dist/repro-a | cut -d' ' -f1)"; \
 	b="$$(sha256sum dist/repro-b | cut -d' ' -f1)"; \
 	echo "repro-a $$a"; \
 	echo "repro-b $$b"; \
@@ -95,9 +115,9 @@ repro: ## Build twice from a clean tree and compare sha256.
 
 hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
-	@echo "hooks: pre-commit runs fmt-check and vet, pre-push runs make ci"
+	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers test build-all ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers test build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
