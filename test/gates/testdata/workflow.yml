@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+name: sabotage
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo first
+  second:
+    needs: [does-not-exist]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo second

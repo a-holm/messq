@@ -31,7 +31,17 @@ is_allowed() {
 	return 1
 }
 
-mapfile -t direct < <(go list -m -f '{{if and (not .Main) (not .Indirect)}}{{.Path}}{{end}}' all | grep -v '^$' || true)
+# The two steps are separate on purpose. `grep -v '^$'` exits 1 when every line it saw was
+# blank, which is the legitimate state of a module with no dependencies, so its status has to be
+# tolerated. Tolerating go list's status in the same pipeline would turn an unreadable module
+# graph into "0 direct modules, all allow-listed": a budget that passes precisely because it
+# could not be measured.
+if ! listing="$(go list -m -f '{{if and (not .Main) (not .Indirect)}}{{.Path}}{{end}}' all)"; then
+	echo "dep-budget: go list -m all failed, so the module graph is unreadable and the budget is unknown" >&2
+	exit 1
+fi
+
+mapfile -t direct < <(grep -v '^$' <<<"$listing" || true)
 
 status=0
 for mod in ${direct[@]+"${direct[@]}"}; do

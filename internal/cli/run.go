@@ -52,14 +52,16 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 func runVersion(args []string, stdout, stderr io.Writer) int {
 	format := "text"
-	for i := 0; i < len(args); i++ {
-		switch arg := args[i]; {
+	for len(args) > 0 {
+		arg := args[0]
+		args = args[1:]
+		switch {
 		case arg == "--output":
-			if i+1 >= len(args) {
+			if len(args) == 0 {
 				return usageError(stderr, "--output needs a value: text or json")
 			}
-			i++
-			format = args[i]
+			format = args[0]
+			args = args[1:]
 		case strings.HasPrefix(arg, "--output="):
 			format = strings.TrimPrefix(arg, "--output=")
 		default:

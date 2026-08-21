@@ -97,17 +97,17 @@ func Get() Info {
 func Short() string {
 	i := Get()
 
-	commit := i.Commit
-	if commit == "" {
-		commit = "unknown"
+	commitText := i.Commit
+	if commitText == "" {
+		commitText = "unknown"
 	}
 	if i.Dirty {
-		commit += "+dirty"
+		commitText += "+dirty"
 	}
-	date := i.Date
-	if date == "" {
-		date = "unknown"
+	dateText := i.Date
+	if dateText == "" {
+		dateText = "unknown"
 	}
 
-	return fmt.Sprintf("messq %s (%s, %s, %s, %s)", i.Version, commit, date, i.GoVersion, i.Platform)
+	return fmt.Sprintf("messq %s (%s, %s, %s, %s)", i.Version, commitText, dateText, i.GoVersion, i.Platform)
 }

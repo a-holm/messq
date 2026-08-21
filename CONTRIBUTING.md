@@ -14,7 +14,7 @@ $ git commit -s -m "#12: fix the sweeper backoff"
 
 That appends a `Signed-off-by: Your Name <you@example.com>` trailer. Commits without it are not merged.
 
-Every `.go` file carries `// SPDX-License-Identifier: Apache-2.0` as its first line.
+Every `.go` file carries `// SPDX-License-Identifier: Apache-2.0` as its first line, and every script, hook, workflow and the Makefile carries it within their first three lines, under the shebang or the name. `make spdx` enforces it.
 
 ## Setup
 
@@ -29,7 +29,7 @@ $ make ci
 
 ## The gate
 
-`make ci` is the single gate. GitHub Actions runs exactly the same target, so a green `make ci` locally is a green pipeline. Run it before you push; the pre-push hook runs it for you.
+`make ci` is the single gate, and it is the one command that reproduces a red pipeline locally: GitHub Actions runs exactly the same target. Run it before you push; the pre-push hook runs it for you. It prints the wall clock of every target when it finishes, because PLAN.md section 11 budgets the pull-request lane at ten minutes and that is a constraint, not an aspiration.
 
 | Target | What it enforces |
 |---|---|
@@ -37,14 +37,54 @@ $ make ci
 | `make vet` | `go vet` is clean. |
 | `make tidy-check` | `go mod tidy` would not change `go.mod` or `go.sum`. |
 | `make dep-budget` | Every direct module is on the allow-list in `scripts/dep-budget.sh`. |
-| `make layers` | No package imports across a forbidden layer boundary. |
-| `make test` | The test suite passes. |
-| `make build-all` | Static `linux/amd64` and `linux/arm64` binaries build. |
-| `make static-check` | Both binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
+| `make layers` | No package, and no package's tests, imports across a forbidden layer boundary. |
+| `make spdx` | Every source file carries its licence header. |
+| `make lint` | `.golangci.yml` validates against the v2 schema, golangci-lint is clean, and `actionlint` is clean over the workflows. |
+| `make test` | The suite passes under the race detector, uncached and shuffled. |
+| `make cover` | Every package in `coverage.floors` meets its floor. |
+| `make cover-ratchet-check` | This branch does not lower a floor without saying why. |
+| `make vuln` | No vulnerability is reachable from messq's own code, and no suppression has expired. |
+| `make gates-selftest` | Every gate above still fails when you break it. |
+| `make static-check` | Both cross-compiled binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
 
-`make fmt`, `make fmt-check` and `make lint` run a pinned tool from its own module file under `tools/`, downloaded on first use, so the first run of any of them, and therefore the first `make ci`, needs network access. After that fetch, `make ci` works offline. The tools never enter `go.mod` and never spend the dependency budget.
+Two more targets exist for people rather than for CI: `make cover-html` opens the profile from the last `make cover`, and `make cover-ratchet` raises the floors that coverage has outgrown.
+
+The race detector needs cgo and the shipped binary must not have it, so `make test` and `make cover` run with `CGO_ENABLED=1` while every build target pins `CGO_ENABLED=0`. Both are mandatory and neither may be dropped.
+
+`make fmt`, `make fmt-check`, `make lint` and `make vuln` run a pinned tool from its own module file under `tools/`, downloaded on first use, so the first `make ci` needs network access. After that fetch everything works offline except `make vuln`, which queries the Go vulnerability database on every run: a CVE published today is not in yesterday's copy. The tools never enter `go.mod` and never spend the dependency budget.
 
 Update a tool pin with `go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<version>`. Do not run `go mod tidy` against a tool module file; `docs/adr/0001-local-first-gating.md` explains why it cannot work.
+
+Nightly, `.github/workflows/nightly.yml` runs what does not fit the ten-minute budget or has nothing to do with a diff: `make vuln-strict` against an unchanged tree, and ten shuffled runs of the suite hunting flakes. Both keep their output as a run artifact for a fortnight, because a flake is not reproducible on demand and the run that caught it is the only evidence there will be. Any failure opens a `nightly-failure` issue, or comments on the one already open: a lane nobody watches is a lane nobody reads. The remaining jobs are green placeholders naming the issue that fills them in.
+
+## Proving the gates
+
+A gate nobody has seen fail is a gate nobody knows works. `make gates-selftest` applies one mutation per gate to a scratch copy of the tree, runs the make target that must notice it, and asserts a non-zero exit **and** a matching message: a build that failed for an unrelated reason would otherwise look like a working gate. Two rows sabotage nothing and must stay green, which is what catches a scratch copy that no longer resembles the tree.
+
+The mutations live in `test/gates/testdata/` and the driver in `test/gates/gates_test.go`, behind the `gatecheck` build tag. A new gate lands with its row in that matrix, in the same commit. Nothing in the matrix is skipped, and no test in this repository calls `t.Skip`.
+
+## Coverage floors
+
+`coverage.floors` names the packages that carry the semantics and the statement coverage each must reach. PLAN.md section 11 wants no vanity global number, so a package earns a line there when it is worth a number.
+
+Floors ratchet upward only.
+
+- A floored package that exists but declares no functions yet reports `PENDING` and passes. Once it has code, a missing profile entry is a failure: deleting a package's tests must not silently satisfy its floor, and neither must deleting the package.
+- `make cover-ratchet` raises a floor once measured coverage clears it by a whole point, rounded down. Run it yourself, review the diff, commit it. CI never runs it: a bot that edits the gate is not a gate.
+- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <reason>` line, starting at the beginning of a line and with a reason after it. Without one, `make cover-ratchet-check` refuses the branch. The reason is the point; the grep only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
+
+## Vulnerabilities and suppressions
+
+`make vuln` fails on a vulnerability govulncheck reports as reachable from messq's own code. A vulnerable module that no messq code path reaches is a fact about the dependency graph, not about this build, and does not block it.
+
+`.govulncheck-allow` suppresses a finding by its `GO-YYYY-NNNN` identifier, and every field is mandatory:
+
+```
+# osv-id         expires      reason
+GO-2026-1234     2026-09-30   only reachable via the cgosqlite build tag; tracked in #5
+```
+
+Past its expiry an entry fails the build whether or not the vulnerability is still reported, so a suppression rots loudly instead of becoming a list nobody reads. An empty file is the expected steady state, and the nightly lane also fails on an entry that no longer suppresses anything.
 
 ## What the hooks do and do not catch
 
@@ -70,7 +110,16 @@ The reasoning is in [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-fi
 
 ## Tests
 
-No `time.Sleep` outside soak tests; use `testing/synctest` or the `Clock` seam. Table-driven tests, `t.TempDir()` for anything on disk, and no assertion DSL: plain `if got != want` with `google/go-cmp` for structs.
+Table-driven tests, `t.TempDir()` for anything on disk, and no assertion DSL: plain `if got != want` with `google/go-cmp` for structs. Everything runs under the race detector.
+
+The architectural bans are lint-enforced by `forbidigo` in `.golangci.yml`, and each message names the alternative:
+
+- `time.Sleep` anywhere. Use a `testing/synctest` bubble or the `Clock` seam. `internal/clock` and `test/soak` are the only exemptions: the seam is where the sleep the rest of the tree may not call directly has to live.
+- `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function.
+- `prometheus.MustRegister`, the default registerer and package-level `promauto` outside `internal/obs`. messq registers against a custom registry only.
+- `os.Exit` outside a command entry point, and `fmt.Print*` anywhere. Data goes to the injected stdout writer, narration to stderr.
+
+A `//nolint` must name the linter it silences and say why: `//nolint:gosec // G304: the path is an operator flag.` An unused one fails the build.
 
 ## Commits and pull requests
 

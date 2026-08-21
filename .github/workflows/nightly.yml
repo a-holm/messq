@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The slow lane. Everything here is either too long for the ten-minute pull-request budget or
+# has nothing to do with the diff: a CVE published on Tuesday must fail on Tuesday night, not on
+# the next pull request.
+#
+# Most jobs are named, green no-ops that the issue in their comment fills in. They exist now so
+# the lane's plumbing is debugged once, on an empty pipeline, and so later work has an obvious
+# home. A placeholder is a green echo and never `continue-on-error: true` on a real command: a
+# permanently yellow pipeline trains people to ignore it.
+name: nightly
+
+on:
+  schedule:
+    # 02:17 UTC. Off the hour on purpose: every cron on GitHub queues at the top of one.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One nightly at a time, and never cancel a running one: a half-finished soak proves nothing.
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  # Real from day one. -strict also fails on a suppression in .govulncheck-allow that no longer
+  # matches anything, which is the check that keeps the file from filling with dead entries.
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.mod
+      # The scan is kept as an artifact rather than only as job output: run logs expire, and the
+      # question a nightly failure raises is what changed since the night before.
+      - name: Scan and keep the report
+        run: |
+          set -o pipefail
+          make vuln-strict 2>&1 | tee nightly-vuln.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: nightly-vuln
+          path: nightly-vuln.log
+          retention-days: 14
+          if-no-files-found: error
+
+  # Real from day one. Ten runs of the whole suite, shuffled, under the race detector: the point
+  # is the flake that shows up once in fifty, not the one that shows up every time.
+  flake-hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.mod
+      - name: Hunt and keep the log
+        run: |
+          set -o pipefail
+          make test TEST_COUNT=10 TEST_TIMEOUT=45m 2>&1 | tee nightly-flake-hunt.log
+      # A flake is by definition not reproducible on demand, so the run that caught it is the
+      # only evidence there will be.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: nightly-flake-hunt
+          path: nightly-flake-hunt.log
+          retention-days: 14
+          if-no-files-found: error
+
+  crash-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#8, #32): SIGKILL sweep against the three-valued ledger oracle, both durability modes"'
+
+  property-deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#13): reference model driven by rapid at -rapid.checks=20000"'
+
+  fuzz-long:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#33): 30 minutes per fuzz target, corpus committed"'
+
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#33): an hour at load with naks, poison messages and kills; assert conservation"'
+
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#31): messq bench plus a benchstat comparison against the baseline"'
+
+  upgrade-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#34): migrate every committed golden data dir and verify --deep"'
+
+  cgosqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: 'echo "TODO(#5): build-tag matrix against mattn/go-sqlite3, the D1 escape hatch"'
+
+  # The lane is unattended, so a failure that only exists in a run log is a failure nobody reads.
+  # This job needs issues: write, which the workflow-level permissions block deliberately does
+  # not grant; a job-level block replaces it rather than adding to it, so the write stays here.
+  #
+  # One open issue at a time. A lane that fails for a fortnight should produce fourteen comments
+  # on one thread, not fourteen issues.
+  report-failure:
+    needs:
+      - vuln
+      - flake-hunt
+      - crash-sweep
+      - property-deep
+      - fuzz-long
+      - soak
+      - bench
+      - upgrade-fixtures
+      - cgosqlite
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          gh label create nightly-failure \
+            --color b60205 \
+            --description "The nightly lane failed and nobody has closed it out yet" \
+            --force
+
+          body="The nightly lane failed: ${RUN_URL}
+
+          Job outcomes are in the run summary. Close this issue once the lane is green again."
+
+          existing="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on #${existing}"
+          else
+            gh issue create --title "nightly lane is failing" --label nightly-failure --body "$body"
+          fi

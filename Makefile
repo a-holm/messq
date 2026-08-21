@@ -28,8 +28,11 @@ DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
 #
 # not with `go mod tidy`: -modfile keeps the module root here, so tidy would try to resolve this
 # repository's own packages as dependencies of the tool module.
-GOFUMPT  := go tool -modfile=tools/gofumpt.mod gofumpt
-GOLANGCI := go tool -modfile=tools/golangci-lint.mod golangci-lint
+GOFUMPT     := go tool -modfile=tools/gofumpt.mod gofumpt
+GOLANGCI    := go tool -modfile=tools/golangci-lint.mod golangci-lint
+ACTIONLINT  := go tool -modfile=tools/actionlint.mod actionlint
+GOVULNCHECK := go tool -modfile=tools/govulncheck.mod govulncheck
+VULNGATE    := go run ./internal/tools/vulngate -allow .govulncheck-allow
 
 LDFLAGS := -s -w \
   -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' \
@@ -41,13 +44,14 @@ GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 # Directory that fmt-list inspects. The pre-commit hook overrides it with a mirror of the index.
 DIR ?= .
 
-.PHONY: help build build-all test race cover lint fmt fmt-check fmt-list vet tidy-check \
-        dep-budget layers static-check repro hooks ci clean
+.PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
+        vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
+        spdx gates-selftest static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
 	@echo
-	@awk 'BEGIN {FS = ":.*## "} /^[a-z][a-z-]*:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-z][a-z-]*:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build a static host binary into dist/messq.
 	@mkdir -p dist
@@ -58,18 +62,101 @@ build-all: ## Build static linux/amd64 and linux/arm64 binaries into dist/.
 	GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/messq-linux-amd64 ./cmd/messq
 	GOOS=linux GOARCH=arm64 $(GOBUILD) -o dist/messq-linux-arm64 ./cmd/messq
 
-test: ## Run the test suite.
-	go test ./...
+# The race detector needs cgo, while the shipped binary must be built without it (GOBUILD
+# above pins CGO_ENABLED=0). Both facts are true at once and neither may be dropped: an
+# unraced suite hides the bugs this project exists to avoid, and a cgo-linked release binary
+# breaks the static-binary promise. -count=1 defeats the test cache, without which an
+# `ok (cached)` line makes the gate pass vacuously after an unrelated change. -shuffle=on
+# catches order-dependent tests while there are still few of them.
+# TEST_COUNT is what the nightly flake hunt raises: a flake that shows up once in fifty is
+# invisible to a single run.
+TEST_COUNT ?= 1
+TEST_TIMEOUT ?= 5m
 
-race: ## Run the test suite under the race detector.
-	go test -race ./...
+test: ## Run the test suite under the race detector.
+	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
 
-cover: ## Run tests with coverage and print a per-function report.
-	go test -coverprofile=cover.out ./...
-	go tool cover -func=cover.out
+# -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
+# internal/queue is exercised by the reference model in internal/model and internal/store
+# through the API and the crash harness; a per-package profile would undercount both and push
+# tests into the wrong package to satisfy a number.
+cover: ## Measure coverage and enforce the floors in coverage.floors.
+	CGO_ENABLED=1 go test -race -count=1 -covermode=atomic \
+		-coverpkg=./internal/...,./pkg/... -coverprofile=cover.out ./...
+	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors
 
-lint: ## Run the pinned golangci-lint. Fetches the tool on first use.
+cover-html: ## Open the coverage profile produced by `make cover` as HTML.
+	go tool cover -html=cover.out
+
+# Run by a human, committed, reviewed. Never by CI: a bot that edits the gate is not a gate.
+cover-ratchet: cover ## Raise the floors that measured coverage clears by a whole point.
+	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors -ratchet
+
+# The escape-hatch trailer, anchored at the start of a line and demanding a non-empty reason.
+# CONTRIBUTING.md promises a reason; an unanchored grep would also accept a bare
+# `coverage-floor-lowered:` and a commit that merely mentions the string in prose.
+RATCHET_TRAILER := ^coverage-floor-lowered:[[:space:]]+[^[:space:]]
+
+# Compares against the merge base rather than against origin/main's tip, so a floor raised on
+# main after this branch started does not read as a lowering here. Silent when there is no
+# merge base to compare against, which is the case in a fresh shallow clone.
+#
+# The trailer is looked for across every commit the branch adds, not on HEAD alone. On a pull
+# request the runner checks out GitHub's synthetic "Merge X into Y" commit, so HEAD is a commit
+# nobody wrote and `git log -1` can never see the trailer: the hatch would be documented,
+# advertised in the failure message, and unreachable. The merge base opens exactly the range of
+# commits this branch is responsible for, in both shapes.
+cover-ratchet-check: ## Fail when this branch lowers a coverage floor without saying why.
+	@base="$$(git merge-base HEAD origin/main 2>/dev/null)" || { \
+		echo "cover-ratchet-check: no merge base with origin/main, nothing to compare"; \
+		exit 0; \
+	}; \
+	baseline="$$(mktemp)"; \
+	trap 'rm -f "$$baseline"' EXIT; \
+	git show "$$base:coverage.floors" >"$$baseline" 2>/dev/null || { \
+		echo "cover-ratchet-check: the merge base has no coverage.floors, nothing to compare"; \
+		exit 0; \
+	}; \
+	allow=(); \
+	if git log --format=%B "$$base..HEAD" | grep -qE '$(RATCHET_TRAILER)'; then \
+		allow=(-allow-lower); \
+	fi; \
+	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" $${allow[@]+"$${allow[@]}"}
+
+# config verify runs first because it reads the file with the same loader `run` uses and then
+# validates it against a schema embedded in the pinned binary, so an unknown settings key or a
+# value of the wrong type is a named error before any analysis starts. It does not check linter
+# names: the schema lists them for editor completion but accepts anything, and `run` is what
+# rejects an unknown one. Neither needs the network.
+lint: ## Verify .golangci.yml, run the pinned golangci-lint, and lint the workflows.
+	$(GOLANGCI) config verify
 	$(GOLANGCI) run
+	$(ACTIONLINT) .github/workflows/*.yml
+
+# Source mode reports the vulnerabilities reachable from messq's own code, which is the right
+# signal-to-noise for a gate. With -format sarif govulncheck always exits 0, so vulngate makes
+# the decision. The expiry check runs first: it needs no network and it is what makes a stale
+# suppression fail before the scan is even attempted.
+#
+# Unlike every other target, this one needs network access on every run: a CVE published today
+# is not in yesterday's database.
+# VULNSCAN is a seam, like TEST_COUNT: the sabotage matrix overrides it with a canned SARIF
+# document to prove what the gate does with a scan this repository cannot produce on demand.
+VULNSCAN ?= $(GOVULNCHECK) -format sarif ./...
+
+vuln: ## Fail on a reachable vulnerability or an expired suppression.
+	$(VULNGATE) -check-expiry
+	$(VULNSCAN) | $(VULNGATE)
+
+vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matches anything.
+	$(VULNGATE) -check-expiry
+	$(VULNSCAN) | $(VULNGATE) -strict
+
+# One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
+# nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
+# row runs a full lint or test of its own copy.
+gates-selftest: ## Prove every gate bites, by breaking each one on a scratch copy of the tree.
+	go test -tags gatecheck -count=1 -v -parallel 8 -timeout 20m ./test/gates/...
 
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .
@@ -98,6 +185,9 @@ dep-budget: ## Fail when a direct dependency is outside the PLAN.md section 13 a
 layers: ## Fail when a package imports across a forbidden layer boundary.
 	scripts/layers.sh
 
+spdx: ## Fail when a source file is missing its SPDX licence header.
+	scripts/spdx.sh
+
 # Ordered, not just listed: under `make -j` an unordered prerequisite would run the assertion
 # before build-all has produced the binaries.
 static-check: build-all ## Assert the cross-compiled binaries are static, trimmed and cgo-free.
@@ -125,7 +215,31 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers test build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+# The gate, in order. static-check pulls in build-all, so the binaries are built once.
+CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx lint test cover \
+              cover-ratchet-check vuln gates-selftest static-check
+
+# PLAN.md section 11 budgets the whole lane at ten minutes, which is a constraint rather than an
+# aspiration, so the per-target wall clock is printed at the end and appended to the GitHub run
+# summary when there is one. A target that crosses CI_WARN_SECONDS is the signal to shard it or
+# move it to the nightly lane; it is never the signal to weaken it.
+CI_WARN_SECONDS ?= 480
+
+ci: ## Run the whole gate. GitHub Actions runs exactly this.
+	@start=$$SECONDS; \
+	rows=""; \
+	for target in $(CI_TARGETS); do \
+		target_start=$$SECONDS; \
+		$(MAKE) --no-print-directory "$$target"; \
+		rows="$$rows| $$target | $$((SECONDS - target_start))s |"$$'\n'; \
+	done; \
+	total=$$((SECONDS - start)); \
+	table="$$(printf '| ci target | wall clock |\n|---|---|\n%s| **total** | **%ds** |\n' "$$rows" "$$total")"; \
+	printf '\n%s\n' "$$table"; \
+	if [[ -n "$${GITHUB_STEP_SUMMARY:-}" ]]; then printf '%s\n' "$$table" >>"$$GITHUB_STEP_SUMMARY"; fi; \
+	if ((total >= $(CI_WARN_SECONDS))); then \
+		echo "ci: $${total}s is past the $(CI_WARN_SECONDS)s warning line; shard a job or move it to nightly" >&2; \
+	fi
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
