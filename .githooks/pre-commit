@@ -3,11 +3,51 @@
 #
 # Fast local gate: formatting and vet, nothing that takes seconds. The pinned gofumpt is
 # fetched through `go run` on first use, so the first commit after a clone touches the network.
+#
+# Formatting is checked against STAGED content, not the worktree. A commit records the index,
+# so checking the worktree gates a different artifact than the one being committed: stage an
+# unformatted file, tidy the worktree copy without re-staging, and a worktree check passes
+# while the unformatted blob lands in history.
+#
+# go vet stays worktree-wide. It needs a compilable package and its dependencies, not the
+# staged subset of files, and reconstructing the whole module on every commit costs a build.
+# The asymmetry is deliberate; docs/adr/0001-local-first-gating.md records it.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-if ! make fmt-check vet; then
+mapfile -t -d '' staged < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.go')
+
+if ((${#staged[@]} > 0)); then
+	staging="$(mktemp -d)"
+	trap 'rm -rf "$staging"' EXIT
+
+	# gofumpt reads the nearest go.mod for the language version and the module path, and falls
+	# back to go1.16 without one. Mirror the staged go.mod so the check uses the rules this
+	# commit itself introduces.
+	git show :go.mod >"$staging/go.mod" 2>/dev/null || cp go.mod "$staging/go.mod"
+
+	for path in "${staged[@]}"; do
+		mkdir -p "$staging/$(dirname "$path")"
+		git show ":$path" >"$staging/$path"
+	done
+
+	if ! unformatted="$(make -s fmt-list DIR="$staging")"; then
+		echo "pre-commit: gofumpt could not read the staged content, see above." >&2
+		exit 1
+	fi
+
+	if [[ -n "$unformatted" ]]; then
+		echo "pre-commit: these staged files are not gofumpt-clean:" >&2
+		sed "s|^$staging/||" <<<"$unformatted" >&2
+		echo >&2
+		echo "pre-commit: run 'make fmt', stage the result, and commit again." >&2
+		echo "pre-commit: rejected. Bypass once with 'git commit --no-verify'." >&2
+		exit 1
+	fi
+fi
+
+if ! make vet; then
 	echo >&2
 	echo "pre-commit: rejected. Fix the report above, or bypass once with 'git commit --no-verify'." >&2
 	exit 1
