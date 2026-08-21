@@ -15,15 +15,21 @@ DIRTY   ?= $(shell if git rev-parse --verify HEAD >/dev/null 2>&1; then git diff
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || date -u +%s)
 DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
 
-# Pinned tools. Run through `go run tool@version` so they never enter go.mod and never spend
-# the dependency budget of PLAN.md section 13. Both fetch on first use.
+# Pinned tools. Each lives in its own module file under tools/, so it never enters go.mod and
+# never spends the dependency budget of PLAN.md section 13, and its whole dependency graph is
+# hash-pinned in the matching .sum file.
 #
-# GONOPROXY suppresses the deprecation lookup that `go run tool@version` performs against the
-# module proxy on every invocation, which otherwise fails under GOPROXY=off even with a warm
-# module cache. It only bypasses the proxy; checksum-database verification stays on, which
-# GOPRIVATE would have disabled as well.
-GOFUMPT  := GONOPROXY='mvdan.cc/*' go run mvdan.cc/gofumpt@v0.11.0
-GOLANGCI := GONOPROXY='github.com/golangci/*' go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+# `go tool -modfile=...` names no version at the call site, so there is no deprecation lookup
+# against the module proxy on every invocation. That is what makes `make ci` work offline on a
+# warm cache without setting GONOPROXY, which would have forced a direct VCS fetch and broken
+# proxy-only environments. Update a pin with:
+#
+#     go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<version>
+#
+# not with `go mod tidy`: -modfile keeps the module root here, so tidy would try to resolve this
+# repository's own packages as dependencies of the tool module.
+GOFUMPT  := go tool -modfile=tools/gofumpt.mod gofumpt
+GOLANGCI := go tool -modfile=tools/golangci-lint.mod golangci-lint
 
 LDFLAGS := -s -w \
   -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' \
@@ -92,7 +98,9 @@ dep-budget: ## Fail when a direct dependency is outside the PLAN.md section 13 a
 layers: ## Fail when a package imports across a forbidden layer boundary.
 	scripts/layers.sh
 
-static-check: ## Assert the cross-compiled binaries are static, trimmed and cgo-free.
+# Ordered, not just listed: under `make -j` an unordered prerequisite would run the assertion
+# before build-all has produced the binaries.
+static-check: build-all ## Assert the cross-compiled binaries are static, trimmed and cgo-free.
 	scripts/assert-static.sh dist/messq-linux-amd64
 	scripts/assert-static.sh dist/messq-linux-arm64
 
