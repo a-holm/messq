@@ -1,0 +1,22 @@
+# Binaries
+/messq
+/bin/
+/dist/
+*.exe
+*.test
+
+# Coverage
+*.out
+coverage.html
+
+# Data / local state
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# Editor/OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
