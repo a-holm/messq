@@ -215,6 +215,48 @@ func TestEntropyOverflowStepsAMillisecond(t *testing.T) {
 	}
 }
 
+// zeroEntropy is degenerate rather than broken: it succeeds and yields nothing but zeroes. It
+// is the one shape that makes oklog/ulid hand back the same id twice with a nil error, because
+// its monotonic reader treats zero entropy as "not seeded yet" and redraws instead of
+// incrementing. It terminates, unlike a constant 0xFF reader, which spins inside the increment
+// draw forever; WithEntropy documents that constraint.
+type zeroEntropy struct{}
+
+func (zeroEntropy) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+// TestDegenerateEntropyStillMintsUniqueIDs pins the monotonicity guard in the mint loop. A
+// stuck hardware source is the realistic version of this: ulid.New reports no error, so
+// without the guard the daemon would hand out a duplicate message id, and a duplicate id
+// breaks dedup and makes messq trace ambiguous.
+func TestDegenerateEntropyStillMintsUniqueIDs(t *testing.T) {
+	t.Parallel()
+
+	f := clock.NewFake(epoch)
+	g := id.NewGen(f, id.WithEntropy(zeroEntropy{}))
+
+	seen := map[id.MsgID]int{}
+	prev := g.New()
+	seen[prev] = 0
+	for i := 1; i < 20; i++ {
+		// The clock never moves, so every mint lands in the same millisecond and the
+		// generator has nothing but its own bookkeeping to keep the ids apart.
+		next := g.New()
+		if next.Compare(prev) <= 0 {
+			t.Fatalf("id %d (%s) does not follow %s", i, next, prev)
+		}
+		if first, dup := seen[next]; dup {
+			t.Fatalf("id %d (%s) repeats id %d", i, next, first)
+		}
+		seen[next] = i
+		prev = next
+	}
+}
+
 // brokenEntropy always fails. Publish must not be able to fail for id reasons, so the
 // generator has to keep handing out unique, ordered ids even here.
 type brokenEntropy struct{}

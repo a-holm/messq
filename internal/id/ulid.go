@@ -20,9 +20,10 @@ var ErrBadMsgID = errs.E(errs.ErrBadRequest, "", "a message id is 26 Crockford b
 // MsgID is a 128-bit ULID, rendered as 26 Crockford base32 characters.
 type MsgID = ulid.ULID
 
-// maxMintAttempts bounds the retry loop in [Gen.New]. One overflow per millisecond is the
-// realistic worst case; more than a handful means the entropy source itself is broken, and the
-// loop must end rather than spin.
+// maxMintAttempts bounds [Gen.New]'s own retry loop. One overflow per millisecond is the
+// realistic worst case; more than a handful means the entropy source is failing, and the loop
+// must end rather than spin. It bounds nothing inside the entropy source itself: see
+// [WithEntropy] for the constraint that carries.
 const maxMintAttempts = 8
 
 // Gen mints message ids. It is safe for concurrent use: its own mutex is the serialization
@@ -51,6 +52,14 @@ type Option func(*Gen)
 
 // WithEntropy replaces crypto/rand as the entropy source. A deterministic reader is what makes
 // a golden test produce the same id every run.
+//
+// r must actually yield varying bytes. oklog/ulid draws its monotonic increment by rejection
+// sampling, so a reader whose stream is a constant makes it retry forever and [Gen.New] never
+// returns: a reader of nothing but 0xFF is the reproducer, because the four bytes it hands over
+// always decode to exactly the increment bound. Neither maxMintAttempts nor anything else in
+// this package can interrupt that, since the spin is inside the read. crypto/rand and any
+// math/rand stream satisfy the constraint; a fixed test vector must vary across its length.
+// A reader that returns an error is fine and is handled: see [Gen.New].
 func WithEntropy(r io.Reader) Option {
 	return func(g *Gen) { g.entropy = r }
 }
@@ -100,9 +109,10 @@ func (g *Gen) New() MsgID {
 			g.last = u
 			return u
 		}
-		// Either the entropy inside this millisecond is exhausted or the source failed.
-		// Stepping the millisecond both re-seeds the monotonic reader and guarantees the
-		// next id sorts after this one.
+		// The entropy inside this millisecond is exhausted, or the source failed, or it is
+		// degenerate and handed back an id that does not follow the last one. Stepping the
+		// millisecond re-seeds the monotonic reader and puts the next id above this one in
+		// all three cases.
 		g.ms++
 	}
 
