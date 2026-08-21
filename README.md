@@ -1,5 +1,7 @@
 # messq
 
+[![ci](https://github.com/a-holm/messq/actions/workflows/ci.yml/badge.svg)](https://github.com/a-holm/messq/actions/workflows/ci.yml)
+
 Lightweight, single-binary queue daemon for Linux, written in Go. A practical middle ground between an in-memory queue and a heavy distributed event platform — "Kafka-minimum without Kafka overhead", with more readable operations than a traditional broker.
 
 ## Core idea
@@ -27,6 +29,38 @@ Stream (append-only storage) · Subject (routing key) · Consumer (stateful read
 - Replay and inspection as core features
 - Single-binary mode with local disk (SQLite/WAL)
 - Small enough to understand in an evening, strong enough for internal production workloads
+
+## Build from source
+
+Linux, `make`, `bash`, and Go 1.25 or newer. `go.mod` pins the exact toolchain, which the Go command downloads on its own, so any recent Go builds the same binary.
+
+```console
+$ git clone https://github.com/a-holm/messq.git
+$ cd messq
+$ make build
+$ ./dist/messq version
+messq <version> (<commit>, <build date>, <go version>, linux/amd64)
+```
+
+The placeholders are filled in from the checkout. `<version>` is `git describe --tags --always`: a tag once the repository has one, a short commit until then. `<commit>` is 12 hex characters and `<build date>` is the commit timestamp as RFC3339 UTC. Building from a modified worktree appends `+dirty` to the commit. Modified follows git's own definition, so it means tracked files that differ from `HEAD`; untracked files do not make a build dirty.
+
+`make build` writes a static, `CGO_ENABLED=0`, `-trimpath` binary to `dist/messq`. `make build-all` cross-compiles `linux/amd64` and `linux/arm64` into the same directory, and `make static-check` verifies both are static. `messq version --output json` is the machine-readable form of the version line.
+
+Builds are reproducible: `make repro` builds the same clean commit twice with cold, isolated compiler caches and compares the checksums.
+
+## Development
+
+```console
+$ make hooks     # one-time: route git at .githooks
+$ make ci        # the whole gate, the same target GitHub Actions runs
+$ make help      # every target
+```
+
+`make hooks` activates a `pre-commit` hook that checks the formatting of staged content and vets the worktree, and a `pre-push` hook that runs `make ci`. Hooks are the fast local gate and are bypassable; GitHub Actions runs the same `make ci` as the backstop. What each hook does and does not catch is in [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-first-gating.md). Contributor rules, including the DCO sign-off and the absence of a CLA, are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Status
 
