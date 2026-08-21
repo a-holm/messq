@@ -42,8 +42,9 @@ GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 # Directory that fmt-list inspects. The pre-commit hook overrides it with a mirror of the index.
 DIR ?= .
 
-.PHONY: help build build-all test race cover lint fmt fmt-check fmt-list vet tidy-check \
-        dep-budget layers static-check repro hooks ci clean
+.PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
+        fmt fmt-check fmt-list vet tidy-check dep-budget layers static-check repro hooks \
+        ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -59,15 +60,48 @@ build-all: ## Build static linux/amd64 and linux/arm64 binaries into dist/.
 	GOOS=linux GOARCH=amd64 $(GOBUILD) -o dist/messq-linux-amd64 ./cmd/messq
 	GOOS=linux GOARCH=arm64 $(GOBUILD) -o dist/messq-linux-arm64 ./cmd/messq
 
-test: ## Run the test suite.
-	go test ./...
+# The race detector needs cgo, while the shipped binary must be built without it (GOBUILD
+# above pins CGO_ENABLED=0). Both facts are true at once and neither may be dropped: an
+# unraced suite hides the bugs this project exists to avoid, and a cgo-linked release binary
+# breaks the static-binary promise. -count=1 defeats the test cache, without which an
+# `ok (cached)` line makes the gate pass vacuously after an unrelated change. -shuffle=on
+# catches order-dependent tests while there are still few of them.
+test: ## Run the test suite under the race detector.
+	CGO_ENABLED=1 go test -race -count=1 -shuffle=on -timeout=5m ./...
 
-race: ## Run the test suite under the race detector.
-	go test -race ./...
+# -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
+# internal/queue is exercised by the reference model in internal/model and internal/store
+# through the API and the crash harness; a per-package profile would undercount both and push
+# tests into the wrong package to satisfy a number.
+cover: ## Measure coverage and enforce the floors in coverage.floors.
+	CGO_ENABLED=1 go test -race -count=1 -covermode=atomic \
+		-coverpkg=./internal/...,./pkg/... -coverprofile=cover.out ./...
+	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors
 
-cover: ## Run tests with coverage and print a per-function report.
-	go test -coverprofile=cover.out ./...
-	go tool cover -func=cover.out
+cover-html: ## Open the coverage profile produced by `make cover` as HTML.
+	go tool cover -html=cover.out
+
+# Run by a human, committed, reviewed. Never by CI: a bot that edits the gate is not a gate.
+cover-ratchet: cover ## Raise the floors that measured coverage clears by a whole point.
+	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors -ratchet
+
+# Compares against the merge base rather than against origin/main's tip, so a floor raised on
+# main after this branch started does not read as a lowering here. Silent when there is no
+# merge base to compare against, which is the case in a fresh shallow clone.
+cover-ratchet-check: ## Fail when this branch lowers a coverage floor without saying why.
+	@base="$$(git merge-base HEAD origin/main 2>/dev/null)" || { \
+		echo "cover-ratchet-check: no merge base with origin/main, nothing to compare"; \
+		exit 0; \
+	}; \
+	baseline="$$(mktemp)"; \
+	trap 'rm -f "$$baseline"' EXIT; \
+	git show "$$base:coverage.floors" >"$$baseline" 2>/dev/null || { \
+		echo "cover-ratchet-check: the merge base has no coverage.floors, nothing to compare"; \
+		exit 0; \
+	}; \
+	allow=(); \
+	if git log -1 --format=%B | grep -q 'coverage-floor-lowered:'; then allow=(-allow-lower); fi; \
+	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" $${allow[@]+"$${allow[@]}"}
 
 # config verify runs first so a typo in .golangci.yml is a schema error rather than half the
 # linter set silently switching itself off. It validates against a schema embedded in the
@@ -131,7 +165,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers lint test build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers lint test cover cover-ratchet-check build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out

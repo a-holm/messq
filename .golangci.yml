@@ -61,11 +61,19 @@ linters:
       allow-unused: false
 
     gosec:
-      # Backoff jitter and recovery jitter deliberately use math/rand. Ack tokens carry no
-      # secret, so v1 has no crypto-random requirement outside the auth-token generator, which
-      # arrives with its own review.
       excludes:
+        # Backoff jitter and recovery jitter deliberately use math/rand. Ack tokens carry no
+        # secret, so v1 has no crypto-random requirement outside the auth-token generator,
+        # which arrives with its own review.
         - G404
+        # Every path messq opens comes from an operator-supplied flag or MESSQ_* variable by
+        # design. The API never opens a file named by a request, so G304 has no true-positive
+        # class here and would otherwise put a //nolint on every open in internal/store.
+        - G304
+      config:
+        # 0600 is wrong for the files these tools write: coverage.floors is source, reviewed
+        # and committed like any other file in the repository.
+        G306: "0644"
 
     forbidigo:
       # Match resolved types rather than source text, so `import stdtime "time"` cannot smuggle
@@ -97,8 +105,8 @@ linters:
 
         - pattern: ^os\.Exit$
           msg: >-
-            Only cmd/messq may exit. Return an error; the Run pattern maps it to the documented
-            exit-code contract.
+            Only a command entry point may exit. Return an error; the Run pattern maps it to
+            the documented exit-code contract.
 
         - pattern: ^fmt\.(Print|Printf|Println)$
           msg: >-
@@ -128,22 +136,32 @@ linters:
         linters:
           - forbidigo
 
-      # main() is the process boundary: it is where an exit code becomes an exit.
-      - path: cmd/messq/
-        text: Only cmd/messq may exit
+      # main() is the process boundary: it is where an exit code becomes an exit. cmd/messq is
+      # the shipped binary; internal/tools holds the gate commands, which have exit-code
+      # contracts of their own.
+      - path: (cmd/messq|internal/tools)/
+        text: Only a command entry point may exit
         linters:
           - forbidigo
 
-      # internal/cli writes usage text and narration to the process's own stdout and stderr.
+      # These packages write usage text and narration to the process's own stdout and stderr.
       # A failed write there cannot be reported (the reporting channel is the thing that
       # failed), so the error is genuinely dead. Everywhere else, including every write to a
       # socket, a file or an http.ResponseWriter, errcheck stays strict: the std-error-handling
       # preset was rejected because it also silences unchecked Close and Flush, which are the
       # two errors a durable queue must never drop.
-      - path: internal/cli/
+      - path: (internal/cli|internal/tools)/
         text: Error return value of .fmt\.Fprint(f|ln)?. is not checked
         linters:
           - errcheck
+
+      # The gate commands take every path they read and write from a flag: a caller-controlled
+      # path is their interface, not an attack. G703 stays live for the daemon, where a path
+      # that reaches the filesystem from a request would be a real finding.
+      - path: internal/tools/
+        text: 'G703'
+        linters:
+          - gosec
 
       # Test files construct throwaway inputs and carry contexts in table rows.
       - path: _test\.go

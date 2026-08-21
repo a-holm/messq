@@ -1,0 +1,15 @@
+# Per-package statement-coverage floors, enforced by `make cover`. Reviewed like code.
+#
+# Floors ratchet upward only. `make cover-ratchet` raises a floor once measured coverage clears
+# it by a whole point; nothing lowers one. A pull request that lowers a floor fails
+# `make cover-ratchet-check` unless its head commit message carries a
+# `coverage-floor-lowered: <reason>` line.
+#
+# A floored package that exists but declares no functions yet reports PENDING and passes. Once
+# it has code, a missing profile entry is a failure: deleting a package's tests must not
+# silently satisfy its floor. PLAN.md section 11 wants no vanity global number, so a package
+# earns a line here when its semantics are worth a number.
+#
+# package                          floor%  note
+internal/queue                     90.0    PLAN.md section 11: the pure state machine
+internal/store                     85.0    PLAN.md section 11: durability and recovery
