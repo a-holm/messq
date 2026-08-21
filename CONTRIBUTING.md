@@ -21,7 +21,7 @@ Every `.go` file carries `// SPDX-License-Identifier: Apache-2.0` as its first l
 ```console
 $ git clone https://github.com/a-holm/messq.git
 $ cd messq
-$ make hooks     # route git at .githooks: pre-commit formats and vets, pre-push runs make ci
+$ make hooks     # route git at .githooks: pre-commit checks staged formatting and vets, pre-push runs make ci
 $ make ci
 ```
 
@@ -40,8 +40,21 @@ $ make ci
 | `make layers` | No package imports across a forbidden layer boundary. |
 | `make test` | The test suite passes. |
 | `make build-all` | Static `linux/amd64` and `linux/arm64` binaries build. |
+| `make static-check` | Both binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
 
-`make lint` and `make fmt` fetch their pinned tool through `go run` on first use, so the first run needs network access. The tool never enters `go.mod`.
+`make fmt`, `make fmt-check` and `make lint` fetch their pinned tool through `go run` on first use, so the first run of any of them, and therefore the first `make ci`, needs network access. The tool never enters `go.mod`. After that fetch, `make ci` works offline.
+
+## What the hooks do and do not catch
+
+`make hooks` installs two hooks. Both are bypassable with `--no-verify`; GitHub Actions is the backstop that is not.
+
+`pre-commit` checks formatting against the **staged** content, because that is what a commit records. It mirrors the staged blobs into a temporary directory and checks those, so tidying a worktree copy without re-staging it cannot sneak an unformatted blob into history.
+
+`pre-commit` runs `go vet` against the **worktree**, because vet needs a compilable package rather than the staged subset of files. A commit whose staged content vets differently from your worktree is therefore not caught at commit time; `pre-push` and CI catch it.
+
+`pre-push` runs `make ci` against the tip of what you are pushing, not against each commit in the range, so intermediate commits are not gated individually. Pull requests are squash-merged and CI runs on the result, so the commit that reaches `main` is always gated.
+
+The reasoning is in [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-first-gating.md).
 
 ## Rules that get patches merged
 

@@ -39,12 +39,14 @@ $ git clone https://github.com/a-holm/messq.git
 $ cd messq
 $ make build
 $ ./dist/messq version
-messq v0.1.0 (a1b2c3d4e5f6, 2026-08-24T09:00:00Z, go1.26.5, linux/amd64)
+messq <version> (<commit>, <build date>, <go version>, linux/amd64)
 ```
 
-`make build` writes a static, `CGO_ENABLED=0`, `-trimpath` binary to `dist/messq`. `make build-all` cross-compiles `linux/amd64` and `linux/arm64` into the same directory, and `scripts/assert-static.sh dist/messq-linux-amd64` verifies a binary is static. `messq version --output json` is the machine-readable form of the version line.
+The placeholders are filled in from the checkout. `<version>` is `git describe --tags --always`: a tag once the repository has one, a short commit until then. `<commit>` is 12 hex characters and `<build date>` is the commit timestamp as RFC3339 UTC. Building from a modified worktree appends `+dirty` to the commit.
 
-Builds are reproducible: `make repro` builds the same clean commit twice, with a cold compiler cache in between, and compares the checksums.
+`make build` writes a static, `CGO_ENABLED=0`, `-trimpath` binary to `dist/messq`. `make build-all` cross-compiles `linux/amd64` and `linux/arm64` into the same directory, and `make static-check` verifies both are static. `messq version --output json` is the machine-readable form of the version line.
+
+Builds are reproducible: `make repro` builds the same clean commit twice with cold, isolated compiler caches and compares the checksums.
 
 ## Development
 
@@ -54,7 +56,7 @@ $ make ci        # the whole gate, the same target GitHub Actions runs
 $ make help      # every target
 ```
 
-`make hooks` activates a `pre-commit` hook that runs formatting and vet, and a `pre-push` hook that runs `make ci`. Gates run locally first and GitHub Actions is the backstop; see [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-first-gating.md). Contributor rules, including the DCO sign-off and the absence of a CLA, are in [CONTRIBUTING.md](CONTRIBUTING.md).
+`make hooks` activates a `pre-commit` hook that checks the formatting of staged content and vets the worktree, and a `pre-push` hook that runs `make ci`. Hooks are the fast local gate and are bypassable; GitHub Actions runs the same `make ci` as the backstop. What each hook does and does not catch is in [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-first-gating.md). Contributor rules, including the DCO sign-off and the absence of a CLA, are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 

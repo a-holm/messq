@@ -10,14 +10,22 @@
 
 ## Decision
 
-Quality gates run locally first. Git hooks under `.githooks` enforce them, and `make hooks` activates them with `git config core.hooksPath .githooks`.
+Quality gates run locally first. Git hooks under `.githooks` run them, and `make hooks` activates them with `git config core.hooksPath .githooks`.
 
-- `pre-commit` runs `make fmt-check vet`. It is the fast gate: it must stay in the seconds range so it never tempts anyone into `--no-verify`.
-- `pre-push` runs `make ci`. Nothing reaches GitHub Actions without passing the same target the pipeline runs.
+- `pre-commit` checks formatting and runs `go vet`. It is the fast gate: it stays in the seconds range so it never tempts anyone into `--no-verify`.
+- `pre-push` runs `make ci`, the same target the pipeline runs.
 
-GitHub Actions is the backstop, not the primary gate. It exists to catch what a contributor's machine cannot show: a clean checkout, a cold cache, a foreign architecture, and a run nobody can skip.
+Hooks are the default local gate, not a barrier. `git commit --no-verify` and `git push --no-verify` bypass them, and a contributor can edit them or simply never run `make hooks`. GitHub Actions is the backstop that cannot be skipped: it runs `make ci` on a clean checkout with a cold cache, on every pull request and on every push to `main`. The hooks make the common case fast; Actions makes the guarantee real.
 
-The hooks call `make` targets rather than repeating commands. There is exactly one definition of each gate, so a hook can never drift from the pipeline.
+The hooks call `make` targets rather than repeating commands, so each gate has exactly one definition and a hook cannot drift from the pipeline.
+
+## What the hooks check, precisely
+
+`pre-commit` checks **formatting against staged content**. A commit records the index, so checking the worktree gates a different artifact than the one being committed: stage an unformatted file, tidy the worktree copy without re-staging, and a worktree check passes while the unformatted blob lands in history. The hook mirrors the staged blobs into a temporary directory with `git show :<path>`, copies the staged `go.mod` alongside them so gofumpt resolves the same language version and module path it would in the real tree, and checks that mirror.
+
+`pre-commit` runs **`go vet` against the worktree**, not the index. `go vet` needs a compilable package and its dependencies, not the staged subset of files; reconstructing the whole module on every commit costs a build and would push the hook out of the seconds range. The asymmetry is real and accepted: a commit whose staged content vets differently from the worktree is not caught until `pre-push` or Actions.
+
+`pre-push` runs `make ci` **against the worktree at the tip only**. Intermediate commits in a pushed range are never gated individually. This is acceptable because pull requests are squash-merged and Actions runs `make ci` on the result, so the commit that lands on `main` is always gated. It stops being acceptable the day the project merges without squashing.
 
 ## Formatter
 
@@ -32,10 +40,21 @@ gofumpt is pinned and invoked through `go run mvdan.cc/gofumpt@<version>`. It ne
 | No hooks, CI is the only gate | Moves a two-second answer onto a runner and into a review cycle. |
 | lefthook or pre-commit framework | Adds an installed dependency and a second configuration language for two shell scripts. |
 | `pre-commit` runs the full `make ci` | Cross-compiling two architectures on every commit is slow enough that people bypass the hook. |
-| Plain `gofmt` in `make ci`, gofumpt only locally | Two formatters that disagree by design; the weaker one in the gate that matters. |
+| `pre-commit` checks the worktree | Gates content that is not what gets committed. That was the first implementation, and it had exactly that hole. |
+| Plain `gofmt` in `make ci`, gofumpt only locally | Two formatters that disagree by design, with the weaker one in the gate that matters. |
+
+## Network
+
+`make fmt-check`, and therefore `make ci` and both hooks, fetch the pinned gofumpt through the module cache on first use. That first run needs network access.
+
+Afterwards `make ci` runs offline, but only because the Makefile sets `GONOPROXY` for the tool module paths. `go run <tool>@<version>` performs a deprecation lookup against the module proxy on *every* invocation, not only the first, so a warm module cache alone is not enough: without `GONOPROXY`, a `GOPROXY=off` run fails with `loading deprecation for mvdan.cc/gofumpt: module lookup disabled by GOPROXY=off`.
+
+`GONOPROXY` is the narrow knob for this. `GOPRIVATE` also fixes the lookup, but it sets `GONOSUMDB` as well and would silently drop checksum-database verification when the tool is fetched.
+
+`make lint` gets the same treatment for its own module path. It is not part of `make ci`.
 
 ## Consequences
 
-`make hooks` is a required setup step after cloning, documented in the README and in CONTRIBUTING.md. Hooks are advisory: `git commit --no-verify` bypasses them, which is why `pre-push` repeats the whole gate and GitHub Actions repeats it again.
+`make hooks` is a required setup step after cloning, documented in the README and in CONTRIBUTING.md. Nothing enforces that a contributor ran it, which is precisely why the backstop exists.
 
-`make fmt-check` fetches gofumpt through the module cache on first use, so the first `make ci` after a clone needs network access. Afterwards it is offline.
+The `pre-commit` mirror costs one `git show` per staged Go file, which is negligible next to the gofumpt invocation itself.
