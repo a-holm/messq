@@ -53,13 +53,18 @@ type Option func(*Gen)
 // WithEntropy replaces crypto/rand as the entropy source. A deterministic reader is what makes
 // a golden test produce the same id every run.
 //
-// r must actually yield varying bytes. oklog/ulid draws its monotonic increment by rejection
-// sampling, so a reader whose stream is a constant makes it retry forever and [Gen.New] never
-// returns: a reader of nothing but 0xFF is the reproducer, because the four bytes it hands over
-// always decode to exactly the increment bound. Neither maxMintAttempts nor anything else in
-// this package can interrupt that, since the spin is inside the read. crypto/rand and any
-// math/rand stream satisfy the constraint; a fixed test vector must vary across its length.
-// A reader that returns an error is fine and is handled: see [Gen.New].
+// r must not be a stream of nothing but 0xFF. oklog/ulid draws its monotonic increment by
+// rejection sampling, and four 0xFF bytes decode to exactly the increment bound, which the
+// sampler rejects every time: it retries forever and [Gen.New] never returns. Neither
+// maxMintAttempts nor anything else in this package can interrupt that, because the spin is
+// inside the read.
+//
+// That one byte is the whole constraint. Every other constant stream mints: 0x01 through 0xFE
+// decode below the bound, and 0x00 never reaches the sampler at all, because zero entropy makes
+// the monotonic reader redraw instead of increment. TestDegenerateEntropyStillMintsUniqueIDs
+// below runs on a zero reader for exactly that reason. crypto/rand is fine, and so is any fixed
+// test vector that is not that byte. A reader that returns an error is fine too and is handled:
+// see [Gen.New].
 func WithEntropy(r io.Reader) Option {
 	return func(g *Gen) { g.entropy = r }
 }
