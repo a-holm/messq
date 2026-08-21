@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/debug"
+	"strings"
 )
 
 // Injected at link time with -ldflags -X. Empty in `go install`, `go run` and `go test`
@@ -60,7 +61,9 @@ func Get() Info {
 
 	if bi, ok := readBuildInfo(); ok && bi != nil {
 		if info.Version == "" {
-			info.Version = bi.Main.Version
+			// A VCS-stamped build of a modified worktree carries "+dirty" in Main.Version.
+			// Dirty is the only field that reports it, so strip it here too.
+			info.Version = strings.TrimSuffix(bi.Main.Version, "+dirty")
 		}
 		for _, s := range bi.Settings {
 			switch s.Key {

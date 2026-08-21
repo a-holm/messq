@@ -174,6 +174,62 @@ func TestGet_Dirty(t *testing.T) {
 	}
 }
 
+// TestGet_DirtyOnTheFallbackPath covers the case TestGet_Dirty cannot reach: with no ldflags at
+// all, Version comes from Main.Version, and a VCS-stamped build of a modified worktree carries
+// "+dirty" in that string. Without stripping it, Short renders the marker twice.
+func TestGet_DirtyOnTheFallbackPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		mainVersion string
+		vcsModified string
+		wantVersion string
+		wantDirty   bool
+	}{
+		{
+			name:        "pseudo-version of a modified worktree",
+			mainVersion: "v0.0.0-20260821103220-30ba03700713+dirty",
+			vcsModified: "true",
+			wantVersion: "v0.0.0-20260821103220-30ba03700713",
+			wantDirty:   true,
+		},
+		{
+			name:        "pseudo-version of a clean worktree",
+			mainVersion: "v0.0.0-20260821103220-30ba03700713",
+			vcsModified: "false",
+			wantVersion: "v0.0.0-20260821103220-30ba03700713",
+			wantDirty:   false,
+		},
+		{
+			name:        "tagged build of a modified worktree",
+			mainVersion: "v1.4.2+dirty",
+			vcsModified: "true",
+			wantVersion: "v1.4.2",
+			wantDirty:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setLdflags(t, "", "", "", "")
+			setBuildInfo(t, buildInfoWith(tt.mainVersion, map[string]string{
+				"vcs.modified": tt.vcsModified,
+				"vcs.revision": "eb180f1a61d1eb180f1a61d1eb180f1a61d1eb18",
+			}), true)
+
+			got := Get()
+			if got.Version != tt.wantVersion {
+				t.Errorf("Version = %q, want %q", got.Version, tt.wantVersion)
+			}
+			if got.Dirty != tt.wantDirty {
+				t.Errorf("Dirty = %v, want %v", got.Dirty, tt.wantDirty)
+			}
+			if n := strings.Count(Short(), "dirty"); n > 1 {
+				t.Errorf("Short() = %q reports dirtiness %d times, want at most once", Short(), n)
+			}
+		})
+	}
+}
+
 // TestInfoJSONKeys freezes the JSON field names of Info. PLAN.md section 8 makes CLI JSON
 // field names part of the compatibility contract, so a rename must break this test.
 func TestInfoJSONKeys(t *testing.T) {
