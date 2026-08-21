@@ -46,7 +46,7 @@ DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
         vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
-        spdx gates-selftest static-check repro hooks ci clean
+        spdx gates-selftest fuzz static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -157,6 +157,28 @@ vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matc
 # row runs a full lint or test of its own copy.
 gates-selftest: ## Prove every gate bites, by breaking each one on a scratch copy of the tree.
 	go test -tags gatecheck -count=1 -v -parallel 8 -timeout 20m ./test/gates/...
+
+# One target per invocation: `go test -fuzz` drives a single target at a time, so the lane is a
+# loop rather than a pattern. The committed seed corpus under each package's
+# testdata/fuzz/<Target>/ runs as ordinary test cases in `make test`; this target is the part
+# that generates new input, so it is a job of its own rather than a member of CI_TARGETS: four
+# minutes of fuzzing inside the ten-minute pull-request budget would crowd out everything else.
+#
+# No -race: these targets are pure functions with no goroutines, and the detector costs roughly
+# an order of magnitude of executions per second. The race detector's job is done by `make test`.
+FUZZTIME ?= 60s
+FUZZ_TARGETS := \
+	./internal/subject:FuzzMatch \
+	./internal/subject:FuzzParsePattern \
+	./internal/id:FuzzParseMsgID \
+	./internal/id:FuzzParseTraceparent
+
+fuzz: ## Fuzz every parser for FUZZTIME each. Nightly runs the same target for longer.
+	@for spec in $(FUZZ_TARGETS); do \
+		pkg="$${spec%%:*}"; target="$${spec##*:}"; \
+		echo "fuzz: $$target in $$pkg for $(FUZZTIME)"; \
+		go test -run '^$$' -fuzz "^$${target}$$" -fuzztime $(FUZZTIME) "$$pkg" || exit 1; \
+	done
 
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .
