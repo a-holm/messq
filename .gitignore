@@ -24,3 +24,7 @@ coverage.html
 # Go workspace files, always local
 go.work
 go.work.sum
+
+# rapid failfiles land here when a property fails. A genuine regression is committed by hand,
+# with the fix; the ones a deliberately broken build produced are noise.
+/internal/*/testdata/rapid/
