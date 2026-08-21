@@ -2,8 +2,9 @@
 #
 # golangci-lint v2 configuration. The binary is pinned in tools/golangci-lint.mod and invoked
 # through `go tool -modfile`, so `make lint` and CI run the same build. `make lint` runs
-# `golangci-lint config verify` first: a typo here is a schema error rather than half the
-# linter set silently switching itself off.
+# `golangci-lint config verify` first, which catches an unknown settings key or a value of the
+# wrong type. It does not catch a misspelt linter name: the schema lists the names for editor
+# completion but accepts any string, so `run` is what rejects one.
 version: "2"
 
 run:
@@ -121,9 +122,18 @@ linters:
     # Every rule below names the message fragment it suppresses rather than disabling the whole
     # linter for a path, so a second, unrelated finding in the same file still fails the build.
     rules:
-      # The Clock seam is the one place allowed to read the wall clock.
+      # internal/clock is the seam, so it is the one package allowed to read the wall clock.
       - path: internal/clock/
-        text: Clock seam|clock.Clock
+        text: Wall-clock access outside internal/clock
+        linters:
+          - forbidigo
+
+      # It is also the one package allowed to block on the wall clock, because a real Clock is
+      # where the sleep the rest of the tree may not call directly has to live. This is a second
+      # rule rather than a wider `text:` on the one above, so that widening one allowance can
+      # never widen the other by accident.
+      - path: internal/clock/
+        text: time.Sleep is banned
         linters:
           - forbidigo
 
