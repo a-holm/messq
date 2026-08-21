@@ -44,9 +44,9 @@ func (p *pkgCover) Pct() float64 {
 // `import/path/file.go:12.34,56.78 3 1` is file, start line.col, end line.col, statements, count.
 var profileLine = regexp.MustCompile(`^(.+):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$`)
 
-// parseProfile aggregates a coverage profile by package. The package of a block is the
-// directory part of its file name, with modulePath stripped so it matches the package paths
-// written in coverage.floors.
+// parseProfile aggregates a coverage profile by package. File names lose the module prefix as
+// they are read, so both the package keys and the uncovered ranges printed on a failure read
+// the way coverage.floors and an editor do.
 //
 // A block that appears more than once (profiles concatenated from several runs) keeps its
 // highest count, which is what `go tool cover` does: the statement was covered if any run
@@ -82,7 +82,7 @@ func parseProfile(r io.Reader, modulePath string) (map[string]*pkgCover, error) 
 		}
 		startLine, endLine, numStmt, count := int(nums[0]), int(nums[1]), int(nums[2]), nums[3]
 
-		b := block{File: m[1], StartLine: startLine, EndLine: endLine, NumStmt: numStmt}
+		b := block{File: relPkg(m[1], modulePath), StartLine: startLine, EndLine: endLine, NumStmt: numStmt}
 		if prev, seen := counts[b]; seen {
 			if count > prev {
 				counts[b] = count
@@ -98,7 +98,7 @@ func parseProfile(r io.Reader, modulePath string) (map[string]*pkgCover, error) 
 
 	out := map[string]*pkgCover{}
 	for _, b := range order {
-		pkg := relPkg(path.Dir(b.File), modulePath)
+		pkg := path.Dir(b.File)
 		p, ok := out[pkg]
 		if !ok {
 			p = &pkgCover{Pkg: pkg}

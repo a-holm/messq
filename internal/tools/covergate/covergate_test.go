@@ -110,6 +110,9 @@ func TestParseProfile_AggregatesByPackage(t *testing.T) {
 	if len(queue.Uncovered) != 1 || queue.Uncovered[0].StartLine != 14 || queue.Uncovered[0].EndLine != 20 {
 		t.Errorf("uncovered = %+v, want one block at 14-20", queue.Uncovered)
 	}
+	if got := queue.Uncovered[0].File; got != "internal/queue/apply.go" {
+		t.Errorf("uncovered file = %q, want the module prefix stripped", got)
+	}
 	if store := got["internal/store"]; store.Pct() != 0 {
 		t.Errorf("internal/store Pct() = %v, want 0", store.Pct())
 	}

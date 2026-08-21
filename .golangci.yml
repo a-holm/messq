@@ -12,6 +12,9 @@ run:
   build-tags:
     - gatecheck
   timeout: 5m
+  # The sabotage matrix runs one lint per scratch copy of the tree, in parallel. The default
+  # global file lock turns that into "parallel golangci-lint is running" instead of a result.
+  allow-parallel-runners: true
 
 linters:
   default: standard
@@ -184,3 +187,7 @@ issues:
   # work. No baseline and no only-new-issues: a clean baseline is achievable now, once.
   max-issues-per-linter: 0
   max-same-issues: 0
+  # Two linters can have something different to say about one line, and the default keeps only
+  # the first. A //nolint that silences one of them would otherwise hide the nolintlint
+  # complaint about itself.
+  uniq-by-line: false

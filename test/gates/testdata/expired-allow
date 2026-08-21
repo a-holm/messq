@@ -1,0 +1,5 @@
+# An entry whose expiry has passed must fail the build whether or not the vulnerability is
+# still reported.
+#
+# osv-id         expires      reason
+GO-2026-1234     2026-01-31   waiting on a fix upstream

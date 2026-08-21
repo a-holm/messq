@@ -46,7 +46,7 @@ DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
         vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
-        spdx static-check repro hooks ci clean
+        spdx gates-selftest static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -128,6 +128,12 @@ vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matc
 	$(VULNGATE) -check-expiry
 	$(GOVULNCHECK) -format sarif ./... | $(VULNGATE) -strict
 
+# One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
+# nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
+# row runs a full lint or test of its own copy.
+gates-selftest: ## Prove every gate bites, by breaking each one on a scratch copy of the tree.
+	go test -tags gatecheck -count=1 -v -parallel 6 -timeout 20m ./test/gates/...
+
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .
 
@@ -185,7 +191,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers spdx lint test cover cover-ratchet-check vuln build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers spdx lint test cover cover-ratchet-check vuln gates-selftest build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
