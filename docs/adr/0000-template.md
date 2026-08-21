@@ -2,7 +2,7 @@
 
 - Status: Proposed
 - Date: YYYY-MM-DD
-- Deciders: who agreed
+- Adjudicates: none
 - Relates to: PLAN.md section N, issue #N
 
 ## Context
@@ -15,10 +15,14 @@ The decision, in one or two sentences, in the present tense: "messq stores X as 
 
 ## Alternatives
 
-| Option | Why not |
-|---|---|
-| The obvious alternative | The reason it loses |
+| Option | Why it was serious | Why it lost |
+|---|---|---|
+| The obvious alternative | The case for it | The reason it loses |
 
 ## Consequences
 
 What becomes easy, what becomes hard, and what the project now has to keep doing. Include the cost, not only the benefit.
+
+## Revisit trigger
+
+The measurable event that reopens this decision, or "None." A trigger is a number and a test, not a feeling.

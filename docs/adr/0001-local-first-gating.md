@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-21
+- Adjudicates: none
 - Relates to: PLAN.md section 11, issue #1
 
 ## Context
@@ -62,3 +63,7 @@ Update a pin with `go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<ver
 `make hooks` is a required setup step after cloning, documented in the README and in CONTRIBUTING.md. Nothing enforces that a contributor ran it, which is precisely why the backstop exists.
 
 The `pre-commit` mirror costs one `git show` per staged Go file, which is negligible next to the gofumpt invocation itself.
+
+## Revisit trigger
+
+The project merging without squashing. `pre-push` gates the tip of a pushed range only, so intermediate commits would then land on `main` ungated and each commit would need its own gate.
