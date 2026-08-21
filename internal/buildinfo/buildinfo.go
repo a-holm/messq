@@ -11,11 +11,13 @@ import (
 )
 
 // Injected at link time with -ldflags -X. Empty in `go install`, `go run` and `go test`
-// builds, where Get falls back to runtime/debug.ReadBuildInfo.
+// builds, where Get falls back to runtime/debug.ReadBuildInfo. dirty is a string because
+// -ldflags -X only sets strings; "true" means the build came from a modified worktree.
 var (
 	version string
 	commit  string
 	date    string
+	dirty   string
 )
 
 // readBuildInfo is a seam so tests can exercise the branch where no build info is embedded.
@@ -26,13 +28,22 @@ const commitLen = 12
 
 // Info describes the binary. The JSON field names are part of the CLI compatibility contract
 // (PLAN.md section 8) and are frozen by TestInfoJSONKeys.
+//
+// Version takes whichever shape the build had information for, in descending order of
+// precision: a tag ("v0.3.1"), a tag plus distance ("v0.3.1-4-gabc1234"), a bare short commit
+// while the repository has no tag yet ("6516113"), a pseudo-version from a module download
+// ("v0.0.0-20260821091252-6c40cfb51281"), "(devel)" from an unstamped `go run` or `go test`
+// build, or "dev" when nothing at all was available. It is never empty.
+//
+// Dirty is reported here and only here. Version carries no dirty marker, so a modified
+// worktree shows up once rather than in two fields.
 type Info struct {
 	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	Date      string `json:"date"`
-	Dirty     bool   `json:"dirty"`
-	GoVersion string `json:"go_version"`
-	Platform  string `json:"platform"`
+	Commit    string `json:"commit"`     // 12 hex characters, or "" when unavailable
+	Date      string `json:"date"`       // RFC3339 UTC, or "" when unavailable
+	Dirty     bool   `json:"dirty"`      // built from a modified worktree
+	GoVersion string `json:"go_version"` // runtime.Version()
+	Platform  string `json:"platform"`   // "linux/amd64"
 }
 
 // Get reports the build information of the running binary. It never panics and never returns
@@ -42,6 +53,7 @@ func Get() Info {
 		Version:   version,
 		Commit:    commit,
 		Date:      date,
+		Dirty:     dirty == "true",
 		GoVersion: runtime.Version(),
 		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
 	}
@@ -61,7 +73,9 @@ func Get() Info {
 					info.Date = s.Value
 				}
 			case "vcs.modified":
-				info.Dirty = s.Value == "true"
+				if dirty == "" {
+					info.Dirty = s.Value == "true"
+				}
 			}
 		}
 	}

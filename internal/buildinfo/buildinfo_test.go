@@ -12,11 +12,11 @@ import (
 )
 
 // setLdflags installs ldflag-injected values for one test and restores them afterwards.
-func setLdflags(t *testing.T, v, c, d string) {
+func setLdflags(t *testing.T, v, c, d, dy string) {
 	t.Helper()
-	oldV, oldC, oldD := version, commit, date
-	t.Cleanup(func() { version, commit, date = oldV, oldC, oldD })
-	version, commit, date = v, c, d
+	oldV, oldC, oldD, oldDy := version, commit, date, dirty
+	t.Cleanup(func() { version, commit, date, dirty = oldV, oldC, oldD, oldDy })
+	version, commit, date, dirty = v, c, d, dy
 }
 
 // setBuildInfo replaces the debug.ReadBuildInfo seam for one test.
@@ -41,7 +41,7 @@ func TestGet_LdflagsWin(t *testing.T) {
 		"vcs.revision": "ffffffffffffffffffffffffffffffffffffffff",
 		"vcs.time":     "1999-01-01T00:00:00Z",
 	}), true)
-	setLdflags(t, "v0.1.0", "a1b2c3d4e5f6", "2026-08-24T09:00:00Z")
+	setLdflags(t, "v0.1.0", "a1b2c3d4e5f6", "2026-08-24T09:00:00Z", "false")
 
 	got := Get()
 	if got.Version != "v0.1.0" {
@@ -63,11 +63,10 @@ func TestGet_LdflagsWin(t *testing.T) {
 
 func TestGet_BuildInfoFallback(t *testing.T) {
 	tests := []struct {
-		name      string
-		bi        *debug.BuildInfo
-		ok        bool
-		want      Info
-		wantDirty bool
+		name string
+		bi   *debug.BuildInfo
+		ok   bool
+		want Info
 	}{
 		{
 			name: "vcs settings populate commit date and dirty",
@@ -106,7 +105,7 @@ func TestGet_BuildInfoFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setLdflags(t, "", "", "")
+			setLdflags(t, "", "", "", "")
 			setBuildInfo(t, tt.bi, tt.ok)
 
 			got := Get()
@@ -131,10 +130,47 @@ func TestGet_BuildInfoFallback(t *testing.T) {
 
 func TestGet_CommitIsTruncatedToTwelve(t *testing.T) {
 	setBuildInfo(t, nil, false)
-	setLdflags(t, "v0.1.0", "0123456789abcdef0123456789abcdef01234567", "")
+	setLdflags(t, "v0.1.0", "0123456789abcdef0123456789abcdef01234567", "", "")
 
 	if got := Get().Commit; got != "0123456789ab" {
 		t.Errorf("Commit = %q, want %q", got, "0123456789ab")
+	}
+}
+
+// TestGet_Dirty pins the single-source rule: the build system reports a modified worktree
+// through the dirty ldflag, never by decorating Version, and the vcs.modified setting is only
+// consulted when no ldflag was injected.
+func TestGet_Dirty(t *testing.T) {
+	tests := []struct {
+		name        string
+		dirtyLdflag string
+		vcsModified string
+		want        bool
+	}{
+		{name: "ldflag true wins over an unmodified vcs record", dirtyLdflag: "true", vcsModified: "false", want: true},
+		{name: "ldflag false wins over a modified vcs record", dirtyLdflag: "false", vcsModified: "true", want: false},
+		{name: "no ldflag falls back to the vcs record", dirtyLdflag: "", vcsModified: "true", want: true},
+		{name: "no ldflag and a clean vcs record", dirtyLdflag: "", vcsModified: "false", want: false},
+		{name: "nothing recorded at all", dirtyLdflag: "", vcsModified: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings := map[string]string{}
+			if tt.vcsModified != "" {
+				settings["vcs.modified"] = tt.vcsModified
+			}
+			setBuildInfo(t, buildInfoWith("v0.1.0", settings), true)
+			setLdflags(t, "v0.1.0", "", "", tt.dirtyLdflag)
+
+			got := Get()
+			if got.Dirty != tt.want {
+				t.Errorf("Dirty = %v, want %v", got.Dirty, tt.want)
+			}
+			if strings.Contains(got.Version, "dirty") {
+				t.Errorf("Version = %q, want no dirty marker: Dirty is the only place that reports it", got.Version)
+			}
+		})
 	}
 }
 
@@ -164,11 +200,11 @@ func TestInfoJSONKeys(t *testing.T) {
 
 func TestShort(t *testing.T) {
 	tests := []struct {
-		name                  string
-		version, commit, date string
-		bi                    *debug.BuildInfo
-		ok                    bool
-		want                  string
+		name                         string
+		version, commit, date, dirty string
+		bi                           *debug.BuildInfo
+		ok                           bool
+		want                         string
 	}{
 		{
 			name:    "fully injected",
@@ -194,7 +230,7 @@ func TestShort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setLdflags(t, tt.version, tt.commit, tt.date)
+			setLdflags(t, tt.version, tt.commit, tt.date, tt.dirty)
 			setBuildInfo(t, tt.bi, tt.ok)
 
 			if got := Short(); got != tt.want {
@@ -207,7 +243,7 @@ func TestShort(t *testing.T) {
 // TestGet_RealBuildInfo exercises the production seam: a `go test` binary must still yield a
 // usable Info without any ldflags.
 func TestGet_RealBuildInfo(t *testing.T) {
-	setLdflags(t, "", "", "")
+	setLdflags(t, "", "", "", "")
 
 	got := Get()
 	if got.Version == "" {
