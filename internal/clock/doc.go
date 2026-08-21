@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package clock is the only place in messq that reads the operating-system clock.
+// Package clock is where messq reads the operating-system clock.
 //
 // Everything that observes time takes a [Clock]; everything that decides takes now as a
 // parameter, which is what keeps internal/queue a pure function (PLAN.md section 3.3). The
 // forbidigo rule configured in .golangci.yml bans time.Now, time.Since, time.Until,
 // time.NewTimer, time.NewTicker, time.After, time.Tick, time.AfterFunc and time.Sleep
-// everywhere else in the tree; system.go is the single file that calls them.
+// everywhere else in the tree.
+//
+// Inside this package the allowance is narrower still: system.go is the one file that calls
+// them. The repository holds exactly one other caller, internal/tools/vulngate/main.go, which
+// is a build-gate command rather than the daemon and whose -now flag is that command's own
+// seam. TestWallClockCallsAreConfinedToTheSeam walks the whole tree and enforces both halves
+// of that sentence: a third caller fails, and so does an allowance that stopped being needed.
 //
 // # Wall clock or monotonic
 //
