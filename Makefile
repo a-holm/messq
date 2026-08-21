@@ -46,7 +46,7 @@ DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
         vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
-        static-check repro hooks ci clean
+        spdx static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -155,6 +155,9 @@ dep-budget: ## Fail when a direct dependency is outside the PLAN.md section 13 a
 layers: ## Fail when a package imports across a forbidden layer boundary.
 	scripts/layers.sh
 
+spdx: ## Fail when a source file is missing its SPDX licence header.
+	scripts/spdx.sh
+
 # Ordered, not just listed: under `make -j` an unordered prerequisite would run the assertion
 # before build-all has produced the binaries.
 static-check: build-all ## Assert the cross-compiled binaries are static, trimmed and cgo-free.
@@ -182,7 +185,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers lint test cover cover-ratchet-check vuln build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers spdx lint test cover cover-ratchet-check vuln build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
