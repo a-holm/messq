@@ -64,4 +64,4 @@ Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Status
 
-Planning. See `docs/PLAN.md` and the issue tracker.
+Planning. The normative delivery specification is [docs/SEMANTICS.md](docs/SEMANTICS.md), and the decisions behind it are recorded in [docs/adr/](docs/adr/README.md). See `docs/PLAN.md` and the issue tracker for the rest.
