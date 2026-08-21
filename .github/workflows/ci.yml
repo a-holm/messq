@@ -39,10 +39,45 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: false
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
       - run: make ci
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: messq-binaries
           path: dist/messq-linux-*
           if-no-files-found: error
+
+  # A job of its own rather than a step in `make ci`. Four fuzz targets at sixty seconds each is
+  # four minutes, which does not fit inside the ten-minute budget the ci job is held to; running
+  # them on a second runner keeps both under their limits. Fuzzing is a generator, not a gate on
+  # the diff: the committed seed corpus is what `make ci` replays, and this job is what grows it.
+  #
+  # DECISION (#3): this job is deliberately NOT in branch protection's required checks, and stays
+  # out until #33 hardens the fuzz lane. `go test -fuzz` reports a bare `context deadline
+  # exceeded` when its coordinator cannot collect a worker inside the shutdown deadline, which
+  # reproduces under CPU contention and is indistinguishable by exit code from a real crasher. A
+  # required check that goes red without a reproduction artifact blocks merges on runner load,
+  # and a lane people learn to re-run on red is not a gate. The blocking regression net is
+  # already the committed seed corpus, which `make test` and `make cover` replay inside the
+  # required `ci` job on every push. Revisit when #33 lands: fold this into the required set once
+  # the flake is either fixed or narrowly distinguished from a genuine failure.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.sum
+      - run: make fuzz
+      # A crasher is written into the package's testdata/fuzz directory, which is exactly the
+      # reproduction artifact CONTRIBUTING.md asks every fix to carry. Keeping it as an artifact
+      # is what makes it recoverable after the runner is gone.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-crashers
+          path: internal/*/testdata/fuzz/**
+          if-no-files-found: ignore

@@ -262,14 +262,18 @@ func matrix() []gate {
 			makeArgs: []string{"VULNSCAN=cat sabotage.sarif"},
 			prepare:  install("unknown-level.sarif", "sabotage.sarif"),
 		},
+		{
+			id: "G33", name: "a leaf package importing up", target: "layers",
+			want:    "internal/subject or its tests depends on",
+			prepare: install("leaf_test.go", "internal/subject/sabotage_leaf_test.go"),
+		},
 		// A green row: the seam has to be usable, or the ban on wall-clock access is a ban on
-		// having a clock at all. internal/clock does not exist yet, so this is the only thing
-		// that keeps its two exclusions honest until #3 lands.
+		// having a clock at all. It is what keeps the two internal/clock exclusions honest.
 		{
 			id: "B3", name: "the clock seam may read and block on the clock", target: "lint",
 			want:    "0 issues",
 			wantOK:  true,
-			prepare: install("clock.go", "internal/clock/clock.go"),
+			prepare: install("clock.go", "internal/clock/sabotage_seam.go"),
 		},
 	}
 }

@@ -36,7 +36,7 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: false
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
       # The scan is kept as an artifact rather than only as job output: run logs expire, and the
       # question a nightly failure raises is what changed since the night before.
       - name: Scan and keep the report
@@ -62,7 +62,7 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: false
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
       - name: Hunt and keep the log
         run: |
           set -o pipefail

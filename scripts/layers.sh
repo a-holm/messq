@@ -124,6 +124,31 @@ forbid_deps test internal/model \
 	"Issue #1 design: internal/model is an independent oracle and must not share code with what it checks." \
 	"$module/internal/queue" "$module/internal/store"
 
+# The four primitives of issue #3 sit below everything else. They are checked transitively
+# rather than by direct import: a leaf that reaches the store through one hop is still not a
+# leaf. internal/errs is the bottom of the tree and internal/clock is the seam, so those two
+# are the only internal packages the others may reach.
+leaf_reason="Issue #3 design: this package is a leaf below internal/queue. Only internal/clock and internal/errs may be reached from it."
+leaf_allowed="$module/internal/clock
+$module/internal/errs"
+
+check_leaf() {
+	local pkg="$1" dep self="$module/$1"
+	while read -r dep; do
+		if [[ -z "$dep" || "$dep" == "$self" || "$dep" == "${self}_test" || "$dep" == "${self}.test" ]]; then
+			continue
+		fi
+		if ! grep -Fxq -- "$dep" <<<"$leaf_allowed"; then
+			echo "layers: $pkg or its tests depends on $dep, directly or transitively. $leaf_reason" >&2
+			status=1
+		fi
+	done < <(deps_of test "$pkg" | grep "^$module/internal/" || true)
+}
+
+for leaf in internal/subject internal/id internal/clock internal/errs; do
+	check_leaf "$leaf"
+done
+
 client_reason="Issue #1 design: pkg/client is public and must not depend on internal packages."
 # Two steps, for the reason dep-budget.sh gives: grep exits 1 when nothing leaked, which is the
 # expected state, so its status must be tolerated. Tolerating deps_of's status in the same

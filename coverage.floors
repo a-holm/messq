@@ -13,3 +13,7 @@
 # package                          floor%  note
 internal/queue                     90.0    PLAN.md section 11: the pure state machine
 internal/store                     85.0    PLAN.md section 11: durability and recovery
+internal/subject                   95.0    issue #3: a matcher bug misroutes silently
+internal/id                        95.0    issue #3: ids are the spine of messq trace
+internal/errs                      95.0    issue #3: the closed sentinel set
+internal/clock                     90.0    issue #3: the seam every timing test runs through

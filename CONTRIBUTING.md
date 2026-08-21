@@ -115,11 +115,17 @@ Table-driven tests, `t.TempDir()` for anything on disk, and no assertion DSL: pl
 The architectural bans are lint-enforced by `forbidigo` in `.golangci.yml`, and each message names the alternative:
 
 - `time.Sleep` anywhere. Use a `testing/synctest` bubble or the `Clock` seam. `internal/clock` and `test/soak` are the only exemptions: the seam is where the sleep the rest of the tree may not call directly has to live.
-- `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function.
+- `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function. Inside the seam the allowance is narrower still: `internal/clock/system.go` is the one file that calls them, and the repository's only other caller is `internal/tools/vulngate/main.go`, a build-gate command whose `-now` flag is its own seam. `TestWallClockCallsAreConfinedToTheSeam` walks the whole tree and fails on a third caller, on one hiding behind an aliased `import stdtime "time"`, and on an allowance that stopped being needed.
 - `prometheus.MustRegister`, the default registerer and package-level `promauto` outside `internal/obs`. messq registers against a custom registry only.
 - `os.Exit` outside a command entry point, and `fmt.Print*` anywhere. Data goes to the injected stdout writer, narration to stderr.
 
 A `//nolint` must name the linter it silences and say why: `//nolint:gosec // G304: the path is an operator flag.` An unused one fails the build.
+
+Durable deadlines (`deliveries.visible_at`, `messages.published_at`, `events.ts`) are wall-clock Unix milliseconds, because they have to survive a restart and be readable in SQL: read them with `Clock.Now`. In-process waits are monotonic: read them with `Clock.Since`. A forward wall-clock jump therefore makes in-flight deliveries look overdue and the sweeper redelivers them, which is correct at-least-once behaviour; a backwards jump delays expiry and never resurrects a resolved delivery.
+
+Every parser gets a fuzz target and a committed seed corpus under `<package>/testdata/fuzz/<Target>/`. `make fuzz` runs each target for `FUZZTIME` (60 s by default) and the `fuzz` job in CI runs the same target list; a crasher it finds is written into that directory and is the reproduction artifact the fix ships with.
+
+Property tests use `pgregory.net/rapid`, which drops a failfile under `<package>/testdata/rapid/` whenever a property fails. Those paths are deliberately not in `.gitignore`: a failfile from a genuine failure is the reproduction artifact its fix ships with, and needing `git add -f` to commit one would point the friction the wrong way. A failfile you produced by breaking the code on purpose is deleted, not committed — `git status` showing it is the reminder to decide which kind you have.
 
 ## Commits and pull requests
 

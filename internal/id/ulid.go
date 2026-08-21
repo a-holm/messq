@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package id
+
+import (
+	crand "crypto/rand"
+	"fmt"
+	"io"
+	"sync"
+	"time"
+
+	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/errs"
+	"github.com/oklog/ulid/v2"
+)
+
+// ErrBadMsgID is every way a message id can fail to parse.
+var ErrBadMsgID = errs.E(errs.ErrBadRequest, "", "a message id is 26 Crockford base32 characters")
+
+// MsgID is a 128-bit ULID, rendered as 26 Crockford base32 characters.
+type MsgID = ulid.ULID
+
+// maxMintAttempts bounds [Gen.New]'s own retry loop. One overflow per millisecond is the
+// realistic worst case; more than a handful means the entropy source is failing, and the loop
+// must end rather than spin. It bounds nothing inside the entropy source itself: see
+// [WithEntropy] for the constraint that carries.
+const maxMintAttempts = 8
+
+// Gen mints message ids. It is safe for concurrent use: its own mutex is the serialization
+// point, which is why the entropy source is not additionally wrapped in
+// ulid.LockedMonotonicReader. One lock, not two.
+type Gen struct {
+	clk       clock.Clock
+	entropy   io.Reader
+	onRegress func(back time.Duration)
+
+	mu sync.Mutex
+	// ms is the last millisecond handed out. It never decreases, and the mint loop may
+	// push it past the wall clock when the entropy inside one millisecond runs out.
+	ms uint64
+	// seen is the highest wall-clock millisecond observed, and at is the reading it came
+	// from. They are kept apart from ms so that the generator stepping ahead of the clock
+	// on its own is never mistaken for the clock stepping backwards.
+	seen uint64
+	at   time.Time
+	ent  *ulid.MonotonicEntropy
+	last MsgID
+}
+
+// Option configures a [Gen].
+type Option func(*Gen)
+
+// WithEntropy replaces crypto/rand as the entropy source. A deterministic reader is what makes
+// a golden test produce the same id every run.
+//
+// r must not be a stream of nothing but 0xFF. oklog/ulid draws its monotonic increment by
+// rejection sampling, and four 0xFF bytes decode to exactly the increment bound, which the
+// sampler rejects every time: it retries forever and [Gen.New] never returns. Neither
+// maxMintAttempts nor anything else in this package can interrupt that, because the spin is
+// inside the read.
+//
+// That one byte is the whole constraint. Every other constant stream mints: 0x01 through 0xFE
+// decode below the bound, and 0x00 never reaches the sampler at all, because zero entropy makes
+// the monotonic reader redraw instead of increment. TestDegenerateEntropyStillMintsUniqueIDs
+// below runs on a zero reader for exactly that reason. crypto/rand is fine, and so is any fixed
+// test vector that is not that byte. A reader that returns an error is fine too and is handled:
+// see [Gen.New].
+func WithEntropy(r io.Reader) Option {
+	return func(g *Gen) { g.entropy = r }
+}
+
+// WithClockRegressionHook registers a callback for a backwards wall-clock step, called with
+// how far back the clock went. The event pipeline and the metrics registry subscribe to it.
+// It runs under the generator's lock, so it must be cheap and must not block.
+func WithClockRegressionHook(f func(back time.Duration)) Option {
+	return func(g *Gen) { g.onRegress = f }
+}
+
+// NewGen returns a generator reading time through clk.
+func NewGen(clk clock.Clock, opts ...Option) *Gen {
+	g := &Gen{clk: clk, entropy: crand.Reader}
+	for _, opt := range opts {
+		opt(g)
+	}
+	// Increment 0 means a random step bounded by math.MaxUint32, which is what makes the
+	// ids unguessable as well as monotonic.
+	g.ent = ulid.Monotonic(g.entropy, 0)
+	return g
+}
+
+// New mints the next id. It never fails; see the package documentation for the two policies
+// that make that true.
+func (g *Gen) New() MsgID {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	now := g.clk.Now()
+	nowMS := ulid.Timestamp(now)
+	if nowMS < g.seen && g.onRegress != nil {
+		// The wall clock moved backwards, an NTP step or an operator with a date command.
+		// Report it once per step; the millisecond handed out below never follows it down.
+		g.onRegress(g.at.Sub(now))
+	}
+	if nowMS != g.seen {
+		g.seen, g.at = nowMS, now
+	}
+	if nowMS > g.ms {
+		g.ms = nowMS
+	}
+
+	for range maxMintAttempts {
+		u, err := ulid.New(g.ms, g.ent)
+		if err == nil && u.Compare(g.last) > 0 {
+			g.last = u
+			return u
+		}
+		// The entropy inside this millisecond is exhausted, or the source failed, or it is
+		// degenerate and handed back an id that does not follow the last one. Stepping the
+		// millisecond re-seeds the monotonic reader and puts the next id above this one in
+		// all three cases.
+		g.ms++
+	}
+
+	// The entropy source is broken. Ids stop being unguessable here, but they must not stop
+	// being unique and ordered, so the last one is incremented as a 128-bit big-endian
+	// number.
+	u := g.last
+	for i := len(u) - 1; i >= 0; i-- {
+		u[i]++
+		if u[i] != 0 {
+			break
+		}
+	}
+	g.last = u
+	return u
+}
+
+// NewString mints the next id and renders it.
+func (g *Gen) NewString() string { return g.New().String() }
+
+// ParseMsgID parses a message id. Parsing accepts either case; [MsgID.String] always renders
+// upper case.
+func ParseMsgID(s string) (MsgID, error) {
+	u, err := ulid.ParseStrict(s)
+	if err != nil {
+		return MsgID{}, fmt.Errorf("message id %q: %w", s, ErrBadMsgID)
+	}
+	return u, nil
+}
