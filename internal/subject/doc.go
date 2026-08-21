@@ -36,6 +36,12 @@
 // non-match rather than re-validating: the empty subject, an empty token from a leading,
 // trailing or doubled separator, and a token that is exactly "*" or ">" all fail to match. The
 // last of those is what makes handing a pattern in where a subject was expected a silent
-// no-match instead of a silent mis-match. Match does not re-check UTF-8, length or control
-// characters; [ParseSubject] does that once, at publish time.
+// no-match instead of a silent mis-match.
+//
+// It stops there. Match assumes it was given a subject and does not re-check rules S1, S3 or
+// S4: invalid UTF-8, a control character, a space and an over-long or over-deep subject are all
+// compared as ordinary bytes, so Pattern(">").Match("a\x00b") is true even though
+// ParseSubject("a\x00b") is an error. Validating is the boundary's job, done once by
+// [ParseSubject] on the publish path, not the matcher's job, done once per candidate message on
+// the top-up path. A caller that matches against unvalidated input has skipped a step.
 package subject

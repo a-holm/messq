@@ -222,6 +222,46 @@ func TestBarePatternDoesNotMatchTheEmptySubject(t *testing.T) {
 	}
 }
 
+// TestMatchDoesNotRevalidateTheSubject pins the documented edge of the contract: Match enforces
+// the structure it needs to route correctly and nothing else, so a subject the grammar would
+// reject still matches. Validating is the boundary's job, done once by ParseSubject; if that
+// ever changes, this test is the one that has to be rewritten deliberately.
+func TestMatchDoesNotRevalidateTheSubject(t *testing.T) {
+	t.Parallel()
+
+	gt, err := subject.ParsePattern(">")
+	if err != nil {
+		t.Fatal(err)
+	}
+	star, err := subject.ParsePattern("a.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Every one of these is an error from ParseSubject and a match for the filter.
+	unvalidated := map[string]string{
+		"a NUL byte":           "a\x00b",
+		"a newline":            "a\nb",
+		"a space":              "a b",
+		"invalid UTF-8":        "a\xffb",
+		"over the byte limit":  strings.Repeat("a", 513),
+		"over the token limit": strings.TrimSuffix(strings.Repeat("a.", 33), "."),
+	}
+	for name, subj := range unvalidated {
+		if _, err := subject.ParseSubject(subj); err == nil {
+			t.Errorf("%s: ParseSubject accepted %q, so this row proves nothing", name, subj)
+			continue
+		}
+		if !gt.Match(subj) {
+			t.Errorf("%s: ParsePattern(\">\").Match(%q) = false, want true", name, subj)
+		}
+	}
+
+	if !star.Match("a.b\x00c") {
+		t.Error(`ParsePattern("a.*").Match("a.b\x00c") = false, want true`)
+	}
+}
+
 func TestZeroPatternMatchesNothing(t *testing.T) {
 	t.Parallel()
 
