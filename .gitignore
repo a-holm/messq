@@ -20,3 +20,7 @@ coverage.html
 .vscode/
 *.swp
 .DS_Store
+
+# Go workspace files, always local
+go.work
+go.work.sum
