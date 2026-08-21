@@ -47,6 +47,8 @@ $ make ci
 | `make gates-selftest` | Every gate above still fails when you break it. |
 | `make static-check` | Both cross-compiled binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
 
+One limitation worth naming: `make layers` reads the tree through `go list`, which parses package clauses and imports but not function bodies, so a syntax error inside a body leaves the import graph correct and the gate green; `make vet` is the gate that catches it, and has a sabotage row of its own.
+
 Two more targets exist for people rather than for CI: `make cover-html` opens the profile from the last `make cover`, and `make cover-ratchet` raises the floors that coverage has outgrown.
 
 The race detector needs cgo and the shipped binary must not have it, so `make test` and `make cover` run with `CGO_ENABLED=1` while every build target pins `CGO_ENABLED=0`. Both are mandatory and neither may be dropped.
