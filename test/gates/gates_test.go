@@ -49,7 +49,7 @@ func TestGates(t *testing.T) {
 				if !strings.Contains(output, g.want) {
 					t.Fatalf("gates: %s %-40s output does not contain %q\n%s", g.id, g.name, g.want, output)
 				}
-				t.Logf("gates: %s %-40s make %-20s exit=0  matched  ok", g.id, g.name, g.target)
+				t.Logf("gates: %-3s %-42s make %-20s exit=0  ok\n       %s", g.id, g.name, g.target, matched(output, g.want))
 				return
 			}
 
@@ -60,7 +60,7 @@ func TestGates(t *testing.T) {
 				t.Fatalf("gates: %s %-40s make %s failed with exit=%d but without %q; it failed for the wrong reason\n%s",
 					g.id, g.name, g.target, code, g.want, output)
 			}
-			t.Logf("gates: %s %-40s make %-20s exit=%d  matched  ok", g.id, g.name, g.target, code)
+			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s", g.id, g.name, g.target, code, matched(output, g.want))
 		})
 	}
 }
@@ -178,6 +178,18 @@ func matrix() []gate {
 			prepare: install("layers_test.go", "internal/queue/sabotage_layers_test.go"),
 		},
 	}
+}
+
+// matched returns the first line of output that carries the fragment the gate asserts on. The
+// transcript is the evidence, so it prints what the gate actually said rather than only that
+// something matched.
+func matched(output, want string) string {
+	for line := range strings.Lines(output) {
+		if strings.Contains(line, want) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 // install copies fixture files from testdata into the scratch tree. Arguments are
