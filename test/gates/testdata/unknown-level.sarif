@@ -1,0 +1,15 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {"driver": {"name": "govulncheck", "semanticVersion": "v1.7.0"}},
+      "results": [
+        {
+          "ruleId": "GO-2026-9999",
+          "level": "fatal",
+          "message": {"text": "a severity this gate has never been taught to read"}
+        }
+      ]
+    }
+  ]
+}

@@ -115,6 +115,10 @@ func report(v verdict, strict bool, stdout io.Writer) int {
 	for _, f := range v.Blocking {
 		fmt.Fprintf(stdout, "vulngate: FAIL %s is reachable from messq's own code: %s\n", f.OSV, f.Message)
 	}
+	for _, f := range v.Unknown {
+		fmt.Fprintf(stdout, "vulngate: FAIL %s carries SARIF level %q, which this gate does not recognise: %s\n",
+			f.OSV, f.Level, f.Message)
+	}
 	for _, f := range v.Suppressed {
 		fmt.Fprintf(stdout, "vulngate: suppressed %s\n", f.OSV)
 	}
@@ -126,6 +130,9 @@ func report(v verdict, strict bool, stdout io.Writer) int {
 		len(v.Blocking)+len(v.Suppressed), v.Imported, v.Required)
 
 	switch {
+	case len(v.Unknown) > 0:
+		fmt.Fprintf(stdout, "next: teach vulngate what %q means before trusting this scan\n", v.Unknown[0].Level)
+		return exitBlocked
 	case len(v.Blocking) > 0:
 		fmt.Fprintln(stdout, "next: go tool -modfile=tools/govulncheck.mod govulncheck -show verbose ./...")
 		return exitBlocked

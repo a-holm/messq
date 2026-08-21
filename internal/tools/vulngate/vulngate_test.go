@@ -151,6 +151,7 @@ func TestJudge_Table(t *testing.T) {
 		allow          []suppression
 		wantBlocking   int
 		wantSuppressed int
+		wantUnknown    int
 		wantUnused     int
 	}{
 		{
@@ -188,6 +189,23 @@ func TestJudge_Table(t *testing.T) {
 			allow:      []suppression{live},
 			wantUnused: 1,
 		},
+		{
+			name:        "a level this gate does not know blocks",
+			findings:    []finding{{OSV: "GO-2026-1", Level: "fatal"}},
+			wantUnknown: 1,
+		},
+		{
+			name:        "an empty level blocks",
+			findings:    []finding{{OSV: "GO-2026-1"}},
+			wantUnknown: 1,
+		},
+		{
+			name:        "no allow entry can clear an unknown level",
+			findings:    []finding{{OSV: "GO-2026-1", Level: "fatal"}},
+			allow:       []suppression{live},
+			wantUnknown: 1,
+			wantUnused:  1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -199,6 +217,9 @@ func TestJudge_Table(t *testing.T) {
 			}
 			if len(got.Suppressed) != tt.wantSuppressed {
 				t.Errorf("suppressed = %v, want %d", got.Suppressed, tt.wantSuppressed)
+			}
+			if len(got.Unknown) != tt.wantUnknown {
+				t.Errorf("unknown = %v, want %d", got.Unknown, tt.wantUnknown)
 			}
 			if len(got.Unused) != tt.wantUnused {
 				t.Errorf("unused = %v, want %d", got.Unused, tt.wantUnused)
@@ -286,6 +307,20 @@ func TestRun_ScanTable(t *testing.T) {
 			strict:   true,
 			wantExit: exitBlocked,
 			wantText: "FAIL GO-2026-1234 suppresses nothing",
+		},
+		{
+			name:     "an unrecognised level blocks and names itself",
+			allow:    "# nothing suppressed\n",
+			results:  sarifResult("GO-2026-9999", "fatal", "a severity this gate has never been taught to read"),
+			wantExit: exitBlocked,
+			wantText: `GO-2026-9999 carries SARIF level "fatal", which this gate does not recognise`,
+		},
+		{
+			name:     "an unrecognised level is not cleared by a suppression",
+			allow:    "GO-2026-9999 2026-12-31 tracked in #5\n",
+			results:  sarifResult("GO-2026-9999", "fatal", "a severity this gate has never been taught to read"),
+			wantExit: exitBlocked,
+			wantText: "does not recognise",
 		},
 	}
 

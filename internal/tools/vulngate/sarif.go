@@ -70,6 +70,7 @@ func parseSARIF(r io.Reader) ([]finding, error) {
 type verdict struct {
 	Blocking   []finding
 	Suppressed []finding
+	Unknown    []finding
 	Imported   int
 	Required   int
 	Unused     []suppression
@@ -79,6 +80,10 @@ type verdict struct {
 // build: a vulnerable module that no messq code path reaches is a fact about the dependency
 // graph, not about this build, and failing on it would keep the gate permanently red on stdlib
 // advisories nobody can act on.
+//
+// A level this gate does not know blocks the build too, and no allow entry clears it. Dropping
+// it would make a future govulncheck release able to widen its vocabulary and lose findings
+// here in silence, which is the one failure mode a supply-chain gate must not have.
 func judge(findings []finding, allow []suppression, now time.Time) verdict {
 	live := make(map[string]suppression, len(allow))
 	for _, s := range allow {
@@ -99,6 +104,7 @@ func judge(findings []finding, allow []suppression, now time.Time) verdict {
 			continue
 		case levelCalled:
 		default:
+			v.Unknown = append(v.Unknown, f)
 			continue
 		}
 
