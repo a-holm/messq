@@ -71,7 +71,7 @@ Floors ratchet upward only.
 
 - A floored package that exists but declares no functions yet reports `PENDING` and passes. Once it has code, a missing profile entry is a failure: deleting a package's tests must not silently satisfy its floor, and neither must deleting the package.
 - `make cover-ratchet` raises a floor once measured coverage clears it by a whole point, rounded down. Run it yourself, review the diff, commit it. CI never runs it: a bot that edits the gate is not a gate.
-- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <reason>` line, starting at the beginning of a line and with a reason after it. Without one, `make cover-ratchet-check` refuses the branch. The reason is the point; the grep only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
+- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <package> <reason>` line, starting at the beginning of a line and naming every package whose floor the branch lowers. A trailer explains only the floors it names: cutting `internal/store` while explaining a move of `internal/id` refuses the branch. Without an explaining trailer for each lowered floor, `make cover-ratchet-check` refuses it. The reason is the point; the check only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
 
 ## Vulnerabilities and suppressions
 

@@ -92,36 +92,28 @@ cover-html: ## Open the coverage profile produced by `make cover` as HTML.
 cover-ratchet: cover ## Raise the floors that measured coverage clears by a whole point.
 	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors -ratchet
 
-# The escape-hatch trailer, anchored at the start of a line and demanding a non-empty reason.
-# CONTRIBUTING.md promises a reason; an unanchored grep would also accept a bare
-# `coverage-floor-lowered:` and a commit that merely mentions the string in prose.
-RATCHET_TRAILER := ^coverage-floor-lowered:[[:space:]]+[^[:space:]]
-
-# Compares against the merge base rather than against origin/main's tip, so a floor raised on
-# main after this branch started does not read as a lowering here. Silent when there is no
-# merge base to compare against, which is the case in a fresh shallow clone.
+# The escape hatch lives inside covergate: this target hands it the body of every commit the
+# branch adds, and covergate accepts a lowering only when some anchored
+# `coverage-floor-lowered:` trailer names that floor. Matching per floor is the #45 hardening;
+# before it, one explained trailer unlocked every lowered floor on the branch at once.
 #
-# The trailer is looked for across every commit the branch adds, not on HEAD alone. On a pull
+# The bodies are looked for across every commit the branch adds, not on HEAD alone. On a pull
 # request the runner checks out GitHub's synthetic "Merge X into Y" commit, so HEAD is a commit
-# nobody wrote and `git log -1` can never see the trailer: the hatch would be documented,
-# advertised in the failure message, and unreachable. The merge base opens exactly the range of
-# commits this branch is responsible for, in both shapes.
+# nobody wrote and `git log -1` can never see the trailer: the merge base opens exactly the
+# range of commits this branch is responsible for, in both shapes.
 cover-ratchet-check: ## Fail when this branch lowers a coverage floor without saying why.
 	@base="$$(git merge-base HEAD origin/main 2>/dev/null)" || { \
 		echo "cover-ratchet-check: no merge base with origin/main, nothing to compare"; \
 		exit 0; \
 	}; \
-	baseline="$$(mktemp)"; \
-	trap 'rm -f "$$baseline"' EXIT; \
+	baseline="$$(mktemp)"; messages="$$(mktemp)"; \
+	trap 'rm -f "$$baseline" "$$messages"' EXIT; \
 	git show "$$base:coverage.floors" >"$$baseline" 2>/dev/null || { \
 		echo "cover-ratchet-check: the merge base has no coverage.floors, nothing to compare"; \
 		exit 0; \
 	}; \
-	allow=(); \
-	if git log --format=%B "$$base..HEAD" | grep -qE '$(RATCHET_TRAILER)'; then \
-		allow=(-allow-lower); \
-	fi; \
-	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" $${allow[@]+"$${allow[@]}"}
+	git log --format=%B "$$base..HEAD" >"$$messages"; \
+	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" -commit-messages "$$messages"
 
 # config verify runs first because it reads the file with the same loader `run` uses and then
 # validates it against a schema embedded in the pinned binary, so an unknown settings key or a

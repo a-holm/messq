@@ -158,7 +158,7 @@ func matrix() []gate {
 			id: "G15", name: "a lowered floor a branch commit explains", target: "cover-ratchet-check",
 			want:    "a commit on this branch explains the lowering",
 			wantOK:  true,
-			prepare: lowerFloor(branchCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+			prepare: lowerFloor(branchCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/store, its sweeper moved out from under it"),
 		},
 		// The four rows below are the escape hatch itself. It is documented, it is named in the
 		// failure message, and a rule that reads HEAD alone would leave it unreachable on every
@@ -167,7 +167,7 @@ func matrix() []gate {
 			id: "G20", name: "an explained lowering behind a pull-request merge commit", target: "cover-ratchet-check",
 			want:    "a commit on this branch explains the lowering",
 			wantOK:  true,
-			prepare: lowerFloor(mergeCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+			prepare: lowerFloor(mergeCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/store, its sweeper moved out from under it"),
 		},
 		{
 			id: "G21", name: "an unexplained lowering behind a merge commit", target: "cover-ratchet-check",
@@ -183,6 +183,14 @@ func matrix() []gate {
 			id: "G23", name: "the trailer mentioned in prose", target: "cover-ratchet-check",
 			want:    "floors ratchet upward only",
 			prepare: lowerFloor(branchCheckout, "note that coverage-floor-lowered: is the escape hatch"),
+		},
+		// G37 is the per-floor half of the same contract (#45): a trailer explains only the
+		// floors its reason names, so explaining one package's move must not unlock an
+		// unrelated cut of another.
+		{
+			id: "G37", name: "a trailer that names another floor", target: "cover-ratchet-check",
+			want:    "no commit on this branch explains the lowering of internal/store",
+			prepare: lowerFloor(branchCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/id, its sweeper moved out from under it"),
 		},
 		{
 			id: "G16", name: "an expired vulnerability suppression", target: "vuln",
@@ -274,6 +282,27 @@ func matrix() []gate {
 			want:    "0 issues",
 			wantOK:  true,
 			prepare: install("clock.go", "internal/clock/sabotage_seam.go"),
+		},
+		// B4, G35 and G36 are the #45 seam-defaults rows. VULNSCAN and TEST_COUNT exist so the
+		// matrix can feed a gate input the repository cannot produce on demand, which also means a
+		// reviewed workflow edit could override either into vacuousness: `VULNSCAN=true` pipes
+		// nothing into vulngate and `TEST_COUNT=0` runs no tests at all, both reported as success.
+		// The seam-defaults target asserts the runner's view of both; these rows are what keep that
+		// assertion honest.
+		{
+			id: "B4", name: "the seams hold their defaults", target: "seam-defaults",
+			want:   "hold their defaults",
+			wantOK: true,
+		},
+		{
+			id: "G35", name: "VULNSCAN overridden off its default", target: "seam-defaults",
+			want:    "seam-defaults: VULNSCAN is",
+			prepare: patch("Makefile", "VULNSCAN ?= $(GOVULNCHECK) -format sarif ./...", "VULNSCAN ?= cat sabotage.sarif"),
+		},
+		{
+			id: "G36", name: "TEST_COUNT set so no test runs", target: "seam-defaults",
+			want:    "TEST_COUNT is",
+			prepare: patch("Makefile", "TEST_COUNT ?= 1", "TEST_COUNT ?= 0"),
 		},
 	}
 }
