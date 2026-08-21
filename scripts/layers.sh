@@ -10,8 +10,14 @@
 #
 # Two kinds of check, because they are not interchangeable. A transitive check (go list -deps)
 # is right for a package that must not be reachable at all. A direct-import check
-# (go list .Imports) is right for os, because much of the standard library reaches os
-# transitively: even `import "fmt"` pulls it in, so a transitive os rule would forbid printing.
+# (go list .Imports) is right for os and its neighbours, because much of the standard library
+# reaches os transitively: even `import "fmt"` pulls it in, so a transitive os rule would
+# forbid printing.
+#
+# The direct-import rules see one hop only. A new internal package that imports os and is then
+# imported by internal/queue passes this script; catching that needs a transitive check with an
+# allow-list of intermediate packages, which is not worth building while there is one internal
+# package below queue. Code review covers the gap until then.
 set -euo pipefail
 
 module="$(go list -m)"
@@ -49,7 +55,8 @@ queue_reason="PLAN.md section 3.3: internal/queue is a pure state machine with n
 forbid_deps internal/queue "$queue_reason" \
 	database/sql net/http \
 	"$module/internal/store" "$module/internal/api" "$module/internal/cli" "$module/internal/obs"
-forbid_imports internal/queue "$queue_reason" os
+forbid_imports internal/queue "$queue_reason" \
+	os os/exec os/signal os/user syscall net
 
 forbid_deps internal/store \
 	"Issue #1 design: internal/store sits below the API and CLI layers and must not reach up." \
