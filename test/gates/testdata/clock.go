@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package clock is the seam. It is the one package allowed to read the wall clock and the one
-// package allowed to block on it, so lint must accept both here and nowhere else.
 package clock
 
 import "time"
 
-// Now reads the wall clock.
-func Now() time.Time {
+// SabotageNow reads the wall clock. internal/clock is the one package allowed to, so lint has
+// to accept this file here and reject the same two calls anywhere else.
+func SabotageNow() time.Time {
 	return time.Now()
 }
 
-// Pause blocks for d.
-func Pause(d time.Duration) {
+// SabotagePause blocks on the wall clock, which is the other half of the same allowance.
+func SabotagePause(d time.Duration) {
 	time.Sleep(d)
 }

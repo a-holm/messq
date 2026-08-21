@@ -115,11 +115,15 @@ Table-driven tests, `t.TempDir()` for anything on disk, and no assertion DSL: pl
 The architectural bans are lint-enforced by `forbidigo` in `.golangci.yml`, and each message names the alternative:
 
 - `time.Sleep` anywhere. Use a `testing/synctest` bubble or the `Clock` seam. `internal/clock` and `test/soak` are the only exemptions: the seam is where the sleep the rest of the tree may not call directly has to live.
-- `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function.
+- `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function. Inside the seam the allowance is narrower still, and a test enforces it: `internal/clock/system.go` is the only file in the repository that calls them.
 - `prometheus.MustRegister`, the default registerer and package-level `promauto` outside `internal/obs`. messq registers against a custom registry only.
 - `os.Exit` outside a command entry point, and `fmt.Print*` anywhere. Data goes to the injected stdout writer, narration to stderr.
 
 A `//nolint` must name the linter it silences and say why: `//nolint:gosec // G304: the path is an operator flag.` An unused one fails the build.
+
+Durable deadlines (`deliveries.visible_at`, `messages.published_at`, `events.ts`) are wall-clock Unix milliseconds, because they have to survive a restart and be readable in SQL: read them with `Clock.Now`. In-process waits are monotonic: read them with `Clock.Since`. A forward wall-clock jump therefore makes in-flight deliveries look overdue and the sweeper redelivers them, which is correct at-least-once behaviour; a backwards jump delays expiry and never resurrects a resolved delivery.
+
+Every parser gets a fuzz target and a committed seed corpus under `<package>/testdata/fuzz/<Target>/`. `make fuzz` runs each target for `FUZZTIME` (60 s by default) and the `fuzz` job in CI runs the same target list; a crasher it finds is written into that directory and is the reproduction artifact the fix ships with.
 
 ## Commits and pull requests
 
