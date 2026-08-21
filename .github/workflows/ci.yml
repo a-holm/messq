@@ -16,12 +16,22 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # One job. `make ci` already cross-compiles both architectures and asserts they are static,
-  # so a second job would repeat that work on a second runner and add nothing.
+  # One job. `make ci` already cross-compiles both architectures and asserts they are static, so
+  # a second job would repeat that work on a second runner and add nothing. The next person will
+  # want to unify two things it deliberately keeps apart: `make test` and `make cover` run with
+  # CGO_ENABLED=1 because the race detector needs cgo, and `make static-check` builds with
+  # CGO_ENABLED=0 because the shipped binary must be static. Getting that backwards produces
+  # either an unraced suite or a dynamically linked release binary.
+  #
+  # timeout-minutes is the ten-minute budget of PLAN.md section 11, enforced rather than hoped
+  # for. `make ci` prints the per-target wall clock and appends it to the run summary, so a
+  # target on its way to the limit is visible before it hits it.
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-depth 0 gives `make cover-ratchet-check` a merge base with origin/main to compare
+      # coverage.floors against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

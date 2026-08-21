@@ -68,8 +68,13 @@ build-all: ## Build static linux/amd64 and linux/arm64 binaries into dist/.
 # breaks the static-binary promise. -count=1 defeats the test cache, without which an
 # `ok (cached)` line makes the gate pass vacuously after an unrelated change. -shuffle=on
 # catches order-dependent tests while there are still few of them.
+# TEST_COUNT is what the nightly flake hunt raises: a flake that shows up once in fifty is
+# invisible to a single run.
+TEST_COUNT ?= 1
+TEST_TIMEOUT ?= 5m
+
 test: ## Run the test suite under the race detector.
-	CGO_ENABLED=1 go test -race -count=1 -shuffle=on -timeout=5m ./...
+	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
 
 # -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
 # internal/queue is exercised by the reference model in internal/model and internal/store
@@ -191,7 +196,31 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers spdx lint test cover cover-ratchet-check vuln gates-selftest build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+# The gate, in order. static-check pulls in build-all, so the binaries are built once.
+CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx lint test cover \
+              cover-ratchet-check vuln gates-selftest static-check
+
+# PLAN.md section 11 budgets the whole lane at ten minutes, which is a constraint rather than an
+# aspiration, so the per-target wall clock is printed at the end and appended to the GitHub run
+# summary when there is one. A target that crosses CI_WARN_SECONDS is the signal to shard it or
+# move it to the nightly lane; it is never the signal to weaken it.
+CI_WARN_SECONDS ?= 480
+
+ci: ## Run the whole gate. GitHub Actions runs exactly this.
+	@start=$$SECONDS; \
+	rows=""; \
+	for target in $(CI_TARGETS); do \
+		target_start=$$SECONDS; \
+		$(MAKE) --no-print-directory "$$target"; \
+		rows="$$rows| $$target | $$((SECONDS - target_start))s |"$$'\n'; \
+	done; \
+	total=$$((SECONDS - start)); \
+	table="$$(printf '| ci target | wall clock |\n|---|---|\n%s| **total** | **%ds** |\n' "$$rows" "$$total")"; \
+	printf '\n%s\n' "$$table"; \
+	if [[ -n "$${GITHUB_STEP_SUMMARY:-}" ]]; then printf '%s\n' "$$table" >>"$$GITHUB_STEP_SUMMARY"; fi; \
+	if ((total >= $(CI_WARN_SECONDS))); then \
+		echo "ci: $${total}s is past the $(CI_WARN_SECONDS)s warning line; shard a job or move it to nightly" >&2; \
+	fi
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
