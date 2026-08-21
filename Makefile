@@ -28,8 +28,9 @@ DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)
 #
 # not with `go mod tidy`: -modfile keeps the module root here, so tidy would try to resolve this
 # repository's own packages as dependencies of the tool module.
-GOFUMPT  := go tool -modfile=tools/gofumpt.mod gofumpt
-GOLANGCI := go tool -modfile=tools/golangci-lint.mod golangci-lint
+GOFUMPT    := go tool -modfile=tools/gofumpt.mod gofumpt
+GOLANGCI   := go tool -modfile=tools/golangci-lint.mod golangci-lint
+ACTIONLINT := go tool -modfile=tools/actionlint.mod actionlint
 
 LDFLAGS := -s -w \
   -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' \
@@ -68,8 +69,13 @@ cover: ## Run tests with coverage and print a per-function report.
 	go test -coverprofile=cover.out ./...
 	go tool cover -func=cover.out
 
-lint: ## Run the pinned golangci-lint. Fetches the tool on first use.
+# config verify runs first so a typo in .golangci.yml is a schema error rather than half the
+# linter set silently switching itself off. It validates against a schema embedded in the
+# pinned binary, so it needs no network.
+lint: ## Verify .golangci.yml, run the pinned golangci-lint, and lint the workflows.
+	$(GOLANGCI) config verify
 	$(GOLANGCI) run
+	$(ACTIONLINT) .github/workflows/*.yml
 
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .
@@ -125,7 +131,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	git config core.hooksPath .githooks
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
-ci: fmt-check vet tidy-check dep-budget layers test build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
+ci: fmt-check vet tidy-check dep-budget layers lint test build-all static-check ## Run the whole gate. GitHub Actions runs exactly this.
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out

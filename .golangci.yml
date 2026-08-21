@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# golangci-lint v2 configuration. The binary is pinned in tools/golangci-lint.mod and invoked
+# through `go tool -modfile`, so `make lint` and CI run the same build. `make lint` runs
+# `golangci-lint config verify` first: a typo here is a schema error rather than half the
+# linter set silently switching itself off.
+version: "2"
+
+run:
+  # test/gates carries the sabotage matrix behind the gatecheck tag. Without the tag the
+  # driver is invisible to the linter, which is the one file that most needs linting.
+  build-tags:
+    - gatecheck
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies: internal/api and pkg/client
+    - containedctx # no context smuggled into a struct field
+    - errorlint # %w, errors.Is/As: sentinel errors are API surface
+    - exhaustive # the delivery-state enum and the event vocabulary
+    - forbidigo # the architectural bans, see settings.forbidigo
+    - gosec
+    - makezero
+    - nilerr
+    - noctx # every outbound HTTP call carries a context
+    - nolintlint # a //nolint names its linter and gives a reason
+    - rowserrcheck # database/sql: rows.Err() after the loop
+    - sqlclosecheck # database/sql: rows and stmts always closed
+    - usetesting # t.TempDir/t.Setenv/t.Chdir over the os equivalents
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      # The deferred-rollback-after-commit pattern is correct for database/sql and appears on
+      # every writer path, so the error is genuinely uninteresting there.
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+
+    govet:
+      enable-all: true
+      # fieldalignment orders struct fields by padding, which fights readability for a gain
+      # that matters only in hot arrays. None exist.
+      disable:
+        - fieldalignment
+
+    exhaustive:
+      check:
+        - switch
+        - map
+      # A `default:` must not satisfy exhaustiveness: adding a delivery state or an event kind
+      # has to break every switch that handles them, which is the whole point.
+      default-signifies-exhaustive: false
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    gosec:
+      # Backoff jitter and recovery jitter deliberately use math/rand. Ack tokens carry no
+      # secret, so v1 has no crypto-random requirement outside the auth-token generator, which
+      # arrives with its own review.
+      excludes:
+        - G404
+
+    forbidigo:
+      # Match resolved types rather than source text, so `import stdtime "time"` cannot smuggle
+      # a Sleep past the gate. The pattern matches `<package name>.<symbol>`.
+      analyze-types: true
+      exclude-godoc-examples: true
+      forbid:
+        - pattern: ^time\.Sleep$
+          msg: >-
+            time.Sleep is banned. Use the Clock seam (internal/clock) or a testing/synctest
+            bubble. test/soak is the only exemption.
+
+        - pattern: ^time\.(Now|Since|Until|NewTimer|NewTicker|After|Tick|AfterFunc)$
+          msg: >-
+            Wall-clock access outside internal/clock breaks the pure state machine. Take a
+            clock.Clock and call c.Now() or c.NewTimer().
+
+        # No `pkg:` constraint: a package named `prometheus` is the metrics client, and leaving
+        # the constraint off is what lets the sabotage matrix prove this rule against a stub
+        # package without spending a line of the dependency budget.
+        - pattern: ^prometheus\.(DefaultRegisterer|DefaultGatherer|MustRegister|Register|Unregister)$
+          msg: >-
+            messq uses a custom registry only. Register through internal/obs.
+
+        - pattern: ^promauto\.New[A-Za-z]*$
+          msg: >-
+            Package-level promauto writes to the default registry. Use promauto.With(reg) via
+            internal/obs.
+
+        - pattern: ^os\.Exit$
+          msg: >-
+            Only cmd/messq may exit. Return an error; the Run pattern maps it to the documented
+            exit-code contract.
+
+        - pattern: ^fmt\.(Print|Printf|Println)$
+          msg: >-
+            Data goes to the injected stdout writer, narration to stderr. Library packages must
+            not print at all.
+
+  exclusions:
+    generated: lax
+    # Every rule below names the message fragment it suppresses rather than disabling the whole
+    # linter for a path, so a second, unrelated finding in the same file still fails the build.
+    rules:
+      # The Clock seam is the one place allowed to read the wall clock.
+      - path: internal/clock/
+        text: Clock seam|clock.Clock
+        linters:
+          - forbidigo
+
+      # Soak tests are exempted from the sleep ban.
+      - path: test/soak/
+        text: time.Sleep is banned
+        linters:
+          - forbidigo
+
+      # Metrics registration lives in exactly one package.
+      - path: internal/obs/
+        text: custom registry only|default registry
+        linters:
+          - forbidigo
+
+      # main() is the process boundary: it is where an exit code becomes an exit.
+      - path: cmd/messq/
+        text: Only cmd/messq may exit
+        linters:
+          - forbidigo
+
+      # internal/cli writes usage text and narration to the process's own stdout and stderr.
+      # A failed write there cannot be reported (the reporting channel is the thing that
+      # failed), so the error is genuinely dead. Everywhere else, including every write to a
+      # socket, a file or an http.ResponseWriter, errcheck stays strict: the std-error-handling
+      # preset was rejected because it also silences unchecked Close and Flush, which are the
+      # two errors a durable queue must never drop.
+      - path: internal/cli/
+        text: Error return value of .fmt\.Fprint(f|ln)?. is not checked
+        linters:
+          - errcheck
+
+      # Test files construct throwaway inputs and carry contexts in table rows.
+      - path: _test\.go
+        linters:
+          - containedctx
+          - gosec
+
+formatters:
+  # gofumpt only, and deliberately no goimports: `make fmt` runs the pinned gofumpt, so a
+  # second formatter with a different fixer would produce findings that `make fmt` cannot
+  # clear. gofumpt already splits standard-library imports from the rest.
+  enable:
+    - gofumpt
+  settings:
+    gofumpt:
+      module-path: github.com/a-holm/messq
+
+issues:
+  # The repository is small enough to fix every finding, so truncating the report only hides
+  # work. No baseline and no only-new-issues: a clean baseline is achievable now, once.
+  max-issues-per-linter: 0
+  max-same-issues: 0
