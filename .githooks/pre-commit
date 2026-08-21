@@ -32,7 +32,9 @@ if ((${#staged[@]} > 0)); then
 		git show ":$path" >"$staging/$path"
 	done
 
-	if ! unformatted="$(make -s fmt-list DIR="$staging")"; then
+	# Strip the mirror prefix from both streams: the file list on stdout and gofumpt's own
+	# parse errors on stderr, which would otherwise name a temporary path nobody can open.
+	if ! unformatted="$(make -s fmt-list DIR="$staging" 2> >(sed "s|$staging/||g" >&2))"; then
 		echo "pre-commit: gofumpt could not read the staged content, see above." >&2
 		exit 1
 	fi
