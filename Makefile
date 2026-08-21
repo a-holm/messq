@@ -92,9 +92,20 @@ cover-html: ## Open the coverage profile produced by `make cover` as HTML.
 cover-ratchet: cover ## Raise the floors that measured coverage clears by a whole point.
 	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors -ratchet
 
+# The escape-hatch trailer, anchored at the start of a line and demanding a non-empty reason.
+# CONTRIBUTING.md promises a reason; an unanchored grep would also accept a bare
+# `coverage-floor-lowered:` and a commit that merely mentions the string in prose.
+RATCHET_TRAILER := ^coverage-floor-lowered:[[:space:]]+[^[:space:]]
+
 # Compares against the merge base rather than against origin/main's tip, so a floor raised on
 # main after this branch started does not read as a lowering here. Silent when there is no
 # merge base to compare against, which is the case in a fresh shallow clone.
+#
+# The trailer is looked for across every commit the branch adds, not on HEAD alone. On a pull
+# request the runner checks out GitHub's synthetic "Merge X into Y" commit, so HEAD is a commit
+# nobody wrote and `git log -1` can never see the trailer: the hatch would be documented,
+# advertised in the failure message, and unreachable. The merge base opens exactly the range of
+# commits this branch is responsible for, in both shapes.
 cover-ratchet-check: ## Fail when this branch lowers a coverage floor without saying why.
 	@base="$$(git merge-base HEAD origin/main 2>/dev/null)" || { \
 		echo "cover-ratchet-check: no merge base with origin/main, nothing to compare"; \
@@ -107,12 +118,16 @@ cover-ratchet-check: ## Fail when this branch lowers a coverage floor without sa
 		exit 0; \
 	}; \
 	allow=(); \
-	if git log -1 --format=%B | grep -q 'coverage-floor-lowered:'; then allow=(-allow-lower); fi; \
+	if git log --format=%B "$$base..HEAD" | grep -qE '$(RATCHET_TRAILER)'; then \
+		allow=(-allow-lower); \
+	fi; \
 	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" $${allow[@]+"$${allow[@]}"}
 
-# config verify runs first so a typo in .golangci.yml is a schema error rather than half the
-# linter set silently switching itself off. It validates against a schema embedded in the
-# pinned binary, so it needs no network.
+# config verify runs first because it reads the file with the same loader `run` uses and then
+# validates it against a schema embedded in the pinned binary, so an unknown settings key or a
+# value of the wrong type is a named error before any analysis starts. It does not check linter
+# names: the schema lists them for editor completion but accepts anything, and `run` is what
+# rejects an unknown one. Neither needs the network.
 lint: ## Verify .golangci.yml, run the pinned golangci-lint, and lint the workflows.
 	$(GOLANGCI) config verify
 	$(GOLANGCI) run
@@ -125,19 +140,23 @@ lint: ## Verify .golangci.yml, run the pinned golangci-lint, and lint the workfl
 #
 # Unlike every other target, this one needs network access on every run: a CVE published today
 # is not in yesterday's database.
+# VULNSCAN is a seam, like TEST_COUNT: the sabotage matrix overrides it with a canned SARIF
+# document to prove what the gate does with a scan this repository cannot produce on demand.
+VULNSCAN ?= $(GOVULNCHECK) -format sarif ./...
+
 vuln: ## Fail on a reachable vulnerability or an expired suppression.
 	$(VULNGATE) -check-expiry
-	$(GOVULNCHECK) -format sarif ./... | $(VULNGATE)
+	$(VULNSCAN) | $(VULNGATE)
 
 vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matches anything.
 	$(VULNGATE) -check-expiry
-	$(GOVULNCHECK) -format sarif ./... | $(VULNGATE) -strict
+	$(VULNSCAN) | $(VULNGATE) -strict
 
 # One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
 # nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
 # row runs a full lint or test of its own copy.
 gates-selftest: ## Prove every gate bites, by breaking each one on a scratch copy of the tree.
-	go test -tags gatecheck -count=1 -v -parallel 6 -timeout 20m ./test/gates/...
+	go test -tags gatecheck -count=1 -v -parallel 8 -timeout 20m ./test/gates/...
 
 fmt: ## Format every Go file with the pinned gofumpt.
 	$(GOFUMPT) -l -w .

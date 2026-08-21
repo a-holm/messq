@@ -55,7 +55,7 @@ The race detector needs cgo and the shipped binary must not have it, so `make te
 
 Update a tool pin with `go get -tool -modfile=tools/gofumpt.mod mvdan.cc/gofumpt@<version>`. Do not run `go mod tidy` against a tool module file; `docs/adr/0001-local-first-gating.md` explains why it cannot work.
 
-Nightly, `.github/workflows/nightly.yml` runs what does not fit the ten-minute budget or has nothing to do with a diff: `make vuln-strict` against an unchanged tree, and ten shuffled runs of the suite hunting flakes. Its other jobs are green placeholders naming the issue that fills them in.
+Nightly, `.github/workflows/nightly.yml` runs what does not fit the ten-minute budget or has nothing to do with a diff: `make vuln-strict` against an unchanged tree, and ten shuffled runs of the suite hunting flakes. Both keep their output as a run artifact for a fortnight, because a flake is not reproducible on demand and the run that caught it is the only evidence there will be. Any failure opens a `nightly-failure` issue, or comments on the one already open: a lane nobody watches is a lane nobody reads. The remaining jobs are green placeholders naming the issue that fills them in.
 
 ## Proving the gates
 
@@ -71,7 +71,7 @@ Floors ratchet upward only.
 
 - A floored package that exists but declares no functions yet reports `PENDING` and passes. Once it has code, a missing profile entry is a failure: deleting a package's tests must not silently satisfy its floor, and neither must deleting the package.
 - `make cover-ratchet` raises a floor once measured coverage clears it by a whole point, rounded down. Run it yourself, review the diff, commit it. CI never runs it: a bot that edits the gate is not a gate.
-- Lowering a floor needs a head commit whose message contains `coverage-floor-lowered: <reason>`. Without it `make cover-ratchet-check` refuses the branch. The reason is the point; the grep only makes it deliberate.
+- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <reason>` line, starting at the beginning of a line and with a reason after it. Without one, `make cover-ratchet-check` refuses the branch. The reason is the point; the grep only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
 
 ## Vulnerabilities and suppressions
 
@@ -112,9 +112,9 @@ The reasoning is in [docs/adr/0001-local-first-gating.md](docs/adr/0001-local-fi
 
 Table-driven tests, `t.TempDir()` for anything on disk, and no assertion DSL: plain `if got != want` with `google/go-cmp` for structs. Everything runs under the race detector.
 
-Four architectural bans are lint-enforced by `forbidigo` in `.golangci.yml`, and each message names the alternative:
+The architectural bans are lint-enforced by `forbidigo` in `.golangci.yml`, and each message names the alternative:
 
-- `time.Sleep` anywhere. Use a `testing/synctest` bubble or the `Clock` seam. `test/soak` is the only exemption.
+- `time.Sleep` anywhere. Use a `testing/synctest` bubble or the `Clock` seam. `internal/clock` and `test/soak` are the only exemptions: the seam is where the sleep the rest of the tree may not call directly has to live.
 - `time.Now` and its neighbours outside `internal/clock`. A wall clock inside `internal/queue` is what stops the state machine from being a pure function.
 - `prometheus.MustRegister`, the default registerer and package-level `promauto` outside `internal/obs`. messq registers against a custom registry only.
 - `os.Exit` outside a command entry point, and `fmt.Print*` anywhere. Data goes to the injected stdout writer, narration to stderr.

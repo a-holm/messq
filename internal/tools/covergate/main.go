@@ -155,10 +155,10 @@ func runCompare(opt options, proposed []floor, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "covergate: %s\n", l)
 	}
 	if opt.allowLower {
-		fmt.Fprintln(stdout, "covergate: accepted, the head commit explains the lowering")
+		fmt.Fprintln(stdout, "covergate: accepted, a commit on this branch explains the lowering")
 		return exitOK
 	}
-	fmt.Fprintln(stdout, "next: raise the coverage instead, or put 'coverage-floor-lowered: <reason>' in the head commit message")
+	fmt.Fprintln(stdout, "next: raise the coverage instead, or put 'coverage-floor-lowered: <reason>' in a commit message on this branch")
 	return exitViolation
 }
 

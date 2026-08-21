@@ -22,12 +22,15 @@ const makeTimeout = 5 * time.Minute
 // the message the failure must carry. Asserting only the exit code is not enough, because a
 // build that fails for an unrelated reason would look like a working gate.
 type gate struct {
-	id      string
-	name    string
-	target  string
-	want    string
-	wantOK  bool // the mutation must be accepted rather than rejected
-	prepare func(t *testing.T, root string)
+	id     string
+	name   string
+	target string
+	want   string
+	// makeArgs are appended to the make invocation, for the gates whose input the repository
+	// cannot produce on demand. They override a seam the Makefile already exposes.
+	makeArgs []string
+	wantOK   bool // the mutation must be accepted rather than rejected
+	prepare  func(t *testing.T, root string)
 }
 
 func TestGates(t *testing.T) {
@@ -40,7 +43,7 @@ func TestGates(t *testing.T) {
 				g.prepare(t, root)
 			}
 
-			code, output := runMake(t, root, g.target)
+			code, output := runMake(t, root, g.target, g.makeArgs...)
 
 			if g.wantOK {
 				if code != 0 {
@@ -149,13 +152,37 @@ func matrix() []gate {
 		{
 			id: "G14", name: "a lowered coverage floor", target: "cover-ratchet-check",
 			want:    "floors ratchet upward only",
-			prepare: lowerFloor("lower internal/store to 80"),
+			prepare: lowerFloor(branchCheckout, "lower internal/store to 80"),
 		},
 		{
-			id: "G15", name: "a lowered floor the head commit explains", target: "cover-ratchet-check",
-			want:    "the head commit explains the lowering",
+			id: "G15", name: "a lowered floor a branch commit explains", target: "cover-ratchet-check",
+			want:    "a commit on this branch explains the lowering",
 			wantOK:  true,
-			prepare: lowerFloor("coverage-floor-lowered: the sweeper moved to internal/queue"),
+			prepare: lowerFloor(branchCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+		},
+		// The four rows below are the escape hatch itself. It is documented, it is named in the
+		// failure message, and a rule that reads HEAD alone would leave it unreachable on every
+		// pull request while looking correct in every local test.
+		{
+			id: "G20", name: "an explained lowering behind a pull-request merge commit", target: "cover-ratchet-check",
+			want:    "a commit on this branch explains the lowering",
+			wantOK:  true,
+			prepare: lowerFloor(mergeCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+		},
+		{
+			id: "G21", name: "an unexplained lowering behind a merge commit", target: "cover-ratchet-check",
+			want:    "floors ratchet upward only",
+			prepare: lowerFloor(mergeCheckout, "lower internal/store to 80"),
+		},
+		{
+			id: "G22", name: "a trailer with no reason", target: "cover-ratchet-check",
+			want:    "floors ratchet upward only",
+			prepare: lowerFloor(branchCheckout, "coverage-floor-lowered:"),
+		},
+		{
+			id: "G23", name: "the trailer mentioned in prose", target: "cover-ratchet-check",
+			want:    "floors ratchet upward only",
+			prepare: lowerFloor(branchCheckout, "note that coverage-floor-lowered: is the escape hatch"),
 		},
 		{
 			id: "G16", name: "an expired vulnerability suppression", target: "vuln",
@@ -176,6 +203,73 @@ func matrix() []gate {
 			id: "G19", name: "a test import that crosses a layer", target: "layers",
 			want:    "internal/queue or its tests depends on",
 			prepare: install("layers_test.go", "internal/queue/sabotage_layers_test.go"),
+		},
+		{
+			id: "G24", name: "a file gofumpt would rewrite", target: "fmt-check",
+			want:    "not gofumpt-clean",
+			prepare: install("unformatted.go", "internal/queue/sabotage_unformatted.go"),
+		},
+		{
+			id: "G25", name: "a format verb that does not match its argument", target: "vet",
+			want:    "wrong type string",
+			prepare: install("vet.go", "internal/queue/sabotage_vet.go"),
+		},
+		{
+			id: "G26", name: "a require go mod tidy would drop", target: "tidy-check",
+			want: "example.invalid/forbidden",
+			prepare: install(
+				"forbidden-dep-go.mod", "go.mod",
+				"unusedmod-go.mod", "unusedmod/go.mod",
+				"unusedmod.go", "unusedmod/x.go",
+			),
+		},
+		{
+			id: "G27", name: "a direct dependency nobody voted for", target: "dep-budget",
+			want: "new direct dependency example.invalid/forbidden",
+			prepare: install(
+				"forbidden-dep-go.mod", "go.mod",
+				"unusedmod-go.mod", "unusedmod/go.mod",
+				"unusedmod.go", "unusedmod/x.go",
+			),
+		},
+		// G28 and G29 are the fail-open rows. Both guards used to report success when the tool
+		// they depend on could not answer at all, which is the worst way for a gate to be wrong:
+		// it is indistinguishable from a clean tree.
+		{
+			id: "G28", name: "a module graph dep-budget cannot read", target: "dep-budget",
+			want:    "the module graph is unreadable",
+			prepare: install("unreadable-go.mod", "go.mod"),
+		},
+		{
+			id: "G29", name: "an import graph layers cannot compute", target: "layers",
+			want:    "the tree does not load",
+			prepare: install("two-package-names.go", "pkg/client/sabotage_two_names.go"),
+		},
+		// G30 and G31 tamper with the guard rather than with the code it guards.
+		{
+			id: "G30", name: "CGO_ENABLED=0 dropped from the release build", target: "static-check",
+			want:    `build setting CGO_ENABLED is "1", want "0"`,
+			prepare: patch("Makefile", "GOBUILD := CGO_ENABLED=0 go build", "GOBUILD := go build"),
+		},
+		{
+			id: "G31", name: "-trimpath dropped from the release build", target: "static-check",
+			want:    `build setting -trimpath is "<unset>", want "true"`,
+			prepare: patch("Makefile", "go build -trimpath -ldflags", "go build -ldflags"),
+		},
+		{
+			id: "G32", name: "a SARIF severity the gate has never seen", target: "vuln",
+			want:     `carries SARIF level "fatal"`,
+			makeArgs: []string{"VULNSCAN=cat sabotage.sarif"},
+			prepare:  install("unknown-level.sarif", "sabotage.sarif"),
+		},
+		// A green row: the seam has to be usable, or the ban on wall-clock access is a ban on
+		// having a clock at all. internal/clock does not exist yet, so this is the only thing
+		// that keeps its two exclusions honest until #3 lands.
+		{
+			id: "B3", name: "the clock seam may read and block on the clock", target: "lint",
+			want:    "0 issues",
+			wantOK:  true,
+			prepare: install("clock.go", "internal/clock/clock.go"),
 		},
 	}
 }
@@ -216,6 +310,35 @@ func install(pairs ...string) func(*testing.T, string) {
 	}
 }
 
+// patch rewrites one file in the scratch tree. Arguments are file, old, new triples, and every
+// old must appear exactly once: a sabotage that silently matched nothing would leave the tree
+// intact and the gate would look like it bit when nothing had happened.
+//
+// This is how a guard is tampered with rather than merely violated. A gate that only ever sees
+// bad source has never been asked what it does when someone edits the gate itself.
+func patch(triples ...string) func(*testing.T, string) {
+	if len(triples)%3 != 0 {
+		panic("patch needs file, old, new triples")
+	}
+	return func(t *testing.T, root string) {
+		t.Helper()
+		for i := 0; i < len(triples); i += 3 {
+			path := filepath.Join(root, filepath.FromSlash(triples[i]))
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(string(content), triples[i+1]); n != 1 {
+				t.Fatalf("patch %s: %q appears %d times, want exactly 1", triples[i], triples[i+1], n)
+			}
+			updated := strings.Replace(string(content), triples[i+1], triples[i+2], 1)
+			if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 // remove deletes paths from the scratch tree, directories included.
 func remove(paths ...string) func(*testing.T, string) {
 	return func(t *testing.T, root string) {
@@ -231,10 +354,25 @@ func remove(paths ...string) func(*testing.T, string) {
 // lowerFloor turns the scratch copy into a repository whose origin/main holds the current
 // floors, then lowers one and commits with the given message. The ratchet check compares
 // against a merge base, so it needs real history rather than a bare file.
-func lowerFloor(commitMessage string) func(*testing.T, string) {
+// checkout names the shape of the repository the ratchet gate runs in.
+type checkout int
+
+const (
+	// branchCheckout is what a developer has: HEAD is the branch commit itself.
+	branchCheckout checkout = iota
+	// mergeCheckout is what a pull-request runner has: actions/checkout resolves
+	// refs/pull/N/merge, so HEAD is GitHub's synthetic "Merge X into Y" commit and the branch's
+	// own commits are its second parent. A rule that reads HEAD alone is unreachable here.
+	mergeCheckout
+)
+
+// lowerFloor lowers a floor on a branch, commits it with commitMessage, and arranges the
+// working tree into the requested checkout shape.
+func lowerFloor(shape checkout, commitMessage string) func(*testing.T, string) {
 	return func(t *testing.T, root string) {
 		t.Helper()
 		gitInit(t, root)
+		git(t, root, "checkout", "-q", "-b", "topic")
 
 		path := filepath.Join(root, "coverage.floors")
 		content, err := os.ReadFile(path)
@@ -250,7 +388,14 @@ func lowerFloor(commitMessage string) func(*testing.T, string) {
 		}
 
 		git(t, root, "add", "coverage.floors")
-		git(t, root, "commit", "-m", commitMessage)
+		git(t, root, "commit", "-q", "-m", commitMessage)
+
+		if shape == mergeCheckout {
+			// Exactly what GitHub builds for refs/pull/N/merge: the branch merged into the
+			// base, with the base as the first parent.
+			git(t, root, "checkout", "-q", "--detach", "refs/remotes/origin/main")
+			git(t, root, "merge", "-q", "--no-ff", "-m", "Merge topic into main", "topic")
+		}
 	}
 }
 
@@ -324,13 +469,13 @@ func scratchCopy(t *testing.T) string {
 	return root
 }
 
-func runMake(t *testing.T, root, target string) (int, string) {
+func runMake(t *testing.T, root, target string, extra ...string) (int, string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), makeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "make", target)
+	cmd := exec.CommandContext(ctx, "make", append([]string{target}, extra...)...)
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	output, err := cmd.CombinedOutput()
