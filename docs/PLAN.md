@@ -1,10 +1,6 @@
 # messq — The Definitive Project Plan
 
-**Status:** adopted. This document is the synthesis of eleven independent persona plans
-(`docs/planning/plan-01` … `plan-11`) and supersedes all of them. Where they conflicted, the
-conflict is adjudicated in §2 with reasons. An engineer can execute this plan without reading
-the source plans. The implementation backlog derived from this plan lives in
-`docs/planning/issues.json` (machine form) and `docs/planning/issue-list.md` (human form).
+**Status:** adopted. This is the project's master plan; conflicting design options are adjudicated in §2 with reasons. The implementation backlog derived from this plan lives in the issue tracker and the GitHub project (issues #1-#42, dependency-ordered).
 
 > **One-line thesis:** messq is a single-binary, single-node queue daemon for Linux with
 > at-least-once delivery and JetStream-grade ack semantics, whose differentiator is
@@ -943,7 +939,7 @@ License: Apache-2.0, DCO (no CLA), no-relicensing commitment in `GOVERNANCE.md` 
 
 One developer, start **2026-08-24**, sequential with light overlap. Every milestone ends with
 something runnable and a verifiable exit criterion; a milestone without its tests and docs is
-not done. Full dependency-ordered backlog: `docs/planning/issues.json` / `issue-list.md`.
+not done. Full dependency-ordered backlog: issues #1-#42 in the tracker.
 
 | Milestone | Due | Scope | Exit criterion |
 |---|---|---|---|
