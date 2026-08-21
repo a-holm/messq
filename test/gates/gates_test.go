@@ -347,17 +347,32 @@ func runMake(t *testing.T, root, target string) (int, string) {
 	}
 }
 
-// childEnv drops the make variables the outer invocation exports. Without this, running the
-// matrix from `make ci` hands the child a MAKEFLAGS it never asked for, and a parallel outer
-// build would silently make every sabotage run parallel too.
+// leakedPrefixes name the variables a scratch copy must not inherit.
+//
+// GIT_ is the dangerous one. Git exports GIT_DIR to every hook, so `make ci` run from the
+// pre-push hook would hand each sabotage a GIT_DIR pointing at the developer's own repository:
+// the scratch copy's `git init` would target it, and `make cover-ratchet-check` would resolve
+// its merge base and its head commit message there instead of in the tree under test.
+//
+// MAKE is the quiet one. Running the matrix from `make ci` hands the child a MAKEFLAGS it never
+// asked for, so a parallel outer build would silently make every sabotage run parallel too.
+var leakedPrefixes = []string{"GIT_", "MAKEFLAGS=", "MAKELEVEL=", "MFLAGS="}
+
+// childEnv is the environment a scratch copy runs in.
 func childEnv() []string {
 	env := os.Environ()
 	out := env[:0]
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "MAKEFLAGS=") || strings.HasPrefix(kv, "MAKELEVEL=") || strings.HasPrefix(kv, "MFLAGS=") {
-			continue
+		leaked := false
+		for _, prefix := range leakedPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				leaked = true
+				break
+			}
 		}
-		out = append(out, kv)
+		if !leaked {
+			out = append(out, kv)
+		}
 	}
 	return out
 }
