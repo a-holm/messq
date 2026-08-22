@@ -40,6 +40,20 @@ const (
 	poolReadOnly
 )
 
+// String names the role for error messages: writer, reader, read-only.
+func (r poolRole) String() string {
+	switch r {
+	case poolWriter:
+		return "writer"
+	case poolReader:
+		return "reader"
+	case poolReadOnly:
+		return "read-only"
+	default:
+		return "read-only"
+	}
+}
+
 const (
 	// walAutocheckpointPages is PLAN §4.1's tuned auto-checkpoint interval in WAL pages
 	// (4000 × 4 KiB ≈ 16 MiB); steady-state checkpoint scheduling belongs to #27.

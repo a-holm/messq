@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package store
 
 import (
@@ -6,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,11 @@ func openForTest(t *testing.T, path string, role poolRole, opt Options, maxConns
 	if err != nil {
 		t.Fatalf("open %s: %v", dsn, err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if cerr := db.Close(); cerr != nil {
+			t.Errorf("close %s: %v", dsn, cerr)
+		}
+	})
 	db.SetMaxOpenConns(maxConns)
 	// No idle retention: every Conn after a Close is a fresh physical connection that ran
 	// the hook again, which is exactly what the poisoned-registration legs below rely on.
@@ -71,33 +76,17 @@ func TestEveryPooledConnectionHoldsPragmas(t *testing.T) {
 			rDB := openForTest(t, dir+"/messq.db", poolReader, rOpt, readers)
 
 			// Hold every reader-pool connection at once so each one is a distinct
-			// physical connection that ran the hook.
+			// physical connection that ran the hook. Acquisitions are sequential:
+			// concurrent opens of fresh-file WAL conversions raced SQLITE_BUSY past
+			// busy_timeout under -race load, while held connections force exactly the
+			// same pool expansion without the open race.
 			conns := make([]*sql.Conn, readers)
-			acquired := make(chan *sql.Conn, readers)
-			release := make(chan struct{})
-			var wg sync.WaitGroup
 			for i := 0; i < readers; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					conn, err := rDB.Conn(ctx)
-					if err != nil {
-						t.Errorf("acquire pooled conn: %v", err)
-						return
-					}
-					acquired <- conn
-					<-release // hold until the assertions below are done
-					conn.Close()
-				}()
-			}
-			for i := 0; i < readers; i++ {
-				select {
-				case c := <-acquired:
-					conns[i] = c
-				case <-time.After(10 * time.Second):
-					close(release)
-					t.Fatalf("pool produced only %d of %d connections", i, readers)
+				conn, err := rDB.Conn(ctx)
+				if err != nil {
+					t.Fatalf("acquire pooled conn %d of %d: %v", i+1, readers, err)
 				}
+				conns[i] = conn
 			}
 
 			exps := expectationsFor(poolReader, rOpt)
@@ -107,8 +96,14 @@ func TestEveryPooledConnectionHoldsPragmas(t *testing.T) {
 			for _, c := range conns {
 				assertPragmas(t, ctx, c, exps)
 			}
-			close(release)
-			wg.Wait()
+			// Release every held connection before the poisoned legs below: they need the
+			// pool empty so the next Conn creates a fresh PHYSICAL connection (with no idle
+			// retention and no queued waiters, it runs the hook again).
+			for _, c := range conns {
+				if cerr := c.Close(); cerr != nil {
+					t.Errorf("release pooled conn: %v", cerr)
+				}
+			}
 
 			// Poisoned registration: flip one expectation wrong and prove the next
 			// connection the pool creates is refused — the hook verifies every new
@@ -130,7 +125,9 @@ func TestEveryPooledConnectionHoldsPragmas(t *testing.T) {
 			}
 			wExps := expectationsFor(poolWriter, tc.opt)
 			assertPragmas(t, ctx, wConn, wExps)
-			wConn.Close()
+			if cerr := wConn.Close(); cerr != nil {
+				t.Errorf("release writer conn: %v", cerr)
+			}
 			for _, e := range wExps {
 				if e.name == "query_only" {
 					t.Errorf("writer expectation set must not contain query_only")
@@ -156,6 +153,7 @@ func TestEveryPooledConnectionHoldsPragmas(t *testing.T) {
 // registered against a DSN whose synchronous parameter says NORMAL must fail the first
 // connection with an error wrapping ErrPragmaMismatch naming the pragma.
 func TestOpenFailsOnPragmaMismatch(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 	dsn := buildDSN(dir+"/messq.db", poolWriter, Options{Durability: DurabilityRelaxed})
 	registerExpectations(dsn, expectationsFor(poolWriter, Options{})) // full-mode wants
@@ -164,9 +162,13 @@ func TestOpenFailsOnPragmaMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			t.Errorf("close mismatch-probe handle: %v", cerr)
+		}
+	}()
 
-	err = db.Ping()
+	err = db.PingContext(ctx)
 	if err == nil {
 		t.Fatal("Ping succeeded with FULL expectations against a NORMAL DSN")
 	}
@@ -181,13 +183,18 @@ func TestOpenFailsOnPragmaMismatch(t *testing.T) {
 // TestUnknownDSNHookIsNoOp proves the registry lookup miss leaves foreign SQLite users in
 // the same process untouched.
 func TestUnknownDSNHookIsNoOp(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := openSQLite("file:" + dir + "/plain.db")
 	if err != nil {
 		t.Fatalf("open unregistered DSN: %v", err)
 	}
-	defer db.Close()
-	if err := db.Ping(); err != nil {
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			t.Errorf("close unregistered-DSN handle: %v", cerr)
+		}
+	}()
+	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("ping unregistered DSN: %v", err)
 	}
 }
@@ -244,7 +251,11 @@ func TestReaderRejectsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire reader conn: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if cerr := conn.Close(); cerr != nil {
+			t.Errorf("release reader conn: %v", cerr)
+		}
+	}()
 
 	if _, err := conn.ExecContext(ctx, `INSERT INTO meta (k, v) VALUES ('x', 'y')`); err == nil {
 		t.Fatal("INSERT via read-pool connection succeeded")
@@ -277,7 +288,11 @@ func TestWALReaderNotBlockedByWriterTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire writer conn: %v", err)
 	}
-	defer wConn.Close()
+	defer func() {
+		if cerr := wConn.Close(); cerr != nil {
+			t.Errorf("release writer conn: %v", cerr)
+		}
+	}()
 	if _, err := wConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		t.Fatalf("BEGIN IMMEDIATE: %v", err)
 	}
@@ -293,7 +308,11 @@ func TestWALReaderNotBlockedByWriterTransaction(t *testing.T) {
 			done <- result{err: fmt.Errorf("acquire reader conn: %w", err)}
 			return
 		}
-		defer rConn.Close()
+		defer func() {
+			if cerr := rConn.Close(); cerr != nil {
+				t.Errorf("release reader conn: %v", cerr)
+			}
+		}()
 		var n int
 		if err := rConn.QueryRowContext(ctx, `SELECT count(*) FROM streams`).Scan(&n); err != nil {
 			done <- result{err: fmt.Errorf("select under held writer transaction: %w", err)}
@@ -302,6 +321,7 @@ func TestWALReaderNotBlockedByWriterTransaction(t *testing.T) {
 		done <- result{n: n}
 	}()
 
+	guard := clock.System{}.NewTimer(10 * time.Second)
 	select {
 	case res := <-done:
 		if res.err != nil {
@@ -310,7 +330,7 @@ func TestWALReaderNotBlockedByWriterTransaction(t *testing.T) {
 		if res.n != 1 {
 			t.Errorf("reader saw %d streams, want 1", res.n)
 		}
-	case <-time.After(10 * time.Second):
+	case <-guard.C():
 		t.Fatal("reader blocked on the writer's open transaction — WAL concurrency broken")
 	}
 

@@ -79,7 +79,10 @@ func verifyConnectionPragmas(conn pragmaConn, dsn string) error {
 	if !ok {
 		return nil
 	}
-	exps := v.([]expect)
+	exps, isExpectSet := v.([]expect)
+	if !isExpectSet {
+		return fmt.Errorf("registry entry for %s is not an expectation set", redactedDSN(dsn))
+	}
 	ctx := context.Background()
 	for _, e := range exps {
 		got, err := readPragma(ctx, conn, e.name)
@@ -95,18 +98,22 @@ func verifyConnectionPragmas(conn pragmaConn, dsn string) error {
 
 // readPragma reads one pragma's single-row single-column result over the raw driver.Rows
 // contract: integer pragmas arrive as int64, textual ones as string.
-func readPragma(ctx context.Context, conn pragmaConn, name string) (string, error) {
+func readPragma(ctx context.Context, conn pragmaConn, name string) (value string, err error) {
 	rows, err := conn.QueryContext(ctx, "PRAGMA "+name, nil)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close PRAGMA %s rows: %w", name, cerr))
+		}
+	}()
 	dest := make([]driver.Value, 1)
-	switch err := rows.Next(dest); {
-	case errors.Is(err, io.EOF):
+	switch nextErr := rows.Next(dest); {
+	case errors.Is(nextErr, io.EOF):
 		return "", fmt.Errorf("PRAGMA %s returned no rows", name)
-	case err != nil:
-		return "", err
+	case nextErr != nil:
+		return "", nextErr
 	}
 	switch v := dest[0].(type) {
 	case string:
