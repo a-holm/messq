@@ -113,11 +113,24 @@ jobs:
     steps:
       - run: 'echo "TODO(#34): migrate every committed golden data dir and verify --deep"'
 
+  # Real since #5. The D1 escape hatch must be exercised, not merely compilable: the whole
+  # internal/store suite runs against mattn/go-sqlite3 with CGO_ENABLED=1 under the race
+  # detector, proving the pragma enforcement and recovery paths hold on the cgo engine too.
   cgosqlite:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: 'echo "TODO(#5): build-tag matrix against mattn/go-sqlite3, the D1 escape hatch"'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.sum
+      - name: Build and test the cgo escape hatch
+        run: |
+          set -o pipefail
+          CGO_ENABLED=1 go build -tags cgosqlite ./...
+          CGO_ENABLED=1 go test -tags cgosqlite -race -count=1 ./internal/store/
 
   # The lane is unattended, so a failure that only exists in a run log is a failure nobody reads.
   # This job needs issues: write, which the workflow-level permissions block deliberately does

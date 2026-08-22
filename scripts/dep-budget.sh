@@ -5,12 +5,15 @@
 # a count, so a transitive module promoted to a direct require fails loudly instead of quietly
 # spending the budget.
 #
-# The list holds nine module paths for the eight budget rows of PLAN.md section 13, which writes
-# the CLI row as "spf13/cobra (+pflag)": pflag is part of that one entry.
+# The list holds ten module paths for the eight budget rows of PLAN.md section 13, which writes
+# the CLI row as "spf13/cobra (+pflag)": pflag is part of that one entry, and the storage row
+# names both engines — modernc.org/sqlite plus mattn/go-sqlite3 as "a tested build-tag escape
+# hatch" (row 1, D1), which is exactly how driver_cgo.go wires it.
 set -euo pipefail
 
 allowed=(
 	github.com/google/go-cmp
+	github.com/mattn/go-sqlite3
 	github.com/oklog/ulid/v2
 	github.com/prometheus/client_golang
 	github.com/rogpeppe/go-internal

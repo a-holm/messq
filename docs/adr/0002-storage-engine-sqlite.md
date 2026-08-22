@@ -19,6 +19,13 @@ messq stores everything in one SQLite database file, `<data-dir>/messq.db`, in W
 
 There is one read-write connection, owned exclusively by the writer goroutine, and a read-only pool sized to the CPU count for peek, trace, list, lag and metrics. A connection hook re-asserts the durability pragmas on every pooled connection and reads them back; the daemon refuses to start when `synchronous` does not match the configured durability mode.
 
+## Deviations implemented in #5
+
+Implementing §4.1's connection layout refined two details of this decision. Both are enforced and documented where they live (internal/store/dsn.go); they amend the letter above without changing the decision.
+
+- **No `_txlock=immediate` on the read pool.** `query_only=1` forbids acquiring a write lock, so a `BEGIN IMMEDIATE` on a read connection fails outright; `immediate` exists to kill the deferred-upgrade `SQLITE_BUSY` class on the writer, which never upgrades its reads. Only the writer DSN carries it.
+- **`mode=ro` is opt-in via `Options.ReadOnly`; `query_only(1)` is the enforcement.** A read-only OS-level handle on a WAL database cannot create the `-shm` file, so opening a quiescent copied data directory with `mode=ro` fails outright — and the same code path serves `messq verify` against a copy (#8) and `doctor` (#30). The daemon's read pool therefore opens the file read-write at the OS level and is fenced read-only by `query_only`, verified by read-back on every pooled connection. `mode=ro` remains available to offline inspection tools that accept the shm constraint.
+
 ## Alternatives
 
 | Option | Why it was serious | Why it lost |
