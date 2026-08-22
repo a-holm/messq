@@ -180,6 +180,69 @@ func TestOpenFailsOnPragmaMismatch(t *testing.T) {
 	}
 }
 
+// TestForeignKeysEnforcementPinnedByLiteral closes the vacuous-suite hole the adversarial
+// review found (mutant ADV-FK-EXP): every other pragma test derives its expectations from
+// the same truth table under test, so a mutation dropping foreign_keys from that table
+// passed the whole suite. Both legs here carry their own hardcoded literals instead of
+// deriving anything:
+//
+//   - the production expectation set registered for the writer DSN must contain
+//     foreign_keys want "1" — read out of the registry, compared against literals;
+//   - an expectation set hardcoding {foreign_keys, want "0"} against that same writer DSN,
+//     whose own parameter says foreign_keys(1), must get the pooled connection refused
+//     with ErrPragmaMismatch naming foreign_keys.
+func TestForeignKeysEnforcementPinnedByLiteral(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := dir + "/messq.db"
+	opt := Options{} // defaults; foreign_keys does not vary by option
+	writerDSN := buildDSN(path, poolWriter, opt)
+
+	// Production wiring, then a literal-content check on what it registered.
+	registerExpectations(writerDSN, expectationsFor(poolWriter, opt))
+	v, ok := registry.Load(writerDSN)
+	if !ok {
+		t.Fatal("writer DSN has no registered expectation set after production registration")
+	}
+	exps, isSet := v.([]expect)
+	if !isSet {
+		t.Fatalf("registry entry for writer DSN is %T, not []expect", v)
+	}
+	found := false
+	for _, e := range exps {
+		if e.name == "foreign_keys" && e.want == "1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("production writer expectations lack hardcoded foreign_keys want \"1\": %+v", exps)
+	}
+
+	// Poisoned leg: want "0" cannot be satisfied while the DSN parameter keeps
+	// foreign_keys(1) — the hook must refuse the connection and name the pragma.
+	registerExpectations(writerDSN, []expect{{name: "foreign_keys", want: "0"}})
+	db, err := openSQLite(writerDSN)
+	if err != nil {
+		t.Fatalf("open poisoned probe handle: %v", err)
+	}
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			t.Errorf("close poisoned probe handle: %v", cerr)
+		}
+	}()
+	err = db.PingContext(ctx)
+	if err == nil {
+		t.Fatal("pooled connection accepted {foreign_keys, want 0} against a foreign_keys(1) DSN")
+	}
+	if !errors.Is(err, ErrPragmaMismatch) {
+		t.Fatalf("poisoned foreign_keys error does not wrap ErrPragmaMismatch: %v", err)
+	}
+	if !strings.Contains(err.Error(), "foreign_keys") {
+		t.Errorf("mismatch error does not name foreign_keys: %v", err)
+	}
+}
+
 // TestUnknownDSNHookIsNoOp proves the registry lookup miss leaves foreign SQLite users in
 // the same process untouched.
 func TestUnknownDSNHookIsNoOp(t *testing.T) {

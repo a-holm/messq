@@ -80,19 +80,58 @@ func readMeta(ctx context.Context, q interface {
 	return val, true, nil
 }
 
+// databaseHasUserTables probes the database file with a bare connection: a plain DSN with
+// no registered expectations and, crucially, none of the file-property pragmas. Looking is
+// all the probe may do — applying auto_vacuum or journal_mode through a DSN writes the file
+// header (the change counter at offset 27) even when the values already match, and the
+// caller decides BETWEEN this probe and any stamping precisely so an established database
+// is never touched by a refused open.
+func databaseHasUserTables(ctx context.Context, path string) (established bool, err error) {
+	dsn := "file:" + path
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return false, fmt.Errorf("open emptiness probe: %w", err)
+	}
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "store: close emptiness-probe handle: %v\n", cerr)
+		}
+	}()
+	if pingErr := db.PingContext(ctx); pingErr != nil {
+		return false, fmt.Errorf("probe emptiness on %s: %w", redactedDSN(dsn), pingErr)
+	}
+	var tables int
+	if scanErr := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+	).Scan(&tables); scanErr != nil {
+		return false, fmt.Errorf("inspect sqlite_schema: %w", scanErr)
+	}
+	return tables > 0, nil
+}
+
 // initEmptyDatabase stamps the two file-property pragmas that must exist before the first
 // table does: auto_vacuum=INCREMENTAL (immutable once tables exist) and journal_mode=WAL
-// (the persistent property every later connection verifies). It runs on an unregistered DSN
-// through a raw pre-hook connection, and only when sqlite_schema holds no user tables — a
-// crash between file creation and this step replays safely, while an established database is
-// left strictly alone.
+// (the persistent property every later connection verifies). The gate runs FIRST, on a bare
+// connection that carries no pragmas at all: only when sqlite_schema holds no user tables
+// is the pragma-bearing DSN opened. An established database is therefore left strictly
+// alone — byte for byte — no matter how Open ends (a too-new schema, corruption, …), while
+// a crash between file creation and this step replays safely: the probe still sees no user
+// tables and the stamp re-runs on the empty file.
 func initEmptyDatabase(ctx context.Context, path string) error {
+	established, err := databaseHasUserTables(ctx, path)
+	if err != nil {
+		return err
+	}
+	if established {
+		return nil // established database: never open the pragma DSN against it
+	}
+
 	dsn := freshFileDSN(path)
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return fmt.Errorf("open fresh-database pragmas: %w", err)
 	}
-	err = func() error {
+	return func() error {
 		defer func() {
 			if cerr := db.Close(); cerr != nil {
 				fmt.Fprintf(os.Stderr, "store: close fresh-database handle: %v\n", cerr)
@@ -100,15 +139,6 @@ func initEmptyDatabase(ctx context.Context, path string) error {
 		}()
 		if pingErr := db.PingContext(ctx); pingErr != nil {
 			return fmt.Errorf("apply fresh-database pragmas on %s: %w", redactedDSN(dsn), pingErr)
-		}
-		var tables int
-		if scanErr := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
-		).Scan(&tables); scanErr != nil {
-			return fmt.Errorf("inspect sqlite_schema: %w", scanErr)
-		}
-		if tables > 0 {
-			return nil // established database: never touch immutable properties
 		}
 		var journal, vacuum string
 		if jmErr := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journal); jmErr != nil {
@@ -126,10 +156,6 @@ func initEmptyDatabase(ctx context.Context, path string) error {
 		}
 		return nil
 	}()
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // openPool builds and verifies one pool for role: register the expectation set before the
@@ -162,7 +188,9 @@ func openPool(ctx context.Context, path string, role poolRole, opt Options) (*sq
 //
 //  1. resolve/create the data dir (§10 permissions), create messq.db 0600, fsync the entry;
 //  2. flock LOCK — exclusive for the daemon, shared under [Options.ReadOnly];
-//  3. stamp auto_vacuum/journal_mode on an empty file via a raw pre-hook connection;
+//  3. probe emptiness on a bare pragma-free connection; stamp auto_vacuum/journal_mode
+//     only when no user tables exist (an established file is never opened on the pragma
+//     DSN, so refused opens leave it byte-identical);
 //  4. open the writer pool and ping it (the pragma hook verifies here);
 //  5. migrate;
 //  6. open the read pool;

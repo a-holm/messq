@@ -286,6 +286,13 @@ func TestMigrateRefusesSchemaTooNew(t *testing.T) {
 		t.Fatalf("ErrSchemaTooNew does not map to errs.ErrSchemaNewer: %v", err)
 	}
 
+	// #5 acceptance: the refusal must NAME the required action, in the issue's transcript
+	// wording — a downgrade victim has to be told what to do, not just what happened.
+	const wantAction = "next: upgrade messq to >= the version that wrote it, or restore a backup"
+	if !strings.Contains(err.Error(), wantAction) {
+		t.Errorf("too-new refusal does not name the required action\n  got:  %v\n  want: %q", err, wantAction)
+	}
+
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read db after refusal: %v", err)

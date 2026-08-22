@@ -126,6 +126,61 @@ func TestOpenRefusesSchemaTooNew(t *testing.T) {
 	}
 }
 
+// TestOpenRefusedTooNewLeavesDBByteIdentical is the byte-identity regression for the
+// reviewer's change-counter drift: refusing a too-new directory through the FULL Open path
+// used to bump the file-header change counter (offset 27) on every attempt, because
+// initEmptyDatabase opened its pragma-bearing DSN before the emptiness check could gate it.
+// The probe must look before any pragma is stamped, so a refused open leaves messq.db
+// bit-for-bit untouched. Two consecutive refusals: neither may move a byte.
+func TestOpenRefusedTooNewLeavesDBByteIdentical(t *testing.T) {
+	ctx := context.Background()
+	dir := testDataDir(t)
+
+	st, _, seedErr := Open(ctx, testOptions(dir, fakeClock(), &logCapture{}))
+	if seedErr != nil {
+		t.Fatalf("seed open: %v", seedErr)
+	}
+	w, takeErr := st.TakeWriter()
+	if takeErr != nil {
+		t.Fatalf("take writer: %v", takeErr)
+	}
+	if _, stampErr := w.ExecContext(ctx,
+		`UPDATE meta SET v = '999' WHERE k = 'schema_version'`); stampErr != nil {
+		t.Fatalf("stamp future version: %v", stampErr)
+	}
+	killSimulate(t, st, w)
+
+	path := dbPath(dir)
+	for attempt := 1; attempt <= 2; attempt++ {
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read db before refusal %d: %v", attempt, err)
+		}
+
+		st2, report, openErr := Open(ctx, testOptions(dir, fakeClock(), &logCapture{}))
+		if !errors.Is(openErr, ErrSchemaTooNew) {
+			t.Fatalf("refusal %d: open = (%v, %v, %v), want ErrSchemaTooNew", attempt, st2, report, openErr)
+		}
+
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read db after refusal %d: %v", attempt, err)
+		}
+		if string(before) != string(after) {
+			n := len(before)
+			if len(after) < n {
+				n = len(after)
+			}
+			i := 0
+			for i < n && before[i] == after[i] {
+				i++
+			}
+			t.Fatalf("refused open %d mutated messq.db (%d -> %d bytes), first diff at offset %d: was 0x%02x, now 0x%02x",
+				attempt, len(before), len(after), i, before[i], after[i])
+		}
+	}
+}
+
 // TestRecoveryHelpersRejectBrokenHandles drives the recovery helpers' failure arms directly
 // (in-package): a closed pool cannot even begin, missing tables abort and roll back the
 // transaction at each stage, and a checkpoint or integrity check on a dead handle reports

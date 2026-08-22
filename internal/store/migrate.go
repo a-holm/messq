@@ -159,7 +159,8 @@ func migrate(ctx context.Context, db *sql.DB, clk clock.Clock) (from, to int, er
 	}
 
 	if from > to {
-		return from, to, fmt.Errorf("%w: directory is at schema v%d, this binary ships v%d",
+		return from, to, fmt.Errorf("%w: directory is at schema v%d, this binary ships v%d;"+
+			" next: upgrade messq to >= the version that wrote it, or restore a backup",
 			ErrSchemaTooNew, from, to)
 	}
 
