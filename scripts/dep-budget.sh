@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Enforces the dependency budget of PLAN.md section 13. The budget is an allow-list rather than
-# a count, so a transitive module promoted to a direct require fails loudly instead of quietly
-# spending the budget.
+# Enforces the dependency budget of PLAN.md section 13. The budget is an allow-list rather
+# than a count, so a transitive module promoted to a direct require fails loudly instead of
+# quietly spending the budget.
 #
-# The list holds ten module paths for the eight budget rows of PLAN.md section 13, which writes
-# the CLI row as "spf13/cobra (+pflag)": pflag is part of that one entry, and the storage row
-# names both engines — modernc.org/sqlite plus mattn/go-sqlite3 as "a tested build-tag escape
-# hatch" (row 1, D1), which is exactly how driver_cgo.go wires it.
+# The list holds eleven module paths for the eight budget rows of PLAN.md section 13, which
+# writes the CLI row as "spf13/cobra (+pflag)": pflag is part of that one entry, the storage
+# row names both engines — modernc.org/sqlite plus mattn/go-sqlite3 as "a tested build-tag
+# escape hatch" (row 1, D1) — and the metrics row (row 3) covers the client_golang family:
+# prometheus/client_model is that family's wire-format module, required by any exposition
+# test that reads histogram samples back.
 set -euo pipefail
 
 allowed=(
@@ -16,6 +18,7 @@ allowed=(
 	github.com/mattn/go-sqlite3
 	github.com/oklog/ulid/v2
 	github.com/prometheus/client_golang
+	github.com/prometheus/client_model
 	github.com/rogpeppe/go-internal
 	github.com/spf13/cobra
 	github.com/spf13/pflag
@@ -35,8 +38,8 @@ is_allowed() {
 }
 
 # The two steps are separate on purpose. `grep -v '^$'` exits 1 when every line it saw was
-# blank, which is the legitimate state of a module with no dependencies, so its status has to be
-# tolerated. Tolerating go list's status in the same pipeline would turn an unreadable module
+# blank, which is the legitimate state of a module with no dependencies, so its status has to
+# be tolerated. Tolerating go list's status in the same pipeline would turn an unreadable module
 # graph into "0 direct modules, all allow-listed": a budget that passes precisely because it
 # could not be measured.
 if ! listing="$(go list -m -f '{{if and (not .Main) (not .Indirect)}}{{.Path}}{{end}}' all)"; then

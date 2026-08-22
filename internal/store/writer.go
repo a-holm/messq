@@ -10,10 +10,8 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/a-holm/messq/internal/clock"
@@ -123,35 +121,11 @@ func (e *FatalError) Error() string {
 // Unwrap reaches the driver error so callers can match errnos through it.
 func (e *FatalError) Unwrap() error { return e.Err }
 
-// classify names the storage-fault family of err for storage.fatal logs and the
-// messq_commit_errors_total{class} label. Errno-bearing errors are matched through
-// errors.Is so arbitrary wrapping does not hide them; SQLite's textual signatures cover the
-// errno-less spellings modernc emits; anything else is unknown.
+// classify names the storage-fault family of err. It delegates to the shared vocabulary in
+// internal/obs so the storage.fatal log line and the messq_commit_errors_total{class} label
+// can never disagree about a fault's class.
 func classify(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	// Errno-bearing errors first: errors.Is sees through any wrapping layers.
-	switch {
-	case errors.Is(err, syscall.EIO):
-		return "eio"
-	case errors.Is(err, syscall.ENOSPC):
-		return "enospc"
-	}
-	// SQLite's errno-less textual fallbacks (SQLITE_IOERR, SQLITE_CORRUPT, SQLITE_FULL as
-	// spelled by sqlite3_errmsg). Lower-cased substring matches on the driver's own words;
-	// deliberately conservative — unknown is always the safe label.
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "i/o error"), strings.Contains(msg, "input/output error"):
-		return "eio"
-	case strings.Contains(msg, "no space left"), strings.Contains(msg, "disk is full"):
-		return "enospc"
-	case strings.Contains(msg, "corrupt"), strings.Contains(msg, "malformed"),
-		strings.Contains(msg, "not a database"), strings.Contains(msg, "encrypted"):
-		return "corrupt"
-	}
-	return "unknown"
+	return obs.ClassifyStorageError(err)
 }
 
 // Config configures a [Writer]. Zero values mean "default", except CommitWindow where zero
