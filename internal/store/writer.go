@@ -215,12 +215,27 @@ func (c *Config) fillDefaults() error {
 // suppressible, never sampled (D11's loud-mode rule).
 const warnRelaxedDurability = "durability=relaxed"
 
+// eventBufferBatches bounds the fan-out pump's queue in batches (not events): even a burst of
+// max-size batches cannot wedge the writer — overflow drops loudly instead.
+const eventBufferBatches = 64
+
+// request is one submitted command travelling to the writer goroutine and back. done closes
+// when res/err hold the final answer; waiting on it — not on ctx — is what makes an accepted
+// command un-cancellable.
+type request struct {
+	cmd  Cmd
+	res  Result
+	err  error
+	done chan struct{}
+}
+
 // writerOptions collects everything NewWriter takes besides the handle, clock and Config.
 type writerOptions struct {
 	observer obs.CommitObserver
 	sink     obs.Sink
 	logger   *slog.Logger
 	nodeID   string
+	hooks    hooks
 }
 
 // WriterOption customises a [Writer] at construction.
@@ -254,6 +269,27 @@ func withNodeID(id string) WriterOption {
 	return writerOptionFunc(func(wo *writerOptions) { wo.nodeID = id })
 }
 
+// withEventSink routes committed events to s (test injection twin of [WithEventSink]).
+func withEventSink(s obs.Sink) WriterOption {
+	return writerOptionFunc(func(wo *writerOptions) { wo.sink = s })
+}
+
+// hooks are the fault points reserved for #32's messq_fault grammar; production builds leave
+// them nil. The reserved string names map one to one onto the fields:
+//
+//	store.tx.after_commit_before_reply — after COMMIT returned nil, before callers unblock
+//
+// (store.tx.before_apply and store.tx.before_commit join in later slices with the code they
+// gate.)
+type hooks struct {
+	afterCommitBeforeReply func()
+}
+
+// withHooks installs the test/fault seams. Test-only; production code never calls it.
+func withHooks(h hooks) WriterOption {
+	return writerOptionFunc(func(wo *writerOptions) { wo.hooks = h })
+}
+
 // Writer is the single-writer group-commit engine. Construct with [Store.NewWriter] (the
 // blessed path — the rw handle never leaves the package) or [NewWriter] with a hand-taken
 // handle. All methods are safe for concurrent use.
@@ -261,16 +297,18 @@ type Writer struct {
 	rw   *sql.DB // the ONLY reference in the process; handed over once by the Store
 	clk  clock.Clock
 	cfg  Config
+	ch   chan *request // bounded; cap = QueueDepth; full channel == backpressure
 	log  *slog.Logger
 	node string
 
 	obsrv  obs.CommitObserver
 	events obs.Sink
+	hooks  hooks
 
 	fatalC   chan *FatalError // buffered 1: the supervisor may not be selecting yet
 	closing  atomic.Bool
 	done     chan struct{} // closed when run has returned
-	stop     chan struct{} // closed by Close to retire the goroutines
+	stop     chan struct{} // closed by Close; run drains what is queued before exiting
 	evCh     chan []obs.Event
 	pumpDone chan struct{}
 	closeOne sync.Once
@@ -308,10 +346,12 @@ func NewWriter(rw *sql.DB, clk clock.Clock, cfg Config, opts ...WriterOption) (*
 		rw:       rw,
 		clk:      clk,
 		cfg:      cfg,
+		ch:       make(chan *request, cfg.QueueDepth),
 		log:      o.logger,
 		node:     o.nodeID,
 		obsrv:    o.observer,
 		events:   o.sink,
+		hooks:    o.hooks,
 		fatalC:   make(chan *FatalError, 1),
 		done:     make(chan struct{}),
 		stop:     make(chan struct{}),
@@ -328,10 +368,6 @@ func NewWriter(rw *sql.DB, clk clock.Clock, cfg Config, opts ...WriterOption) (*
 	go w.pumpEvents()
 	return w, nil
 }
-
-// eventBufferBatches bounds the fan-out pump's queue in batches (not events): even a burst of
-// max-size batches cannot wedge the writer — overflow drops loudly instead (S9's rule).
-const eventBufferBatches = 64
 
 // verifyDurabilityPragmas reads journal_mode and synchronous back from the live pool's
 // connection and refuses on any disagreement with the configured mode. This is the second
@@ -386,11 +422,183 @@ func (w *Writer) Fatal() <-chan *FatalError {
 	return w.fatalC
 }
 
-// run is the writer goroutine: batch assembly lands here in the next slice. For now it
-// waits for Close's stop signal; requests cannot exist yet because Do does not.
+// Do submits one command to the writer and waits for its batch's outcome. The two waits are
+// deliberately different:
+//
+//  1. Enqueueing is cancellable — a caller whose context expires before the command reached
+//     the queue gets ctx.Err() and the command never runs.
+//  2. Waiting is NOT cancellable in effect: once accepted, the command always runs (SEMANTICS
+//     S2.3's total order must not develop holes for disconnected clients). A caller that
+//     stops waiting gets ErrCommitUnknown — the write may or may not have happened, which is
+//     exactly what idempotent retries with Messq-Msg-Id (#7) are for.
+//
+// A full channel blocks here: that is backpressure, propagating to the socket (PLAN §3.2).
+func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
+	if cmd == nil {
+		return nil, fmt.Errorf("%w: nil command", errs.ErrBadRequest)
+	}
+	if w.closing.Load() {
+		return nil, ErrWriterClosing
+	}
+	r := &request{cmd: cmd, done: make(chan struct{})}
+	select {
+	case w.ch <- r:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-w.done:
+		return nil, ErrWriterClosing
+	}
+	select {
+	case <-r.done:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", ErrCommitUnknown, ctx.Err())
+	}
+	return r.res, r.err
+}
+
+// run is the writer goroutine: it assembles batches and commits them, in enqueue order,
+// until Close signals stop — and even then only after every already-queued command has been
+// committed (drain-before-exit). A batch is never empty: the first receive blocks, so an
+// idle writer burns no CPU. The commit-window linger lands with the batch-closing slice;
+// this slice commits whatever is queued when the previous batch finishes.
+//
+// w.ch is never closed: Close is a stop signal plus a drain, which removes the entire
+// send-on-closed-channel class instead of racing it.
 func (w *Writer) run() {
 	defer close(w.done)
-	<-w.stop
+	batch := make([]*request, 0, w.cfg.CommitMaxBatch)
+	for {
+		select {
+		case first := <-w.ch:
+			batch = append(batch[:0], first)
+			batch = w.drainAvailable(batch, int64(first.cmd.Bytes()))
+			w.obsrv.ObserveQueueDepth(len(w.ch))
+			w.commitBatch(batch)
+		case <-w.stop:
+			for {
+				select {
+				case first := <-w.ch:
+					batch = append(batch[:0], first)
+					batch = w.drainAvailable(batch, int64(first.cmd.Bytes()))
+					w.obsrv.ObserveQueueDepth(len(w.ch))
+					w.commitBatch(batch)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// drainAvailable takes everything already queued up to the batch budgets, without lingering:
+// the select's default arm ends the batch the moment the queue runs dry. The byte budget
+// closes batches too once its rule lands with its own test.
+func (w *Writer) drainAvailable(batch []*request, bytes int64) []*request {
+	for len(batch) < w.cfg.CommitMaxBatch && bytes < w.cfg.CommitMaxBytes {
+		select {
+		case r := <-w.ch:
+			batch = append(batch, r)
+			bytes += int64(r.cmd.Bytes())
+		default:
+			return batch
+		}
+	}
+	return batch
+}
+
+// commitBatch applies one assembled batch inside a single BEGIN IMMEDIATE transaction: one
+// fsync for N commands. Every command runs behind its own SAVEPOINT; the single batch
+// timestamp comes from batchNow and reaches Apply unchanged, so all rows of a batch share it.
+// Replies close strictly after COMMIT returned nil; events reach the pump after that.
+func (w *Writer) commitBatch(batch []*request) {
+	now := w.batchNow()
+	// NOT a caller's context: one client disconnecting must never abort a 256-command batch.
+	ctx := context.Background()
+
+	tx, err := w.rw.BeginTx(ctx, nil)
+	if err != nil {
+		w.abortBatch(batch, "begin", err)
+		return
+	}
+
+	events := make([]obs.Event, 0, len(batch))
+	for i, r := range batch {
+		sp := "s" + strconv.Itoa(i)
+		if _, spErr := tx.ExecContext(ctx, "SAVEPOINT "+sp); spErr != nil {
+			w.abortBatch(batch, "savepoint", spErr)
+			return
+		}
+		res, evs, applyErr := w.applyCommand(ctx, tx, r.cmd, now)
+		switch applyErr {
+		case nil:
+			if _, relErr := tx.ExecContext(ctx, "RELEASE "+sp); relErr != nil {
+				w.abortBatch(batch, "release", relErr)
+				return
+			}
+			r.res = res
+			events = append(events, evs...)
+		default:
+			// Infrastructure damage: the batch state is not trustworthy. The business-
+			// rejection class (CmdErr → ROLLBACK TO savepoint, siblings survive) arrives
+			// with its own tests; today every Apply error aborts the whole batch.
+			w.abortBatch(batch, "apply", applyErr)
+			return
+		}
+	}
+
+	start := w.clk.Now()
+	err = tx.Commit()
+	dur := w.clk.Since(start)
+	w.obsrv.ObserveCommit(len(batch), dur, err)
+	if err != nil {
+		w.abortBatch(batch, "commit", err)
+		return
+	}
+
+	if w.hooks.afterCommitBeforeReply != nil {
+		w.hooks.afterCommitBeforeReply() // store.tx.after_commit_before_reply (#32)
+	}
+	for _, r := range batch { // 1. replies — callers unblock
+		close(r.done)
+	}
+	if len(events) > 0 { // 2. fan-out — off the latency path, never blocking
+		select {
+		case w.evCh <- events:
+		default:
+			w.log.Warn("events.dropped",
+				"node", w.node,
+				"reason", "fan-out queue overflow; the events table remains complete")
+		}
+	}
+}
+
+// applyCommand runs one command body, guarding the writer against a panicking command: a bug
+// in a command must never take down the goroutine. (Recovery-to-latch semantics land with
+// the fault-injection slice.)
+func (w *Writer) applyCommand(ctx context.Context, tx *sql.Tx, cmd Cmd, now time.Time) (res Result, evs []obs.Event, err error) {
+	return cmd.Apply(ctx, tx, now)
+}
+
+// batchNow returns the batch's single wall-clock timestamp. The monotonic guard against
+// backwards clock steps lands with the timing tests.
+func (w *Writer) batchNow() time.Time {
+	return w.clk.Now()
+}
+
+// abortBatch fails every request in a doomed batch with ErrCommitUnknown — never a definite
+// failure: SQLite rolls back on our way out, but a begin/commit error can also mean the work
+// landed. The latching classification of these errors is the fsyncgate slice's subject.
+func (w *Writer) abortBatch(batch []*request, op string, cause error) {
+	w.log.Warn("writer.batch_aborted", "node", w.node, "op", op, "error", cause.Error())
+	w.failAll(batch, fmt.Errorf("%w: %s failed: %w", ErrCommitUnknown, op, cause))
+}
+
+// failAll answers every waiter in the batch with err exactly once each.
+func (w *Writer) failAll(batch []*request, err error) {
+	for _, r := range batch {
+		r.err = err
+		close(r.done)
+	}
 }
 
 // pumpEvents is the fan-out pump: committed batches arrive here strictly post-commit and are
@@ -404,16 +612,19 @@ func (w *Writer) pumpEvents() {
 }
 
 // Close stops the writer: new submissions are refused, already-accepted ones drain and
-// commit, then the goroutines exit and the rw handle is closed. It is idempotent. The drain
-// semantics (bounded by ctx, behaviour after a fatal latch) are a later slice's subject;
-// this slice guarantees only termination.
+// commit, then the fan-out pump finishes its backlog, the goroutines exit and the rw handle
+// is closed. It is idempotent. The bounded-drain refinement is a later slice's subject; this
+// slice guarantees termination.
+//
+// Ordering matters here: evCh is closed only after run has returned — its commitBatch is the
+// channel's only sender, so closing earlier would race a post-reply event hand-off.
 func (w *Writer) Close(ctx context.Context) error {
 	w.closing.Store(true)
 	w.closeOne.Do(func() {
 		close(w.stop)
-		close(w.evCh)
 	})
 	<-w.done
+	close(w.evCh)
 	<-w.pumpDone
 	if err := w.rw.Close(); err != nil {
 		return fmt.Errorf("close writer handle: %w", err)
