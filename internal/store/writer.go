@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -274,17 +275,26 @@ func withEventSink(s obs.Sink) WriterOption {
 	return writerOptionFunc(func(wo *writerOptions) { wo.sink = s })
 }
 
+// withObserver routes commit observations to o (test injection twin of
+// [WithCommitObserver]).
+func withObserver(o obs.CommitObserver) WriterOption {
+	return writerOptionFunc(func(wo *writerOptions) { wo.observer = o })
+}
+
 // hooks are the fault points reserved for #32's messq_fault grammar; production builds leave
 // them nil. The reserved string names map one to one onto the fields:
 //
 //	store.tx.before_apply              — after BEGIN IMMEDIATE, before the first SAVEPOINT
+//	store.tx.before_commit             — after all applies, immediately before COMMIT
 //	store.tx.after_commit_before_reply — after COMMIT returned nil, before callers unblock
 //
-// (store.tx.before_commit joins with the fsyncgate slice.) beforeCommit-style injection of a
-// commit error uses before_commit; this slice only needs before_apply as the one-transaction
-// observation point the batch-rule tests drive.
+// beforeCommit returning an error simulates the commit failing: it takes the commitFailed
+// path (classify, latch, never retry) without executing COMMIT at all, which is how this
+// issue's tests drive the fsyncgate. #32 replaces injection with build-tagged OS-level
+// faults; these Go seams remain for unit tests.
 type hooks struct {
 	beforeApply            func()
+	beforeCommit           func() error
 	afterCommitBeforeReply func()
 }
 
@@ -308,7 +318,8 @@ type Writer struct {
 	events obs.Sink
 	hooks  hooks
 
-	fatalC   chan *FatalError // buffered 1: the supervisor may not be selecting yet
+	fatalC   chan *FatalError           // buffered 1: the supervisor may not be selecting yet
+	latched  atomic.Pointer[FatalError] // set exactly once: the first fault wins
 	closing  atomic.Bool
 	lastNow  atomic.Int64  // monotonic guard for batch timestamps (UnixNano)
 	done     chan struct{} // closed when run has returned
@@ -441,6 +452,9 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 	if cmd == nil {
 		return nil, fmt.Errorf("%w: nil command", errs.ErrBadRequest)
 	}
+	if fe := w.latched.Load(); fe != nil {
+		return nil, latchedError(fe)
+	}
 	if w.closing.Load() {
 		return nil, ErrWriterClosing
 	}
@@ -568,7 +582,19 @@ fill:
 // fsync for N commands. Every command runs behind its own SAVEPOINT; the single batch
 // timestamp comes from batchNow and reaches Apply unchanged, so all rows of a batch share it.
 // Replies close strictly after COMMIT returned nil; events reach the pump after that.
+//
+// Any infrastructure failure on this path — begin, savepoint, apply, release, commit — is
+// FATAL (the fsyncgate rule, ADR-0005): the fault is classified once, storage.fatal is
+// logged at ERROR, the process latches read-only, the rw pool closes, and nothing is ever
+// retried. A failed fsync may have discarded the dirty page; a retry that succeeds proves
+// nothing.
 func (w *Writer) commitBatch(batch []*request) {
+	if fe := w.latched.Load(); fe != nil {
+		// Latched before this batch started: refuse without touching the (closed) rw pool,
+		// and never reach the commit step again.
+		w.failAll(batch, latchedError(fe))
+		return
+	}
 	if w.hooks.beforeApply != nil {
 		w.hooks.beforeApply() // store.tx.before_apply (#32): one firing == one transaction
 	}
@@ -578,33 +604,22 @@ func (w *Writer) commitBatch(batch []*request) {
 
 	tx, err := w.rw.BeginTx(ctx, nil)
 	if err != nil {
-		w.abortBatch(batch, "begin", err)
+		w.doomed(batch, "begin", nil, err)
 		return
 	}
-	// Any exit below runs the transaction down explicitly: an abandoned tx would hold the
-	// write lock until GC finalizes the driver object, wedging whoever comes next. A
-	// rollback failure on an already-doomed batch is logged, not acted on.
-	ok := false
-	defer func() {
-		if !ok {
-			if rbErr := tx.Rollback(); rbErr != nil {
-				w.log.Warn("writer.rollback", "node", w.node, "error", rbErr.Error())
-			}
-		}
-	}()
 
 	events := make([]obs.Event, 0, len(batch))
 	for i, r := range batch {
 		sp := "s" + strconv.Itoa(i)
 		if _, spErr := tx.ExecContext(ctx, "SAVEPOINT "+sp); spErr != nil {
-			w.abortBatch(batch, "savepoint", spErr)
+			w.doomed(batch, "savepoint", tx, spErr)
 			return
 		}
 		res, evs, applyErr := w.applyCommand(ctx, tx, r.cmd, now)
 		switch applyErr {
 		case nil:
 			if _, relErr := tx.ExecContext(ctx, "RELEASE "+sp); relErr != nil {
-				w.abortBatch(batch, "release", relErr)
+				w.doomed(batch, "release", tx, relErr)
 				return
 			}
 			r.res = res
@@ -612,16 +627,16 @@ func (w *Writer) commitBatch(batch []*request) {
 		default:
 			if !IsCmdError(applyErr) {
 				// Infrastructure damage: the batch state is not trustworthy.
-				w.abortBatch(batch, "apply", applyErr)
+				w.doomed(batch, "apply", tx, applyErr)
 				return
 			}
 			// Business rejection: undo exactly this command, keep its siblings.
 			if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO "+sp); rbErr != nil {
-				w.abortBatch(batch, "rollback_to", rbErr)
+				w.doomed(batch, "rollback_to", tx, rbErr)
 				return
 			}
 			if _, relErr := tx.ExecContext(ctx, "RELEASE "+sp); relErr != nil {
-				w.abortBatch(batch, "release", relErr)
+				w.doomed(batch, "release", tx, relErr)
 				return
 			}
 			r.err = applyErr
@@ -629,15 +644,20 @@ func (w *Writer) commitBatch(batch []*request) {
 		}
 	}
 
+	if w.hooks.beforeCommit != nil { // store.tx.before_commit (#32)
+		if injectErr := w.hooks.beforeCommit(); injectErr != nil {
+			w.doomedCommit(batch, tx, injectErr)
+			return
+		}
+	}
 	start := w.clk.Now()
 	err = tx.Commit()
 	dur := w.clk.Since(start)
 	w.obsrv.ObserveCommit(len(batch), dur, err)
 	if err != nil {
-		w.commitFailed(batch, err)
+		w.doomedCommit(batch, tx, err)
 		return
 	}
-	ok = true
 
 	if w.hooks.afterCommitBeforeReply != nil {
 		w.hooks.afterCommitBeforeReply() // store.tx.after_commit_before_reply (#32)
@@ -658,18 +678,40 @@ func (w *Writer) commitBatch(batch []*request) {
 	}
 }
 
-// commitFailed answers every still-waiting caller of a batch whose COMMIT failed. This is
-// the fsyncgate seam; the full classify-latch-refuse machinery is the next slice. Today it
-// fails the batch as UNKNOWN — which the acceptance list demands regardless of latching,
-// because a failed commit is never a definite no.
-func (w *Writer) commitFailed(batch []*request, cause error) {
-	w.failAll(batch, fmt.Errorf("%w: commit failed: %w", ErrCommitUnknown, cause))
+// doomed is the fatal teardown of a batch that hit infrastructure damage before its commit:
+// roll the transaction back explicitly (an abandoned tx would hold the write lock until GC
+// finalized the driver object), latch read-only, close the rw pool, and only then answer the
+// waiters with ErrCommitUnknown — never a definite failure: SQLite rolled back, but a begin/
+// apply error can also mean the work landed. The strict order matters: when a caller's
+// refusal becomes visible, the write path is already structurally gone.
+func (w *Writer) doomed(batch []*request, op string, tx *sql.Tx, cause error) {
+	if tx != nil {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			w.log.Warn("writer.rollback", "node", w.node, "error", rbErr.Error())
+		}
+	}
+	w.latch(&FatalError{
+		Op:    op,
+		Err:   cause,
+		Class: classify(cause),
+		At:    w.clk.Now(),
+		Batch: len(batch),
+	})
+	if closeErr := w.rw.Close(); closeErr != nil {
+		w.log.Warn("storage.fatal.rw_close", "node", w.node, "error", closeErr.Error())
+	}
+	w.failAll(batch, fmt.Errorf("%w: %s failed: %w", ErrCommitUnknown, op, cause))
 }
 
-// applyCommand runs one command body, guarding the writer against a panicking command: a bug
-// in a command must never take down the goroutine. (Recovery-to-latch semantics land with
-// the fault-injection slice.)
+// applyCommand runs one command body, recovering a panicking command into an infrastructure
+// error: a bug in a command must never take down the goroutine, and it must never half-apply
+// a transaction — the recovered error takes the same fatal path as any other damage.
 func (w *Writer) applyCommand(ctx context.Context, tx *sql.Tx, cmd Cmd, now time.Time) (res Result, evs []obs.Event, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic in %s apply: %v\n%s", cmd.Kind(), p, debug.Stack())
+		}
+	}()
 	return cmd.Apply(ctx, tx, now)
 }
 
@@ -691,12 +733,56 @@ func (w *Writer) batchNow() time.Time {
 	}
 }
 
-// abortBatch fails every request in a doomed batch with ErrCommitUnknown — never a definite
-// failure: SQLite rolls back on our way out, but a begin/commit error can also mean the work
-// landed. The latching classification of these errors is the fsyncgate slice's subject.
-func (w *Writer) abortBatch(batch []*request, op string, cause error) {
-	w.log.Warn("writer.batch_aborted", "node", w.node, "op", op, "error", cause.Error())
-	w.failAll(batch, fmt.Errorf("%w: %s failed: %w", ErrCommitUnknown, op, cause))
+// doomedCommit is doomed's commit-specific form: same teardown, op=commit, and a message
+// that does not claim the rollback proved anything about durability.
+func (w *Writer) doomedCommit(batch []*request, tx *sql.Tx, cause error) {
+	if rbErr := tx.Rollback(); rbErr != nil {
+		w.log.Warn("writer.rollback", "node", w.node, "error", rbErr.Error())
+	}
+	w.latch(&FatalError{
+		Op:    "commit",
+		Err:   cause,
+		Class: classify(cause),
+		At:    w.clk.Now(),
+		Batch: len(batch),
+	})
+	if closeErr := w.rw.Close(); closeErr != nil {
+		w.log.Warn("storage.fatal.rw_close", "node", w.node, "error", closeErr.Error())
+	}
+	w.failAll(batch, fmt.Errorf("%w: commit failed: %w", ErrCommitUnknown, cause))
+}
+
+// latch records the process's single storage.fatal: first error wins (CAS), the ERROR line
+// goes out with op/class/batch named, the observer flips messq_readonly to 1, and the
+// buffered fatal channel signals the supervisor — which exits non-zero after
+// Config.FatalDrain of read-serving (#17 owns the exit-code contract).
+//
+// The rw pool is NOT closed here: the doomed transaction's rollback must run first (a Tx
+// holds its connection out of the idle pool, and closing the DB around it would leave the
+// connection dangling). doomed/doomedCommit close the pool after the rollback, before any
+// caller sees its refusal.
+func (w *Writer) latch(fe *FatalError) {
+	if !w.latched.CompareAndSwap(nil, fe) {
+		return // exactly one storage.fatal per process, ever
+	}
+	w.log.Error("storage.fatal",
+		"node", w.node,
+		"op", fe.Op,
+		"class", fe.Class,
+		"batch", fe.Batch,
+		"error", fe.Err.Error(),
+		"hint", "writes are refused until restart; recovery re-derives truth from disk")
+	w.obsrv.SetReadOnly(true)
+	w.fatalC <- fe // buffered; never blocks on an absent supervisor
+}
+
+// latchedError wraps the stored fault in the read-only sentinel pair every refused caller
+// sees after the fsyncgate fires. The fault itself is carried as text (the sentinel pair is
+// the wrapping contract); matching the underlying errno goes through FatalError on the
+// Fatal() channel, whose Unwrap preserves it.
+func latchedError(fe *FatalError) error {
+	return fmt.Errorf("%w: %s op=%s class=%s at %s",
+		ErrWriterLatched, fe.Err.Error(), fe.Op, fe.Class, fe.At.Format(time.RFC3339))
 }
 
 // failAll answers every waiter in the batch with err exactly once each.

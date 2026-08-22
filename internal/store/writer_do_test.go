@@ -33,6 +33,9 @@ type probeCmd struct {
 	// damage in the middle of a batch.
 	rawErr error
 
+	// panicVal, when set, is panicked with instead of returning: a bug in a command.
+	panicVal any
+
 	// beforeApply runs inside Apply on the writer goroutine: tests freeze the engine here.
 	beforeApply func()
 }
@@ -60,6 +63,9 @@ func (c *probeCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 	}
 	if c.rawErr != nil {
 		return nil, nil, c.rawErr
+	}
+	if c.panicVal != nil {
+		panic(c.panicVal)
 	}
 	ev := obs.Event{Event: "msg.publish", TS: now.UnixMilli(), Detail: map[string]any{"k": c.key}}
 	return c.val, []obs.Event{ev}, nil
