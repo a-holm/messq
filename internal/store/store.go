@@ -87,7 +87,7 @@ func readMeta(ctx context.Context, q interface {
 // crash between file creation and this step replays safely, while an established database is
 // left strictly alone.
 func initEmptyDatabase(ctx context.Context, path string) error {
-	dsn := "file:" + path + "?_pragma=auto_vacuum(INCREMENTAL)&_pragma=journal_mode(WAL)"
+	dsn := freshFileDSN(path)
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return fmt.Errorf("open fresh-database pragmas: %w", err)

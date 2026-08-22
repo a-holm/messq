@@ -53,10 +53,12 @@ func (c *stepClock) Now() time.Time {
 }
 
 // openTestDB opens a real database file (never :memory: — the migration ladder has to run
-// against the same on-disk format production uses) and closes it at cleanup.
+// against the same on-disk format production uses) and closes it at cleanup. The handle
+// goes through the package's registered driver so the suite runs unchanged under both
+// build tags (driver_modernc.go and driver_cgo.go).
 func openTestDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open(driverName, path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
@@ -472,15 +474,19 @@ func TestMigrateDetectsMissingChecksum(t *testing.T) {
 }
 
 // TestMigrateRefusesReadOnlyHandle covers the write-guard of the ladder against a read-only
-// handle: modernc lets BEGIN IMMEDIATE stand on a RO connection, so the first real write —
-// the meta bookkeeping — is where SQLite raises readonly-database, and the ladder surfaces
-// it wrapped in the exact step that failed.
+// connection: on a query_only-fenced connection the refusal is a write-time
+// SQLITE_READONLY, never a silent no-op, and the ladder surfaces it as a startup error.
+// _query_only is the portable fence — a DSN key on both drivers, where mode=ro exists only
+// in the modernc dialect. Which ladder step raises first is a driver/handle detail (with an
+// OS-level ro handle the BEGIN succeeds and the meta upsert fails; with query_only fencing
+// the WAL files, BEGIN IMMEDIATE itself refuses), so this pins SQLite's contract rather
+// than either driver's wrapping.
 func TestMigrateRefusesReadOnlyHandle(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, dbFileName)
 	migrateFresh(t, path, newStepClock(time.Unix(1700000000, 0)))
 
-	ro, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	ro, err := sql.Open(driverName, "file:"+path+"?_query_only=1")
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
 	}
@@ -492,9 +498,6 @@ func TestMigrateRefusesReadOnlyHandle(t *testing.T) {
 	from, to, err := migrate(context.Background(), ro, newStepClock(time.Unix(1700000000, 0)))
 	if err == nil || !strings.Contains(err.Error(), "attempt to write a readonly database") {
 		t.Fatalf("migrate over read-only handle = (%d, %d, %v), want a readonly-database refusal", from, to, err)
-	}
-	if !strings.Contains(err.Error(), "upsert meta[schema_version]") {
-		t.Fatalf("readonly refusal does not name the failing step: %v", err)
 	}
 }
 
