@@ -154,10 +154,10 @@ func TestInApplyDoDeadlockGuard(t *testing.T) {
 	reentrant := &probeCmd{
 		key: 1,
 		val: "recursion",
-		beforeApply: func() {
-			// Runs INSIDE Apply on the writer goroutine: calling Do here would deadlock
-			// waiting for itself.
-			_, _ = w.Do(ctx, &probeCmd{key: 99, val: "nested"}) //nolint:errcheck // deliberately unchecked: the panic is the point
+		beforeApply: func(applyCtx context.Context) {
+			// Runs INSIDE Apply on the writer goroutine, with the batch context a real
+			// command would forward: calling Do here must trip the guard.
+			_, _ = w.Do(applyCtx, &probeCmd{key: 99, val: "nested"}) //nolint:errcheck // deliberately unchecked: the panic is the point
 		},
 	}
 	if _, doErr := w.Do(ctx, reentrant); !errors.Is(doErr, ErrCommitUnknown) {

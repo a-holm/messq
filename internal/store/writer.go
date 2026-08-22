@@ -211,6 +211,11 @@ func (c *Config) fillDefaults() error {
 	return nil
 }
 
+// inApplyCtxKey marks the writer's batch context. A command body that forwards its
+// Apply-context into Writer.Do trips the re-entrancy guard: submitting from inside Apply
+// would wait for the very batch that is waiting for Apply to return.
+type inApplyCtxKey struct{}
+
 // warnRelaxedDurability is the slog message of the relaxed-mode banner. It is logged exactly
 // once per process, at Writer construction, on whatever logger the store carries: never
 // suppressible, never sampled (D11's loud-mode rule).
@@ -327,7 +332,8 @@ type Writer struct {
 	stop     chan struct{} // closed by Close; run drains what is queued before exiting
 	evCh     chan []obs.Event
 	pumpDone chan struct{}
-	closeOne sync.Once
+	closeOne sync.Once // guards close(stop)
+	evOnce   sync.Once // guards close(evCh): only after run has exited
 }
 
 // NewWriter builds the engine over rw and starts its goroutines. It refuses construction —
@@ -459,10 +465,11 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 	if w.closing.Load() {
 		return nil, ErrWriterClosing
 	}
-	if w.inApply.Load() {
-		// A command body trying to submit work would wait for a batch that cannot finish
-		// until its own Apply returns: deadlock by construction. Panic instead — the
-		// writer recovers it as infrastructure damage and latches, naming the bug.
+	// Self-deadlock guard: a command body that forwards its Apply-context into Do would
+	// wait for a batch that cannot finish until its own Apply returns. The batch context
+	// carries an explicit marker; a plain atomic flag would falsely accuse unrelated
+	// callers submitting from other goroutines while any command is being applied.
+	if marked, hasMark := ctx.Value(inApplyCtxKey{}).(bool); hasMark && marked {
 		panic("store: Writer.Do called from inside Apply — a command may not submit commands")
 	}
 	r := &request{cmd: cmd, done: make(chan struct{})}
@@ -607,7 +614,9 @@ func (w *Writer) commitBatch(batch []*request) {
 	}
 	now := w.batchNow()
 	// NOT a caller's context: one client disconnecting must never abort a 256-command batch.
-	ctx := context.Background()
+	// The marker makes the re-entrancy guard in Do detectable by command bodies that forward
+	// their context (the normal, contract-encouraged thing to do).
+	ctx := context.WithValue(context.Background(), inApplyCtxKey{}, true)
 
 	tx, err := w.rw.BeginTx(ctx, nil)
 	if err != nil {
@@ -825,7 +834,7 @@ func (w *Writer) Close(ctx context.Context) error {
 		close(w.stop)
 	})
 	<-w.done
-	close(w.evCh)
+	w.evOnce.Do(func() { close(w.evCh) })
 	<-w.pumpDone
 	if err := w.rw.Close(); err != nil {
 		return fmt.Errorf("close writer handle: %w", err)

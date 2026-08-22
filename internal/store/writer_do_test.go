@@ -36,8 +36,9 @@ type probeCmd struct {
 	// panicVal, when set, is panicked with instead of returning: a bug in a command.
 	panicVal any
 
-	// beforeApply runs inside Apply on the writer goroutine: tests freeze the engine here.
-	beforeApply func()
+	// beforeApply runs inside Apply on the writer goroutine with the batch context, so a
+	// test can freeze the engine here or forward the context into a nested Do.
+	beforeApply func(ctx context.Context)
 }
 
 func (c *probeCmd) Kind() CmdKind { return c.kind }
@@ -46,7 +47,7 @@ func (c *probeCmd) Bytes() int { return c.size }
 
 func (c *probeCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result, []obs.Event, error) {
 	if c.beforeApply != nil {
-		c.beforeApply()
+		c.beforeApply(ctx)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS probe (k INTEGER PRIMARY KEY, v TEXT NOT NULL, ts INTEGER NOT NULL)`); err != nil {
