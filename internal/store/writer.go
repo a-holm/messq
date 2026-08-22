@@ -277,11 +277,14 @@ func withEventSink(s obs.Sink) WriterOption {
 // hooks are the fault points reserved for #32's messq_fault grammar; production builds leave
 // them nil. The reserved string names map one to one onto the fields:
 //
+//	store.tx.before_apply              — after BEGIN IMMEDIATE, before the first SAVEPOINT
 //	store.tx.after_commit_before_reply — after COMMIT returned nil, before callers unblock
 //
-// (store.tx.before_apply and store.tx.before_commit join in later slices with the code they
-// gate.)
+// (store.tx.before_commit joins with the fsyncgate slice.) beforeCommit-style injection of a
+// commit error uses before_commit; this slice only needs before_apply as the one-transaction
+// observation point the batch-rule tests drive.
 type hooks struct {
+	beforeApply            func()
 	afterCommitBeforeReply func()
 }
 
@@ -307,6 +310,7 @@ type Writer struct {
 
 	fatalC   chan *FatalError // buffered 1: the supervisor may not be selecting yet
 	closing  atomic.Bool
+	lastNow  atomic.Int64  // monotonic guard for batch timestamps (UnixNano)
 	done     chan struct{} // closed when run has returned
 	stop     chan struct{} // closed by Close; run drains what is queued before exiting
 	evCh     chan []obs.Event
@@ -458,52 +462,95 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 
 // run is the writer goroutine: it assembles batches and commits them, in enqueue order,
 // until Close signals stop — and even then only after every already-queued command has been
-// committed (drain-before-exit). A batch is never empty: the first receive blocks, so an
-// idle writer burns no CPU. The commit-window linger lands with the batch-closing slice;
-// this slice commits whatever is queued when the previous batch finishes.
+// committed (drain-before-exit). A batch is never empty: takeBatch blocks for the first
+// command, so an idle writer holds no timers and burns no CPU.
 //
 // w.ch is never closed: Close is a stop signal plus a drain, which removes the entire
 // send-on-closed-channel class instead of racing it.
 func (w *Writer) run() {
 	defer close(w.done)
 	batch := make([]*request, 0, w.cfg.CommitMaxBatch)
+	var pending *request // an over-budget command held for the NEXT batch
 	for {
-		select {
-		case first := <-w.ch:
-			batch = append(batch[:0], first)
-			batch = w.drainAvailable(batch, int64(first.cmd.Bytes()))
-			w.obsrv.ObserveQueueDepth(len(w.ch))
-			w.commitBatch(batch)
-		case <-w.stop:
-			for {
-				select {
-				case first := <-w.ch:
-					batch = append(batch[:0], first)
-					batch = w.drainAvailable(batch, int64(first.cmd.Bytes()))
-					w.obsrv.ObserveQueueDepth(len(w.ch))
-					w.commitBatch(batch)
-				default:
-					return
-				}
-			}
+		assembled, next, ok := w.takeBatch(batch[:0], pending)
+		if !ok {
+			return // stopped and fully drained
 		}
+		pending = next
+		w.obsrv.ObserveQueueDepth(len(w.ch))
+		w.commitBatch(assembled)
 	}
 }
 
-// drainAvailable takes everything already queued up to the batch budgets, without lingering:
-// the select's default arm ends the batch the moment the queue runs dry. The byte budget
-// closes batches too once its rule lands with its own test.
-func (w *Writer) drainAvailable(batch []*request, bytes int64) []*request {
-	for len(batch) < w.cfg.CommitMaxBatch && bytes < w.cfg.CommitMaxBytes {
+// takeBatch assembles one batch under the three closing rules — commit-window,
+// commit-max-batch, commit-max-bytes, whichever fires first:
+//
+//   - It blocks for the first command (or reports not-ok when stopped with an empty queue),
+//     so a batch is never empty and no fsync is ever spent on nothing.
+//   - With a positive CommitWindow it lingers on the clock seam: the fill select prefers the
+//     channel while arrivals are queued, so under load batching self-clocks and the window
+//     barely matters; at low rate a lone caller pays at most one window.
+//   - With CommitWindow == 0 it drains whatever is queued right now — the documented
+//     low-latency setting that still batches under load, for the same self-clocking reason.
+//
+// A command whose bytes would push the batch past CommitMaxBytes is held as `next` and opens
+// the following batch; a lone oversized command therefore still commits alone — the budget
+// closes batches, it never rejects commands.
+func (w *Writer) takeBatch(batch []*request, held *request) ([]*request, *request, bool) {
+	first := held
+	if first == nil {
 		select {
-		case r := <-w.ch:
-			batch = append(batch, r)
-			bytes += int64(r.cmd.Bytes())
-		default:
-			return batch
+		case first = <-w.ch:
+		case <-w.stop:
+			// Draining: accept what is already queued, else tell run to exit.
+			select {
+			case first = <-w.ch:
+			default:
+				return nil, nil, false
+			}
 		}
 	}
-	return batch
+	batch = append(batch, first)
+	bytes := int64(first.cmd.Bytes())
+
+	fill := func(r *request) bool {
+		rb := int64(r.cmd.Bytes())
+		if len(batch) > 0 && bytes+rb > w.cfg.CommitMaxBytes {
+			return false // over budget: hold for the next batch
+		}
+		batch = append(batch, r)
+		bytes += rb
+		return true
+	}
+
+	if w.cfg.CommitWindow <= 0 {
+		for len(batch) < w.cfg.CommitMaxBatch {
+			select {
+			case r := <-w.ch:
+				if !fill(r) {
+					return batch, r, true
+				}
+			default:
+				return batch, nil, true
+			}
+		}
+		return batch, nil, true
+	}
+
+	timer := w.clk.NewTimer(w.cfg.CommitWindow)
+	defer timer.Stop()
+fill:
+	for len(batch) < w.cfg.CommitMaxBatch {
+		select {
+		case r := <-w.ch:
+			if !fill(r) {
+				return batch, r, true
+			}
+		case <-timer.C():
+			break fill
+		}
+	}
+	return batch, nil, true
 }
 
 // commitBatch applies one assembled batch inside a single BEGIN IMMEDIATE transaction: one
@@ -511,6 +558,9 @@ func (w *Writer) drainAvailable(batch []*request, bytes int64) []*request {
 // timestamp comes from batchNow and reaches Apply unchanged, so all rows of a batch share it.
 // Replies close strictly after COMMIT returned nil; events reach the pump after that.
 func (w *Writer) commitBatch(batch []*request) {
+	if w.hooks.beforeApply != nil {
+		w.hooks.beforeApply() // store.tx.before_apply (#32): one firing == one transaction
+	}
 	now := w.batchNow()
 	// NOT a caller's context: one client disconnecting must never abort a 256-command batch.
 	ctx := context.Background()
@@ -579,10 +629,22 @@ func (w *Writer) applyCommand(ctx context.Context, tx *sql.Tx, cmd Cmd, now time
 	return cmd.Apply(ctx, tx, now)
 }
 
-// batchNow returns the batch's single wall-clock timestamp. The monotonic guard against
-// backwards clock steps lands with the timing tests.
+// batchNow returns the batch's single wall-clock timestamp, guarded to be non-decreasing
+// across batches within this process lifetime: a backwards NTP step must never make stored
+// timestamps go backwards (PLAN §11 clock-jump family). Ties are expected and harmless —
+// ordering is by seq, never by timestamp. Deadlines and the commit window run on monotonic
+// durations via the Clock seam and are unaffected by any of this.
 func (w *Writer) batchNow() time.Time {
-	return w.clk.Now()
+	nano := w.clk.Now().UnixNano()
+	for {
+		last := w.lastNow.Load()
+		if nano < last {
+			nano = last
+		}
+		if w.lastNow.CompareAndSwap(last, nano) {
+			return time.Unix(0, nano)
+		}
+	}
 }
 
 // abortBatch fails every request in a doomed batch with ErrCommitUnknown — never a definite

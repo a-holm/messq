@@ -74,6 +74,17 @@ func (s *sinkRecorder) events() []obs.Event {
 	return out
 }
 
+// batches returns a copy of the per-publish event counts: one entry per committed batch.
+func (s *sinkRecorder) batches() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]int, len(s.got))
+	for i, evs := range s.got {
+		out[i] = len(evs)
+	}
+	return out
+}
+
 // asLogger wraps the capture in a slog.Logger for injection through withLogger.
 func (h *logCapture) asLogger() *slog.Logger { return slog.New(h) }
 
