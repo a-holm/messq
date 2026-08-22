@@ -167,6 +167,19 @@ func TestCommitErrorLatchesReadOnlyOnce(t *testing.T) {
 	if got := attempts.Load(); got != 1 {
 		t.Errorf("commit step attempted %d times, want exactly 1 — the fsync was retried", got)
 	}
+
+	// The same refusal applies to commands already past Do's front door: one queued directly
+	// must be failed by the batch loop's own latch check, again without touching the commit
+	// step — this is what "never retry" means for work accepted before the fault.
+	req := &request{cmd: &probeCmd{key: 50, val: "queued"}, done: make(chan struct{})}
+	w.ch <- req
+	<-req.done
+	if !errors.Is(req.err, ErrWriterLatched) || !errors.Is(req.err, errs.ErrReadOnly) {
+		t.Fatalf("queued-after-latch request got %v, want ErrReadOnly", req.err)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts grew to %d after a latched batch ran — the commit step was reached again", got)
+	}
 	if got := rec.readOnlyCount(); got != 1 {
 		t.Errorf("SetReadOnly(true) seen %d times, want exactly 1", got)
 	}

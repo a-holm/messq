@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,14 +54,16 @@ func (c *probeCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 		`CREATE TABLE IF NOT EXISTS probe (k INTEGER PRIMARY KEY, v TEXT NOT NULL, ts INTEGER NOT NULL)`); err != nil {
 		return nil, nil, err
 	}
-	if c.bizErr != nil {
-		return nil, nil, CmdErr(c.bizErr)
-	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO probe (k, v, ts) VALUES (?, ?, ?)
 		 ON CONFLICT (k) DO UPDATE SET v = excluded.v, ts = excluded.ts`,
 		c.key, c.val, now.UnixMilli()); err != nil {
 		return nil, nil, err
+	}
+	// Business rejection AFTER the write: the savepoint has real work to undo, which is what
+	// makes the isolation test able to catch a missing ROLLBACK TO.
+	if c.bizErr != nil {
+		return nil, nil, CmdErr(c.bizErr)
 	}
 	if c.rawErr != nil {
 		return nil, nil, c.rawErr
@@ -227,19 +230,14 @@ func TestDoRoundTripsResultEventsAndDurability(t *testing.T) {
 }
 
 // TestRepliesFollowCommitInSequence pins reply-after-commit with an ordering hook rather
-// than timing: the after_commit_before_reply fault point records "committed" before any
-// waiter unblocks, and each caller records "replied" after Do returns. Every reply must come
-// after its commit — swapping those steps in commitBatch fails this test.
+// than timing: the after_commit_before_reply fault point snapshots how many callers had
+// unblocked at the instant it fired — which must be ZERO, because every reply happens after
+// this point. A writer that closed waiters before the hook (or before COMMIT) fails here
+// under any scheduler.
 func TestRepliesFollowCommitInSequence(t *testing.T) {
-	var (
-		mu    sync.Mutex
-		order []string
-	)
-	record := func(s string) {
-		mu.Lock()
-		defer mu.Unlock()
-		order = append(order, s)
-	}
+	var repliesSoFar atomic.Int64
+	var atHook []int64
+	var mu sync.Mutex
 
 	handler := &logCapture{}
 	sink := &sinkRecorder{}
@@ -256,7 +254,11 @@ func TestRepliesFollowCommitInSequence(t *testing.T) {
 	w, err := st.NewWriter(Config{},
 		withLogger(handler.asLogger()),
 		withEventSink(sink),
-		withHooks(hooks{afterCommitBeforeReply: func() { record("committed") }}))
+		withHooks(hooks{afterCommitBeforeReply: func() {
+			mu.Lock()
+			atHook = append(atHook, repliesSoFar.Load())
+			mu.Unlock()
+		}}))
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
@@ -266,7 +268,7 @@ func TestRepliesFollowCommitInSequence(t *testing.T) {
 			&probeCmd{kind: "probe.insert", key: i, val: "v"}); doErr != nil {
 			t.Fatalf("Do(%d): %v", i, doErr)
 		}
-		record("replied")
+		repliesSoFar.Add(1)
 	}
 	if closeErr := w.Close(context.Background()); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
@@ -274,20 +276,13 @@ func TestRepliesFollowCommitInSequence(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	commits, replies := 0, 0
-	for _, s := range order {
-		switch s {
-		case "committed":
-			commits++
-			if replies > commits {
-				t.Fatalf("sequence %v: a reply preceded a commit", order)
-			}
-		case "replied":
-			replies++
-		}
+	if len(atHook) != 5 {
+		t.Fatalf("hook fired %d times, want 5", len(atHook))
 	}
-	if commits != 5 || replies != 5 {
-		t.Errorf("order = %v, want 5 commits each preceding their reply", order)
+	for i, n := range atHook {
+		if n != 0 {
+			t.Fatalf("batch %d: %d caller(s) had already unblocked when the post-commit fault point fired — a reply preceded its commit gate", i+1, n)
+		}
 	}
 }
 
