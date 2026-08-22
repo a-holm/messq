@@ -46,6 +46,9 @@ type Options struct {
 	// PeekScanLimit bounds the rows a wildcard-subject listing may scan before it
 	// returns an honest partial answer (issue §6, --peek-scan-limit). <= 0 means 10000.
 	PeekScanLimit int
+	// MaxBatchMessages caps one PublishBatch command (§7, --max-batch-messages);
+	// <= 0 means 1000.
+	MaxBatchMessages int
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -62,6 +65,7 @@ const (
 	defaultReclaimJitter = time.Second
 	defaultPeekMaxLimit  = 1_000
 	defaultPeekScanLimit = 10_000
+	defaultMaxBatch      = 1_000
 )
 
 // applyDefaults fills unset fields with their documented defaults and never replaces a value
@@ -88,6 +92,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.PeekScanLimit <= 0 {
 		o.PeekScanLimit = defaultPeekScanLimit
+	}
+	if o.MaxBatchMessages <= 0 {
+		o.MaxBatchMessages = defaultMaxBatch
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}

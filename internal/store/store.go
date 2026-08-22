@@ -71,6 +71,7 @@ type Store struct {
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
+	maxBatchMsgs  int
 }
 
 // dbPath renders <dir>/messq.db.
@@ -227,6 +228,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		limits:        opt.Limits,
 		peekMaxLimit:  opt.PeekMaxLimit,
 		peekScanLimit: opt.PeekScanLimit,
+		maxBatchMsgs:  opt.MaxBatchMessages,
 		clk:           opt.Clock,
 		logger:        opt.Logger,
 		newID:         opt.NewID,

@@ -101,6 +101,16 @@ func publishTx(ctx context.Context, tx txLike, now int64, limits queue.Limits,
 	if cfgErr != nil {
 		return Ack{}, cfgErr
 	}
+	return publishTxWithConfig(ctx, tx, now, limits, newID, lc, r, o)
+}
+
+// publishTxWithConfig is publishTx's body against an already-loaded authoritative
+// config — the shape PublishBatch uses so one batch costs one streams-row lookup.
+func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
+	limits queue.Limits, newID func() id.MsgID, lc loadedConfig,
+	r queue.PublishReq, o publishOpts,
+) (Ack, error) {
+	stream := lc.cfg.Name
 	if err := queue.ValidatePublish(lc.cfg, r, limits); err != nil {
 		return Ack{}, err
 	}
