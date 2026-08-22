@@ -40,6 +40,12 @@ type Options struct {
 	// Limits are the process-wide validation ceilings (issue §4.2) every stream
 	// configuration is checked against; zero value means DefaultLimits().
 	Limits queue.Limits
+	// PeekMaxLimit caps a listing page's effective limit (issue §6, --peek-max-limit);
+	// pages that include bodies cap at one tenth of it. <= 0 means 1000.
+	PeekMaxLimit int
+	// PeekScanLimit bounds the rows a wildcard-subject listing may scan before it
+	// returns an honest partial answer (issue §6, --peek-scan-limit). <= 0 means 10000.
+	PeekScanLimit int
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -54,6 +60,8 @@ const (
 	defaultBusyTimeout   = 5 * time.Second
 	defaultCacheBytes    = int64(64) << 20
 	defaultReclaimJitter = time.Second
+	defaultPeekMaxLimit  = 1_000
+	defaultPeekScanLimit = 10_000
 )
 
 // applyDefaults fills unset fields with their documented defaults and never replaces a value
@@ -74,6 +82,12 @@ func (o *Options) applyDefaults() {
 	}
 	if o.Limits == (queue.Limits{}) {
 		o.Limits = queue.DefaultLimits()
+	}
+	if o.PeekMaxLimit <= 0 {
+		o.PeekMaxLimit = defaultPeekMaxLimit
+	}
+	if o.PeekScanLimit <= 0 {
+		o.PeekScanLimit = defaultPeekScanLimit
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}

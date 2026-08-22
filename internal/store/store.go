@@ -68,6 +68,9 @@ type Store struct {
 	// limits are the process-wide validation ceilings (issue §1); defaulted in
 	// applyDefaults so a zero Options still validates against the §4.2 numbers.
 	limits queue.Limits
+	// peek bounds from Options (§6); defaulted in applyDefaults.
+	peekMaxLimit  int
+	peekScanLimit int
 }
 
 // dbPath renders <dir>/messq.db.
@@ -219,12 +222,14 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	start := opt.Clock.Now()
 
 	st := &Store{
-		dir:        opt.DataDir,
-		durability: opt.Durability,
-		limits:     opt.Limits,
-		clk:        opt.Clock,
-		logger:     opt.Logger,
-		newID:      opt.NewID,
+		dir:           opt.DataDir,
+		durability:    opt.Durability,
+		limits:        opt.Limits,
+		peekMaxLimit:  opt.PeekMaxLimit,
+		peekScanLimit: opt.PeekScanLimit,
+		clk:           opt.Clock,
+		logger:        opt.Logger,
+		newID:         opt.NewID,
 	}
 	fail := func(err error) (*Store, *RecoveryReport, error) {
 		st.cleanup(context.WithoutCancel(ctx))
