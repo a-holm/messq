@@ -63,6 +63,8 @@ type Store struct {
 	durability    Durability
 	clk           clock.Clock
 	logger        *slog.Logger
+	// newID mints message ULIDs; defaulted from Options.NewID at Open.
+	newID func() id.MsgID
 	// limits are the process-wide validation ceilings (issue §1); defaulted in
 	// applyDefaults so a zero Options still validates against the §4.2 numbers.
 	limits queue.Limits
@@ -222,6 +224,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		limits:     opt.Limits,
 		clk:        opt.Clock,
 		logger:     opt.Logger,
+		newID:      opt.NewID,
 	}
 	fail := func(err error) (*Store, *RecoveryReport, error) {
 		st.cleanup(context.WithoutCancel(ctx))

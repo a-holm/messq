@@ -30,6 +30,8 @@ type event struct {
 
 func nullStr(s string) sql.Null[string] { return sql.Null[string]{V: s, Valid: s != ""} }
 
+func nullI64(v int64) sql.Null[int64] { return sql.Null[int64]{V: v, Valid: v != 0} }
+
 // insertEvent writes one audit row inside the caller's transaction. It never fires on
 // its own: an event without its state change is exactly the disagreement D11 forbids.
 func insertEvent(ctx context.Context, tx txLike, e event) error {
