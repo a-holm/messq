@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/id"
 )
 
@@ -492,6 +493,39 @@ func (s *Store) TakeWriter() (*sql.DB, error) {
 	db := s.rw
 	s.handedOff = true
 	return db, nil
+}
+
+// NewWriter constructs the group-commit engine over this store's sole read-write handle,
+// which it takes internally via [TakeWriter]: callers never touch the rw *sql.DB, which is
+// how the "exactly one writer" rule stays structural (PLAN §3.2). The writer inherits the
+// store's clock, logger, node identity and durability mode; a Config demanding a different
+// durability is refused before anything is constructed — the pragma the pool was opened with
+// and the pragma the engine verifies must be one decision, not two.
+//
+// If construction fails after the hand-off (the pool failed its read-back), the rw handle is
+// closed here: a store whose writer cannot start has no further use for it.
+func (s *Store) NewWriter(cfg Config, opts ...WriterOption) (*Writer, error) {
+	s.mu.Lock()
+	durability, clk, logger, nodeID := s.durability, s.clk, s.logger, s.nodeID
+	s.mu.Unlock()
+
+	if cfg.Durability != durability {
+		return nil, fmt.Errorf("%w: store opened with --durability=%s, writer configured durability=%s",
+			errs.ErrBadRequest, durability, cfg.Durability)
+	}
+	rw, err := s.TakeWriter()
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, withLogger(logger), withNodeID(nodeID))
+	w, err := NewWriter(rw, clk, cfg, opts...)
+	if err != nil {
+		if cerr := rw.Close(); cerr != nil {
+			logger.Warn("writer.construct", "error", fmt.Sprintf("close refused rw handle: %v", cerr))
+		}
+		return nil, err
+	}
+	return w, nil
 }
 
 // RO exposes the shared read pool for peek, trace, list, lag, and metrics. Every pooled

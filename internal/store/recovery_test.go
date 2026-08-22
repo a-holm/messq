@@ -30,6 +30,7 @@ func testDataDir(t *testing.T) string {
 type fatalHelper interface {
 	Helper()
 	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
 }
 
 // killSimulate drops a live store exactly the way SIGKILL would: database handles are closed

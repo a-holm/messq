@@ -48,4 +48,21 @@ var (
 	// ErrWriterTaken is returned by the second TakeWriter call. Exactly one owner (the #6
 	// writer goroutine) holds the rw handle; the rule is enforced, not documented.
 	ErrWriterTaken = errors.New("read-write handle already taken")
+
+	// ErrCommitUnknown is returned to every caller of a batch whose COMMIT failed, and to a
+	// caller that stopped waiting before its commit landed. It is deliberately never a
+	// definite failure: SQLite rolls back on a failed commit, but the error can also arrive
+	// after the fsync completed, so "it did not happen" is a claim messq refuses to make.
+	// Callers retry idempotently (the Messq-Msg-Id dedup exists for exactly this); the API
+	// layer (#14) maps it to a 5xx whose documented meaning is unknown-outcome.
+	ErrCommitUnknown = errors.New("commit outcome unknown: the batch may or may not be durable")
+
+	// ErrWriterLatched wraps [errs.ErrReadOnly] when the fsyncgate has fired: the process
+	// latched read-only after an unrecoverable storage fault and refuses every further
+	// write, including ack-class commands. Matching either name works with errors.Is.
+	ErrWriterLatched = fmt.Errorf("%w", errs.ErrReadOnly)
+
+	// ErrWriterClosing wraps [errs.ErrShuttingDown] for commands offered to a Writer whose
+	// Close has begun (or finished): nothing was applied and nothing will be.
+	ErrWriterClosing = fmt.Errorf("%w", errs.ErrShuttingDown)
 )
