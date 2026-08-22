@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,14 +229,27 @@ func TestDoRoundTripsResultEventsAndDurability(t *testing.T) {
 }
 
 // TestRepliesFollowCommitInSequence pins reply-after-commit with an ordering hook rather
-// than timing: the after_commit_before_reply fault point snapshots how many callers had
-// unblocked at the instant it fired — which must be ZERO, because every reply happens after
-// this point. A writer that closed waiters before the hook (or before COMMIT) fails here
-// under any scheduler.
+// than timing. commitBatch runs the after_commit_before_reply hook to completion before it
+// closes any waiter (program order on the writer goroutine), so a caller resumed from Do
+// deterministically observes every side effect the hook already made — no clock involved.
+// Driving Do strictly one at a time makes batch boundaries observable from outside: before
+// the i-th submission the hook has fired exactly i-1 times, and after the i-th reply
+// exactly i. Fewer after a reply means a reply escaped past its own commit gate (a writer
+// that closes waiters before COMMIT or before the hook); more means a batch was committed
+// and answered ahead of an earlier caller's reply. Note the invariant is NOT "zero callers
+// ever unblocked": in a sequential loop the earlier batches' callers have legitimately
+// unblocked by the time a later batch reaches the hook, which is exactly what the previous
+// zero-snapshot formulation got wrong — it failed for every conforming writer.
 func TestRepliesFollowCommitInSequence(t *testing.T) {
-	var repliesSoFar atomic.Int64
-	var atHook []int64
-	var mu sync.Mutex
+	var (
+		mu      sync.Mutex
+		firings int
+	)
+	hookCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return firings
+	}
 
 	handler := &logCapture{}
 	sink := &sinkRecorder{}
@@ -256,33 +268,30 @@ func TestRepliesFollowCommitInSequence(t *testing.T) {
 		withEventSink(sink),
 		withHooks(hooks{afterCommitBeforeReply: func() {
 			mu.Lock()
-			atHook = append(atHook, repliesSoFar.Load())
+			firings++
 			mu.Unlock()
 		}}))
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
 
-	for i := int64(1); i <= 5; i++ {
+	for i := 1; i <= 5; i++ {
+		if got := hookCount(); got != i-1 {
+			t.Fatalf("batch %d: post-commit fault point had fired %d time(s) before submission, want %d", i, got, i-1)
+		}
 		if _, doErr := w.Do(context.Background(),
-			&probeCmd{kind: "probe.insert", key: i, val: "v"}); doErr != nil {
+			&probeCmd{kind: "probe.insert", key: int64(i), val: "v"}); doErr != nil {
 			t.Fatalf("Do(%d): %v", i, doErr)
 		}
-		repliesSoFar.Add(1)
+		if got := hookCount(); got != i {
+			t.Fatalf("batch %d: post-commit fault point had fired %d time(s) when the reply returned, want %d — a reply escaped its commit gate", i, got, i)
+		}
 	}
 	if closeErr := w.Close(context.Background()); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(atHook) != 5 {
-		t.Fatalf("hook fired %d times, want 5", len(atHook))
-	}
-	for i, n := range atHook {
-		if n != 0 {
-			t.Fatalf("batch %d: %d caller(s) had already unblocked when the post-commit fault point fired — a reply preceded its commit gate", i+1, n)
-		}
+	if got := hookCount(); got != 5 {
+		t.Fatalf("hook fired %d times in total, want 5", got)
 	}
 }
 
