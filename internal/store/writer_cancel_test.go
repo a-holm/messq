@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,8 +13,14 @@ import (
 
 // TestEnqueueCancelStopsTheCommand pins the first wait's contract: a caller whose context is
 // done while the queue is FULL gets ctx.Err(), and its command never enters the queue —
-// nothing runs that was not accepted. The queue is filled by freezing the writer behind the
-// store.tx.before_apply fault point, then saturating the bounded channel.
+// nothing runs that was not accepted. The writer is frozen behind the store.tx.before_apply
+// fault point, and only THEN is the bounded channel saturated: the hook itself signals that
+// the writer goroutine is parked, and until the gate opens it cannot receive from w.ch again,
+// so both saturation sends land in the buffer as a program-order fact. Freezing on
+// len(w.ch)==0 instead left a window where takeBatch's non-blocking drain still absorbed the
+// saturation sends into the open batch, leaving the channel with room — and Go's select then
+// picked randomly between the ready send and the ready ctx.Done, enqueueing the cancelled
+// command about half the time.
 func TestEnqueueCancelStopsTheCommand(t *testing.T) {
 	ctx := context.Background()
 	handler := &logCapture{}
@@ -27,16 +34,22 @@ func TestEnqueueCancelStopsTheCommand(t *testing.T) {
 		}
 	}()
 
-	gate := make(chan struct{})
-	hks := hooks{beforeApply: func() { <-gate }}
+	// before_apply fires once per transaction; only the first firing parks (a bare close
+	// would panic when batch 2's firing arrives).
+	gate := make(chan struct{})   // open = release the frozen writer
+	atGate := make(chan struct{}) // closed = the writer is parked inside before_apply
+	var firstFiring sync.Once
+	hks := hooks{beforeApply: func() {
+		firstFiring.Do(func() { close(atGate); <-gate })
+	}}
 	w, err := st.NewWriter(Config{QueueDepth: 2},
 		withLogger(handler.asLogger()), withHooks(hks))
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
 
-	r1 := submitAsync(w, 1, "in-flight", 0) // taken by the writer, which then hits the gate
-	waitFor(func() bool { return len(w.ch) == 0 })
+	r1 := submitAsync(w, 1, "in-flight", 0)
+	<-atGate // P1 taken AND batch assembly finished: w.ch has no active receiver until open
 
 	sat1 := &request{cmd: &probeCmd{key: 2, val: "queued-1"}, done: make(chan struct{})}
 	sat2 := &request{cmd: &probeCmd{key: 3, val: "queued-2"}, done: make(chan struct{})}
@@ -51,8 +64,25 @@ func TestEnqueueCancelStopsTheCommand(t *testing.T) {
 		doneEnq <- doErr
 	}()
 
-	if enqErr := <-doneEnq; !errors.Is(enqErr, context.Canceled) {
+	// Bounded wait: an enqueue path that ignores ctx.Done must fail this test in
+	// milliseconds, not hang it until the package timeout.
+	var enqErr error
+	waitFor(func() bool {
+		select {
+		case enqErr = <-doneEnq:
+			return true
+		default:
+			return false
+		}
+	})
+	if enqErr == nil {
+		t.Fatalf("Do with an already-cancelled context never returned — the enqueue select ignored ctx.Done")
+	}
+	if !errors.Is(enqErr, context.Canceled) {
 		t.Fatalf("cancelled enqueue = %v, want context.Canceled", enqErr)
+	}
+	if got := len(w.ch); got != 2 {
+		t.Fatalf("queue holds %d commands after the cancelled Do returned, want 2 — key 4 entered the queue", got)
 	}
 
 	// Let the engine run: P1 plus both queued commands commit; key 4 never existed.
