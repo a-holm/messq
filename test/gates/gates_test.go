@@ -158,7 +158,7 @@ func matrix() []gate {
 			id: "G15", name: "a lowered floor a branch commit explains", target: "cover-ratchet-check",
 			want:    "a commit on this branch explains the lowering",
 			wantOK:  true,
-			prepare: lowerFloor(branchCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+			prepare: lowerFloor(branchCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/store, its sweeper moved out from under it"),
 		},
 		// The four rows below are the escape hatch itself. It is documented, it is named in the
 		// failure message, and a rule that reads HEAD alone would leave it unreachable on every
@@ -167,7 +167,7 @@ func matrix() []gate {
 			id: "G20", name: "an explained lowering behind a pull-request merge commit", target: "cover-ratchet-check",
 			want:    "a commit on this branch explains the lowering",
 			wantOK:  true,
-			prepare: lowerFloor(mergeCheckout, "coverage-floor-lowered: the sweeper moved to internal/queue"),
+			prepare: lowerFloor(mergeCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/store, its sweeper moved out from under it"),
 		},
 		{
 			id: "G21", name: "an unexplained lowering behind a merge commit", target: "cover-ratchet-check",
@@ -183,6 +183,32 @@ func matrix() []gate {
 			id: "G23", name: "the trailer mentioned in prose", target: "cover-ratchet-check",
 			want:    "floors ratchet upward only",
 			prepare: lowerFloor(branchCheckout, "note that coverage-floor-lowered: is the escape hatch"),
+		},
+		// G37 is the per-floor half of the same contract (#45): a trailer explains only the
+		// floors its reason names, so explaining one package's move must not unlock an
+		// unrelated cut of another.
+		{
+			id: "G37", name: "a trailer that names another floor", target: "cover-ratchet-check",
+			want:    "no commit on this branch explains the lowering of internal/store",
+			prepare: lowerFloor(branchCheckout, "#45: move the sweeper\n\ncoverage-floor-lowered: internal/id, its sweeper moved out from under it"),
+		},
+		// G38 and G39 pin the ratchet's two silent passes. Both fire on a repository the check
+		// cannot compare against -- a first push whose origin has no shared history yet, a merge
+		// base from before coverage.floors existed -- and both exit 0 by design: there is
+		// nothing to compare, and failing loudly would lock every bootstrap out of CI. What
+		// keeps that from rotting into a quiet shrug is the printed reason: these rows prove
+		// each path says why it passed instead of passing silently.
+		{
+			id: "G38", name: "no merge base with origin/main", target: "cover-ratchet-check",
+			want:    "cover-ratchet-check: no merge base with origin/main, nothing to compare",
+			wantOK:  true,
+			prepare: dropOriginMain,
+		},
+		{
+			id: "G39", name: "a merge base from before coverage.floors", target: "cover-ratchet-check",
+			want:    "cover-ratchet-check: the merge base has no coverage.floors, nothing to compare",
+			wantOK:  true,
+			prepare: baseWithoutFloors,
 		},
 		{
 			id: "G16", name: "an expired vulnerability suppression", target: "vuln",
@@ -274,6 +300,27 @@ func matrix() []gate {
 			want:    "0 issues",
 			wantOK:  true,
 			prepare: install("clock.go", "internal/clock/sabotage_seam.go"),
+		},
+		// B4, G35 and G36 are the #45 seam-defaults rows. VULNSCAN and TEST_COUNT exist so the
+		// matrix can feed a gate input the repository cannot produce on demand, which also means a
+		// reviewed workflow edit could override either into vacuousness: `VULNSCAN=true` pipes
+		// nothing into vulngate and `TEST_COUNT=0` runs no tests at all, both reported as success.
+		// The seam-defaults target asserts the runner's view of both; these rows are what keep that
+		// assertion honest.
+		{
+			id: "B4", name: "the seams hold their defaults", target: "seam-defaults",
+			want:   "hold their defaults",
+			wantOK: true,
+		},
+		{
+			id: "G35", name: "VULNSCAN overridden off its default", target: "seam-defaults",
+			want:    "seam-defaults: VULNSCAN is",
+			prepare: patch("Makefile", "VULNSCAN ?= $(GOVULNCHECK) -format sarif ./...", "VULNSCAN ?= cat sabotage.sarif"),
+		},
+		{
+			id: "G36", name: "TEST_COUNT set so no test runs", target: "seam-defaults",
+			want:    "TEST_COUNT is",
+			prepare: patch("Makefile", "TEST_COUNT ?= 1", "TEST_COUNT ?= 0"),
 		},
 	}
 }
@@ -409,6 +456,42 @@ func gitInit(t *testing.T, root string) {
 	git(t, root, "add", "-A")
 	git(t, root, "commit", "-q", "-m", "baseline")
 	git(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+}
+
+// dropOriginMain is the shape of a repository's very first push: the branch has history, but
+// origin has none to share with it, so there is no remote-tracking ref for main and merge-base
+// has nothing to name. The ratchet's first guard answers for that shape.
+func dropOriginMain(t *testing.T, root string) {
+	t.Helper()
+	gitInit(t, root)
+	git(t, root, "update-ref", "-d", "refs/remotes/origin/main")
+}
+
+// baseWithoutFloors parks origin/main on a baseline commit made without coverage.floors, then
+// brings the file back on the branch -- the shape of a repository that grew its floors after
+// the history the pull request would be compared against. git show at the base then has
+// nothing to extract, and the ratchet's second guard answers for that shape.
+func baseWithoutFloors(t *testing.T, root string) {
+	t.Helper()
+
+	floors := filepath.Join(root, "coverage.floors")
+	content, err := os.ReadFile(floors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(floors); err != nil {
+		t.Fatal(err)
+	}
+
+	// The baseline commit, and origin/main with it, now predate the floors.
+	gitInit(t, root)
+
+	if err := os.WriteFile(floors, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "checkout", "-q", "-b", "topic")
+	git(t, root, "add", "coverage.floors")
+	git(t, root, "commit", "-q", "-m", "add the floors")
 }
 
 func git(t *testing.T, root string, args ...string) {

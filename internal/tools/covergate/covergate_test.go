@@ -416,7 +416,7 @@ func TestRun_CheckIsGreenOnAPendingPackage(t *testing.T) {
 	}
 }
 
-func TestRun_CompareRefusesALoweredFloorUnlessAllowed(t *testing.T) {
+func TestRun_CompareRefusesALoweredFloor(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module "+module+"\n\ngo 1.25.0\n")
 	writeFile(t, root, "base.floors", "internal/store 85.0 durability\n")
@@ -435,10 +435,61 @@ func TestRun_CompareRefusesALoweredFloorUnlessAllowed(t *testing.T) {
 	if !strings.Contains(stdout.String(), "floors ratchet upward only") {
 		t.Errorf("stdout = %q, want the ratchet message", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "no commit on this branch explains the lowering of internal/store") {
+		t.Errorf("stdout = %q, want the unexplained-lowering message", stdout.String())
+	}
+}
 
+// TestRun_CompareMatchesTheTrailerPerFloor pins the #45 contract: a
+// coverage-floor-lowered trailer explains only the floors it names. One trailer naming any
+// floor used to unlock every lowered floor on the branch, so a commit explaining a real move
+// of internal/queue would silently authorize an unrelated cut of internal/store.
+func TestRun_CompareMatchesTheTrailerPerFloor(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module "+module+"\n\ngo 1.25.0\n")
+	writeFile(t, root, "base.floors", "internal/store 85.0 durability\ninternal/id 95.0 ids\n")
+	proposed := "internal/store 80.0 durability\ninternal/id 95.0 ids\n"
+	writeFile(t, root, "coverage.floors", proposed)
+
+	args := []string{
+		"-root", root,
+		"-floors", filepath.Join(root, "coverage.floors"),
+		"-compare-floors", filepath.Join(root, "base.floors"),
+	}
+
+	// No trailer at all: the lowering is refused.
+	var stdout, stderr strings.Builder
+	if code := run(args, &stdout, &stderr); code != exitViolation {
+		t.Fatalf("run() with no trailer = %d, want %d (stdout: %s)", code, exitViolation, stdout.String())
+	}
+
+	// A trailer naming another floor does not explain this one.
 	stdout.Reset()
-	if code := run(append(args, "-allow-lower"), &stdout, &stderr); code != exitOK {
-		t.Fatalf("run(-allow-lower) = %d, want %d (stdout: %s)", code, exitOK, stdout.String())
+	writeFile(t, root, "messages.txt", "#45: move the sweeper\n\ncoverage-floor-lowered: internal/id, its sweeper moved out from under it\n")
+	if code := run(append(args, "-commit-messages", filepath.Join(root, "messages.txt")), &stdout, &stderr); code != exitViolation {
+		t.Fatalf("run() with a trailer naming internal/id = %d, want %d (stdout: %s)", code, exitViolation, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "no commit on this branch explains the lowering of internal/store") {
+		t.Errorf("stdout = %q, want the unexplained-lowering message for internal/store", stdout.String())
+	}
+
+	// A trailer naming the floor explains exactly that floor.
+	stdout.Reset()
+	writeFile(t, root, "messages.txt", "#45: move the sweeper\n\ncoverage-floor-lowered: internal/store, its sweeper moved out from under it\n")
+	if code := run(append(args, "-commit-messages", filepath.Join(root, "messages.txt")), &stdout, &stderr); code != exitOK {
+		t.Fatalf("run() with a trailer naming internal/store = %d, want %d (stdout: %s)", code, exitOK, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "a commit on this branch explains the lowering") {
+		t.Errorf("stdout = %q, want the acceptance line", stdout.String())
+	}
+
+	// One trailer may name several floors, separated by whitespace.
+	stdout.Reset()
+	writeFile(t, root, "base.floors", "internal/store 85.0 durability\ninternal/id 95.0 ids\n")
+	writeFile(t, root, "coverage.floors", "internal/store 80.0 durability\ninternal/id 90.0 ids\n")
+	writeFile(t, root, "messages.txt", "#45: split the primitives\n\ncoverage-floor-lowered: internal/store internal/id, both moved to their own packages\n")
+	if code := run(append(args, "-commit-messages", filepath.Join(root, "messages.txt")), &stdout, &stderr); code != exitOK {
+		t.Fatalf("run() with one trailer naming two floors = %d, want %d (stdout: %s)", code, exitOK, stdout.String())
 	}
 }
 

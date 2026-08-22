@@ -8,8 +8,9 @@
 //	covergate -profile cover.out -floors coverage.floors
 //	    Check every floor. Exit 1 on a violation.
 //
-//	covergate -floors coverage.floors -compare-floors base.floors [-allow-lower]
-//	    Refuse a floor that the proposed file sets below the merge base.
+//	covergate -floors coverage.floors -compare-floors base.floors [-commit-messages file]
+//	    Refuse a floor that the proposed file sets below the merge base, unless a
+//	    coverage-floor-lowered trailer in the branch's commit messages names that floor.
 //
 //	covergate -profile cover.out -floors coverage.floors -ratchet
 //	    Raise the floors that measured coverage clears by a whole point. Run by a human,
@@ -48,7 +49,7 @@ type options struct {
 	floors        string
 	compareFloors string
 	root          string
-	allowLower    bool
+	commitMsgs    string
 	doRatchet     bool
 }
 
@@ -60,7 +61,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&opt.floors, "floors", "coverage.floors", "floors file to enforce")
 	fs.StringVar(&opt.compareFloors, "compare-floors", "", "baseline floors file; refuse any floor set below it")
 	fs.StringVar(&opt.root, "root", ".", "module root, used to find go.mod and the floored packages")
-	fs.BoolVar(&opt.allowLower, "allow-lower", false, "permit lowered floors in -compare-floors mode")
+	// -commit-messages holds the concatenated bodies of every commit the branch adds, in the
+	// format `git log --format=%B <merge-base>..HEAD` writes. It replaces the earlier
+	// -allow-lower, which a single trailer anywhere on the branch set for every floor at
+	// once: one explained move silently authorized every unrelated cut.
+	fs.StringVar(&opt.commitMsgs, "commit-messages", "", "file of git commit bodies whose coverage-floor-lowered trailers may explain lowerings")
 	fs.BoolVar(&opt.doRatchet, "ratchet", false, "rewrite the floors file upward to match measured coverage")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -145,20 +150,49 @@ func runCompare(opt options, proposed []floor, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	var trailers []string
+	if opt.commitMsgs != "" {
+		content, err := os.ReadFile(opt.commitMsgs)
+		if err != nil {
+			fmt.Fprintf(stderr, "covergate: %s: %v\n", opt.commitMsgs, err)
+			return exitUsage
+		}
+		trailers = floorLoweredTrailers(content)
+	}
+
 	lowerings := compareFloors(base, proposed)
 	if len(lowerings) == 0 {
 		fmt.Fprintf(stdout, "covergate: %d floors, none lowered against %s\n", len(proposed), opt.compareFloors)
 		return exitOK
 	}
 
+	// A trailer explains only the floors its reason names, so the acceptance is per floor:
+	// one explained move no longer unlocks every unrelated cut on the same branch.
+	var unexplained []lowering
+	for _, l := range lowerings {
+		ok := false
+		for _, reason := range trailers {
+			if namesFloor(reason, l.Pkg) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			unexplained = append(unexplained, l)
+		}
+	}
+
 	for _, l := range lowerings {
 		fmt.Fprintf(stdout, "covergate: %s\n", l)
 	}
-	if opt.allowLower {
+	if len(unexplained) == 0 {
 		fmt.Fprintln(stdout, "covergate: accepted, a commit on this branch explains the lowering")
 		return exitOK
 	}
-	fmt.Fprintln(stdout, "next: raise the coverage instead, or put 'coverage-floor-lowered: <reason>' in a commit message on this branch")
+	for _, l := range unexplained {
+		fmt.Fprintf(stdout, "covergate: no commit on this branch explains the lowering of %s\n", l.Pkg)
+	}
+	fmt.Fprintln(stdout, "next: raise the coverage instead, or put 'coverage-floor-lowered: <package> <reason>' in a commit message on this branch")
 	return exitViolation
 }
 
