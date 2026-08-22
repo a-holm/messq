@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,15 @@ type probeCmd struct {
 	val  string
 	size int
 
+	// bizErr, when set, is returned as a business rejection BEFORE any row is written:
+	// the savepoint must undo nothing because there is nothing to undo, and siblings
+	// must survive.
+	bizErr error
+
+	// rawErr, when set, is returned UNWRAPPED after the row was written: infrastructure
+	// damage in the middle of a batch.
+	rawErr error
+
 	// beforeApply runs inside Apply on the writer goroutine: tests freeze the engine here.
 	beforeApply func()
 }
@@ -39,11 +49,17 @@ func (c *probeCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 		`CREATE TABLE IF NOT EXISTS probe (k INTEGER PRIMARY KEY, v TEXT NOT NULL, ts INTEGER NOT NULL)`); err != nil {
 		return nil, nil, err
 	}
+	if c.bizErr != nil {
+		return nil, nil, CmdErr(c.bizErr)
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO probe (k, v, ts) VALUES (?, ?, ?)
 		 ON CONFLICT (k) DO UPDATE SET v = excluded.v, ts = excluded.ts`,
 		c.key, c.val, now.UnixMilli()); err != nil {
 		return nil, nil, err
+	}
+	if c.rawErr != nil {
+		return nil, nil, c.rawErr
 	}
 	ev := obs.Event{Event: "msg.publish", TS: now.UnixMilli(), Detail: map[string]any{"k": c.key}}
 	return c.val, []obs.Event{ev}, nil
@@ -130,6 +146,25 @@ func readProbe(t *testing.T, ro *sql.DB) []probeRow {
 	if err != nil {
 		t.Fatalf("read probe: %v", err)
 	}
+	return scanProbe(t, rows)
+}
+
+// readProbeIfAny is readProbe for batches that may legitimately have left nothing behind,
+// table included.
+func readProbeIfAny(t *testing.T, ro *sql.DB) []probeRow {
+	t.Helper()
+	rows, err := ro.QueryContext(context.Background(), `SELECT k, v, ts FROM probe ORDER BY k`)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		t.Fatalf("read probe: %v", err)
+	}
+	return scanProbe(t, rows)
+}
+
+func scanProbe(t *testing.T, rows *sql.Rows) []probeRow {
+	t.Helper()
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
 			t.Errorf("close probe rows: %v", cerr)

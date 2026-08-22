@@ -538,9 +538,20 @@ func (w *Writer) takeBatch(batch []*request, held *request) ([]*request, *reques
 	}
 
 	timer := w.clk.NewTimer(w.cfg.CommitWindow)
-	defer timer.Stop()
+	defer func() { timer.Stop() }()
 fill:
 	for len(batch) < w.cfg.CommitMaxBatch {
+		// Prefer already-queued arrivals over the deadline: lingering happens only when the
+		// queue is empty. A bare two-case select would choose RANDOMLY between a queued
+		// command and a fired deadline, splitting batches arbitrarily under load.
+		select {
+		case r := <-w.ch:
+			if !fill(r) {
+				return batch, r, true
+			}
+			continue
+		default:
+		}
 		select {
 		case r := <-w.ch:
 			if !fill(r) {
@@ -570,6 +581,17 @@ func (w *Writer) commitBatch(batch []*request) {
 		w.abortBatch(batch, "begin", err)
 		return
 	}
+	// Any exit below runs the transaction down explicitly: an abandoned tx would hold the
+	// write lock until GC finalizes the driver object, wedging whoever comes next. A
+	// rollback failure on an already-doomed batch is logged, not acted on.
+	ok := false
+	defer func() {
+		if !ok {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				w.log.Warn("writer.rollback", "node", w.node, "error", rbErr.Error())
+			}
+		}
+	}()
 
 	events := make([]obs.Event, 0, len(batch))
 	for i, r := range batch {
@@ -588,11 +610,22 @@ func (w *Writer) commitBatch(batch []*request) {
 			r.res = res
 			events = append(events, evs...)
 		default:
-			// Infrastructure damage: the batch state is not trustworthy. The business-
-			// rejection class (CmdErr → ROLLBACK TO savepoint, siblings survive) arrives
-			// with its own tests; today every Apply error aborts the whole batch.
-			w.abortBatch(batch, "apply", applyErr)
-			return
+			if !IsCmdError(applyErr) {
+				// Infrastructure damage: the batch state is not trustworthy.
+				w.abortBatch(batch, "apply", applyErr)
+				return
+			}
+			// Business rejection: undo exactly this command, keep its siblings.
+			if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO "+sp); rbErr != nil {
+				w.abortBatch(batch, "rollback_to", rbErr)
+				return
+			}
+			if _, relErr := tx.ExecContext(ctx, "RELEASE "+sp); relErr != nil {
+				w.abortBatch(batch, "release", relErr)
+				return
+			}
+			r.err = applyErr
+			close(r.done) // this waiter is finished; the batch continues
 		}
 	}
 
@@ -601,15 +634,18 @@ func (w *Writer) commitBatch(batch []*request) {
 	dur := w.clk.Since(start)
 	w.obsrv.ObserveCommit(len(batch), dur, err)
 	if err != nil {
-		w.abortBatch(batch, "commit", err)
+		w.commitFailed(batch, err)
 		return
 	}
+	ok = true
 
 	if w.hooks.afterCommitBeforeReply != nil {
 		w.hooks.afterCommitBeforeReply() // store.tx.after_commit_before_reply (#32)
 	}
-	for _, r := range batch { // 1. replies — callers unblock
-		close(r.done)
+	for _, r := range batch { // 1. replies — callers unblock (rejected ones already left)
+		if r.err == nil {
+			close(r.done)
+		}
 	}
 	if len(events) > 0 { // 2. fan-out — off the latency path, never blocking
 		select {
@@ -620,6 +656,14 @@ func (w *Writer) commitBatch(batch []*request) {
 				"reason", "fan-out queue overflow; the events table remains complete")
 		}
 	}
+}
+
+// commitFailed answers every still-waiting caller of a batch whose COMMIT failed. This is
+// the fsyncgate seam; the full classify-latch-refuse machinery is the next slice. Today it
+// fails the batch as UNKNOWN — which the acceptance list demands regardless of latching,
+// because a failed commit is never a definite no.
+func (w *Writer) commitFailed(batch []*request, cause error) {
+	w.failAll(batch, fmt.Errorf("%w: commit failed: %w", ErrCommitUnknown, cause))
 }
 
 // applyCommand runs one command body, guarding the writer against a panicking command: a bug

@@ -90,6 +90,7 @@ func TestBatchClosesOnCommitWindow(t *testing.T) {
 		t.Fatalf("Do(P1): %v", got.Err)
 	}
 	<-req2.done
+	waitFor(func() bool { return len(sink.batches()) == 1 }) // fan-out is off the reply path
 	if n := obs.n.Load(); n != 1 {
 		t.Errorf("%d transactions ran, want exactly 1 (both commands share the fsync)", n)
 	}
@@ -141,6 +142,7 @@ func TestBatchClosesOnMaxBatch(t *testing.T) {
 			t.Fatalf("Do(%d): %v", i+1, got.Err)
 		}
 	}
+	waitFor(func() bool { return len(sink.batches()) == 2 })
 	sizes := sink.batches()
 	if len(sizes) != 2 || sizes[0] != 3 || sizes[1] != 2 {
 		t.Errorf("batches = %v, want [3 2]", sizes)
@@ -195,6 +197,7 @@ func TestBatchClosesOnMaxBytes(t *testing.T) {
 			t.Fatalf("Do(%d): %v", i+1, got.Err)
 		}
 	}
+	waitFor(func() bool { return len(sink.batches()) == 3 })
 	sizes := sink.batches()
 	if len(sizes) != 3 || sizes[0] != 2 || sizes[1] != 1 || sizes[2] != 1 {
 		t.Errorf("batches = %v, want [2 1 1]: budget split, then the oversized loner", sizes)
