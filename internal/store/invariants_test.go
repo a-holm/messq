@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/a-holm/messq/internal/queue"
@@ -140,6 +141,42 @@ func TestInvariantsReportSeededViolations(t *testing.T) {
 				t.Errorf("%s violation carries no detail", tc.wantID)
 			}
 		})
+	}
+}
+
+func TestInvariantsReportDuplicateDedupKeys(t *testing.T) {
+	ctx := context.Background()
+	st, _ := openWithStore(t)
+	seedViolatingStream(t, st)
+	if _, sErr := st.rw.ExecContext(ctx,
+		`INSERT INTO stream_stats (stream, msgs, bytes) VALUES ('orders', 4, 8)
+		 ON CONFLICT (stream) DO UPDATE SET msgs = excluded.msgs, bytes = excluded.bytes`); sErr != nil {
+		t.Fatalf("seed stats: %v", sErr)
+	}
+	if vs, cErr := st.CheckPublishInvariants(ctx); cErr != nil || len(vs) != 0 {
+		t.Fatalf("pre-corruption = %+v err=%v, want clean", vs, cErr)
+	}
+	// Simulate a bypassed unique index (corruption, not a supported state): drop it,
+	// plant two rows on one key, and expect the P3a leg to catch what SQL no longer
+	// enforces.
+	if _, xErr := st.rw.ExecContext(ctx, `DROP INDEX messages_dedup`); xErr != nil {
+		t.Fatalf("drop index: %v", xErr)
+	}
+	for _, seq := range []int64{6, 7} {
+		if _, xErr := st.rw.ExecContext(ctx,
+			`INSERT INTO messages (stream, seq, id, subject, body, size, published_at, trace_id, dedup_key)
+			 VALUES ('orders', ?, ?, 'orders.a', x'01', 1, ?, 'tr', 'dup-key')`,
+			seq, "seed-"+string(rune('0'+seq)), fakeStartMillis); xErr != nil {
+			t.Fatalf("seed dup %d: %v", seq, xErr)
+		}
+	}
+	vs, cErr := st.CheckPublishInvariants(ctx)
+	if cErr != nil {
+		t.Fatalf("check: %v", cErr)
+	}
+	dups := violationsOf(vs, "P3")
+	if len(dups) == 0 || !strings.Contains(dups[0].Detail, `"dup-key"`) {
+		t.Fatalf("P3 findings = %+v, want the duplicated key named", vs)
 	}
 }
 

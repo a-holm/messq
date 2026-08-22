@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/a-holm/messq/internal/errs"
@@ -96,6 +97,12 @@ func TestCreateStreamIdempotentAndConflict(t *testing.T) {
 	var ncc *NameCaseCollisionError
 	if !errors.As(err, &ncc) || ncc.Existing != "orders" {
 		t.Fatalf("case clash = %v, want NameCaseCollisionError{orders}", err)
+	}
+	if msg := ncc.Error(); !strings.Contains(msg, "ORDERS") || !strings.Contains(msg, "orders") {
+		t.Errorf("NameCaseCollisionError.Error() = %q, want both names", msg)
+	}
+	if msg := see.Error(); !strings.Contains(msg, "orders") || !strings.Contains(msg, "max_msg_size") {
+		t.Errorf("StreamExistsError.Error() = %q, want name and diff", msg)
 	}
 }
 

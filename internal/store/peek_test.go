@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/a-holm/messq/internal/errs"
@@ -71,6 +72,9 @@ func TestPeekSeqMissesExplainThemselves(t *testing.T) {
 		t.Fatalf("empty peek = %v (%+v), want never_published boundary 0", err, miss)
 	}
 	wantErrIs(t, err, errs.ErrNotFound)
+	if msg := miss.Error(); !strings.Contains(msg, "never_published") || !strings.Contains(msg, "0") {
+		t.Errorf("PeekMissError.Error() = %q, want reason and boundary rendered", msg)
+	}
 
 	seedMessages(t, st, "orders", 3, 4)
 	// Retire the two oldest rows the way retention will; first_seq becomes 3.
@@ -85,6 +89,24 @@ func TestPeekSeqMissesExplainThemselves(t *testing.T) {
 
 	if _, err := st.PeekSeq(ctx, "nope", 1); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("missing stream = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPeekSeqCorruptHeaderIsReported(t *testing.T) {
+	ctx := context.Background()
+	st, _ := openWithStore(t)
+	mustCreate(t, st, queue.DefaultConfig("orders"))
+	ack, pErr := st.Publish(ctx, pub("orders.a", []byte("x")))
+	if pErr != nil {
+		t.Fatalf("publish: %v", pErr)
+	}
+	if _, uErr := st.rw.ExecContext(ctx,
+		`UPDATE messages SET hdr='{bad json' WHERE seq=?`, ack.Seq); uErr != nil {
+		t.Fatalf("corrupt hdr: %v", uErr)
+	}
+	_, err := st.PeekSeq(ctx, "orders", ack.Seq)
+	if err == nil || !strings.Contains(err.Error(), "header JSON") {
+		t.Fatalf("corrupt hdr peek = %v, want reported corruption", err)
 	}
 }
 
@@ -174,6 +196,28 @@ func TestListMessagesRangeClampAndResume(t *testing.T) {
 	withBody, err := st.ListMessages(ctx, ListQuery{Stream: "orders", Limit: 500, IncludeBody: true})
 	if err != nil || withBody.Limit != 100 { // body pages clamp harder
 		t.Fatalf("body clamp = limit %d err=%v, want 100", withBody.Limit, err)
+	}
+	if len(withBody.Messages) == 0 || len(withBody.Messages[0].Body) != 1 {
+		t.Fatalf("body page = %+v, want bodies carried", withBody.Messages)
+	}
+	// A listed row WITH headers exercises the parsed-header scan of listings.
+	hdrAck, hErr := st.Publish(ctx, PublishCmd{
+		Stream: "orders",
+		Req: queue.PublishReq{
+			Subject: "orders.a", Body: []byte("h"),
+			Headers: map[string]string{"Tenant": "acme"},
+		},
+	})
+	if hErr != nil {
+		t.Fatalf("publish hdr: %v", hErr)
+	}
+	listed, lErr := st.ListMessages(ctx, ListQuery{
+		Stream:  "orders",
+		FromSeq: hdrAck.Seq, Limit: 5,
+	})
+	if lErr != nil || len(listed.Messages) != 1 ||
+		listed.Messages[0].Headers["Tenant"] != "acme" {
+		t.Fatalf("listed headers = %+v err=%v, want Tenant parsed", listed.Messages, lErr)
 	}
 }
 
