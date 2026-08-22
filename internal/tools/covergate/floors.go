@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // floor is one line of coverage.floors: a package path relative to the module root, the
@@ -65,6 +66,40 @@ func parseFloors(r io.Reader) ([]floor, error) {
 		return nil, err
 	}
 	return floors, nil
+}
+
+// trailerLine matches an anchored coverage-floor-lowered line and captures what follows the
+// colon. The anchor is the contract CONTRIBUTING.md states: a sentence that merely mentions
+// the escape hatch is prose, not a trailer, and a bare colon with nothing after it explains
+// nothing.
+var trailerLine = regexp.MustCompile(`(?m)^coverage-floor-lowered:[[:space:]]+(\S.*)$`)
+
+// floorLoweredTrailers returns the text after every anchored coverage-floor-lowered: line,
+// in order. Each element is the trailer's reason, which must name the floors it accepts.
+func floorLoweredTrailers(content []byte) []string {
+	matches := trailerLine.FindAllStringSubmatch(string(content), -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// nameChars decides which runes belong to a package path inside a trailer's reason. Everything
+// else separates one named floor from the next, so "internal/store," and "(internal/store)"
+// still compare as internal/store while "internal/storey" never compares as internal/store.
+func nameChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '/' || r == '_' || r == '.'
+}
+
+// namesFloor reports whether a trailer's reason names pkg as one of its words.
+func namesFloor(reason, pkg string) bool {
+	for _, field := range strings.FieldsFunc(reason, func(r rune) bool { return !nameChar(r) }) {
+		if field == pkg {
+			return true
+		}
+	}
+	return false
 }
 
 // lowering is a floor that a proposed coverage.floors sets below the value it has in the

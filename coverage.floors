@@ -2,8 +2,8 @@
 #
 # Floors ratchet upward only. `make cover-ratchet` raises a floor once measured coverage clears
 # it by a whole point; nothing lowers one. A pull request that lowers a floor fails
-# `make cover-ratchet-check` unless its head commit message carries a
-# `coverage-floor-lowered: <reason>` line.
+# `make cover-ratchet-check` unless a commit on the branch carries an anchored
+# `coverage-floor-lowered: <package> <reason>` line naming the lowered package.
 #
 # A floored package that exists but declares no functions yet reports PENDING and passes. Once
 # it has code, a missing profile entry is a failure: deleting a package's tests must not

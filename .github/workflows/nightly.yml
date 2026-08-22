@@ -138,6 +138,15 @@ jobs:
   #
   # One open issue at a time. A lane that fails for a fortnight should produce fourteen comments
   # on one thread, not fourteen issues.
+  #
+  # The condition reads needs.*.result instead of failure() because a skip cascades: GitHub
+  # skips every job that needs a skipped job unless the dependent's own condition overrides
+  # the cascade, and failure() alone does not override it. The night a placeholder above grows
+  # a condition, skips, and a sibling fails, failure() would leave the lane red without this
+  # job ever running. contains() over the results fires on any single real failure whatever
+  # the siblings did -- and on failures only: a lane that quietly shrank is a design review,
+  # not a failure report. !cancelled() rather than always(): a nightly someone cancelled is
+  # not a failing nightly, and this job should not wake up mid-shutdown to file one.
   report-failure:
     needs:
       - vuln
@@ -149,7 +158,7 @@ jobs:
       - bench
       - upgrade-fixtures
       - cgosqlite
-    if: failure()
+    if: ${{ !cancelled() && contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

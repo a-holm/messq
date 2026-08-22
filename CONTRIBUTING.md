@@ -47,6 +47,8 @@ $ make ci
 | `make gates-selftest` | Every gate above still fails when you break it. |
 | `make static-check` | Both cross-compiled binaries record `CGO_ENABLED=0` and `-trimpath`, and `file(1)` calls them statically linked. |
 
+One limitation worth naming: `make layers` reads the tree through `go list`, which parses package clauses and imports but not function bodies, so a syntax error inside a body leaves the import graph correct and the gate green; `make vet` is the gate that catches it, and has a sabotage row of its own.
+
 Two more targets exist for people rather than for CI: `make cover-html` opens the profile from the last `make cover`, and `make cover-ratchet` raises the floors that coverage has outgrown.
 
 The race detector needs cgo and the shipped binary must not have it, so `make test` and `make cover` run with `CGO_ENABLED=1` while every build target pins `CGO_ENABLED=0`. Both are mandatory and neither may be dropped.
@@ -71,7 +73,7 @@ Floors ratchet upward only.
 
 - A floored package that exists but declares no functions yet reports `PENDING` and passes. Once it has code, a missing profile entry is a failure: deleting a package's tests must not silently satisfy its floor, and neither must deleting the package.
 - `make cover-ratchet` raises a floor once measured coverage clears it by a whole point, rounded down. Run it yourself, review the diff, commit it. CI never runs it: a bot that edits the gate is not a gate.
-- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <reason>` line, starting at the beginning of a line and with a reason after it. Without one, `make cover-ratchet-check` refuses the branch. The reason is the point; the grep only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
+- Lowering a floor needs a commit on the branch whose message carries a `coverage-floor-lowered: <package> <reason>` line, starting at the beginning of a line and naming every package whose floor the branch lowers. A trailer explains only the floors it names: cutting `internal/store` while explaining a move of `internal/id` refuses the branch. Without an explaining trailer for each lowered floor, `make cover-ratchet-check` refuses it. The reason is the point; the check only makes it deliberate. The whole branch is searched rather than its tip, because a pull-request runner checks out a synthetic merge commit and would never see the tip.
 
 ## Vulnerabilities and suppressions
 

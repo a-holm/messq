@@ -45,7 +45,7 @@ GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
-        vuln vuln-strict fmt fmt-check fmt-list vet tidy-check dep-budget layers \
+        vuln vuln-strict seam-defaults fmt fmt-check fmt-list vet tidy-check dep-budget layers \
         spdx gates-selftest fuzz static-check repro hooks ci clean
 
 help: ## Show this help.
@@ -92,36 +92,28 @@ cover-html: ## Open the coverage profile produced by `make cover` as HTML.
 cover-ratchet: cover ## Raise the floors that measured coverage clears by a whole point.
 	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors -ratchet
 
-# The escape-hatch trailer, anchored at the start of a line and demanding a non-empty reason.
-# CONTRIBUTING.md promises a reason; an unanchored grep would also accept a bare
-# `coverage-floor-lowered:` and a commit that merely mentions the string in prose.
-RATCHET_TRAILER := ^coverage-floor-lowered:[[:space:]]+[^[:space:]]
-
-# Compares against the merge base rather than against origin/main's tip, so a floor raised on
-# main after this branch started does not read as a lowering here. Silent when there is no
-# merge base to compare against, which is the case in a fresh shallow clone.
+# The escape hatch lives inside covergate: this target hands it the body of every commit the
+# branch adds, and covergate accepts a lowering only when some anchored
+# `coverage-floor-lowered:` trailer names that floor. Matching per floor is the #45 hardening;
+# before it, one explained trailer unlocked every lowered floor on the branch at once.
 #
-# The trailer is looked for across every commit the branch adds, not on HEAD alone. On a pull
+# The bodies are looked for across every commit the branch adds, not on HEAD alone. On a pull
 # request the runner checks out GitHub's synthetic "Merge X into Y" commit, so HEAD is a commit
-# nobody wrote and `git log -1` can never see the trailer: the hatch would be documented,
-# advertised in the failure message, and unreachable. The merge base opens exactly the range of
-# commits this branch is responsible for, in both shapes.
+# nobody wrote and `git log -1` can never see the trailer: the merge base opens exactly the
+# range of commits this branch is responsible for, in both shapes.
 cover-ratchet-check: ## Fail when this branch lowers a coverage floor without saying why.
 	@base="$$(git merge-base HEAD origin/main 2>/dev/null)" || { \
 		echo "cover-ratchet-check: no merge base with origin/main, nothing to compare"; \
 		exit 0; \
 	}; \
-	baseline="$$(mktemp)"; \
-	trap 'rm -f "$$baseline"' EXIT; \
+	baseline="$$(mktemp)"; messages="$$(mktemp)"; \
+	trap 'rm -f "$$baseline" "$$messages"' EXIT; \
 	git show "$$base:coverage.floors" >"$$baseline" 2>/dev/null || { \
 		echo "cover-ratchet-check: the merge base has no coverage.floors, nothing to compare"; \
 		exit 0; \
 	}; \
-	allow=(); \
-	if git log --format=%B "$$base..HEAD" | grep -qE '$(RATCHET_TRAILER)'; then \
-		allow=(-allow-lower); \
-	fi; \
-	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" $${allow[@]+"$${allow[@]}"}
+	git log --format=%B "$$base..HEAD" >"$$messages"; \
+	go run ./internal/tools/covergate -floors coverage.floors -compare-floors "$$baseline" -commit-messages "$$messages"
 
 # config verify runs first because it reads the file with the same loader `run` uses and then
 # validates it against a schema embedded in the pinned binary, so an unknown settings key or a
@@ -151,6 +143,31 @@ vuln: ## Fail on a reachable vulnerability or an expired suppression.
 vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matches anything.
 	$(VULNGATE) -check-expiry
 	$(VULNSCAN) | $(VULNGATE) -strict
+
+# Both seams above are also both ways a reviewed workflow edit could quietly disarm a gate:
+# `VULNSCAN=true` pipes nothing into vulngate and `TEST_COUNT=0` runs no tests at all, each
+# reported as success. This target re-asserts the runner's view of the two, so such an edit
+# fails here by name instead of passing vacuously. The expected values are spelled out rather
+# than derived from the definitions above on purpose: moving a seam's default means moving this
+# assertion in the same reviewed change, which is exactly what a silent override must never be.
+#
+# Compared by value, not with origin: an override through the environment or the command line
+# changes where a variable came from, but the sabotage matrix edits the Makefile itself (rows
+# G35/G36 in test/gates/gates_test.go), where the origin stays "file" while the value walks off
+# the default.
+seam-defaults: ## Assert VULNSCAN and TEST_COUNT still carry their repository defaults.
+	@failed=false; \
+	scan_default='$(GOVULNCHECK) -format sarif ./...'; \
+	if [[ '$(VULNSCAN)' != "$$scan_default" ]]; then \
+		echo "seam-defaults: VULNSCAN is '$(VULNSCAN)', want the repository default '$$scan_default'" >&2; \
+		failed=true; \
+	fi; \
+	if [[ '$(TEST_COUNT)' != '1' ]]; then \
+		echo "seam-defaults: TEST_COUNT is '$(TEST_COUNT)', want the repository default '1'" >&2; \
+		failed=true; \
+	fi; \
+	if [[ "$$failed" == true ]]; then exit 1; fi; \
+	echo "seam-defaults: VULNSCAN and TEST_COUNT hold their defaults"
 
 # One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
 # nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
@@ -238,7 +255,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
 # The gate, in order. static-check pulls in build-all, so the binaries are built once.
-CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx lint test cover \
+CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test cover \
               cover-ratchet-check vuln gates-selftest static-check
 
 # PLAN.md section 11 budgets the whole lane at ten minutes, which is a constraint rather than an
