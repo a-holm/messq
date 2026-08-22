@@ -322,6 +322,7 @@ type Writer struct {
 	latched  atomic.Pointer[FatalError] // set exactly once: the first fault wins
 	closing  atomic.Bool
 	lastNow  atomic.Int64  // monotonic guard for batch timestamps (UnixNano)
+	inApply  atomic.Bool   // set while a command body runs; Do panics if re-entered
 	done     chan struct{} // closed when run has returned
 	stop     chan struct{} // closed by Close; run drains what is queued before exiting
 	evCh     chan []obs.Event
@@ -457,6 +458,12 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 	}
 	if w.closing.Load() {
 		return nil, ErrWriterClosing
+	}
+	if w.inApply.Load() {
+		// A command body trying to submit work would wait for a batch that cannot finish
+		// until its own Apply returns: deadlock by construction. Panic instead — the
+		// writer recovers it as infrastructure damage and latches, naming the bug.
+		panic("store: Writer.Do called from inside Apply — a command may not submit commands")
 	}
 	r := &request{cmd: cmd, done: make(chan struct{})}
 	select {
@@ -707,6 +714,8 @@ func (w *Writer) doomed(batch []*request, op string, tx *sql.Tx, cause error) {
 // error: a bug in a command must never take down the goroutine, and it must never half-apply
 // a transaction — the recovered error takes the same fatal path as any other damage.
 func (w *Writer) applyCommand(ctx context.Context, tx *sql.Tx, cmd Cmd, now time.Time) (res Result, evs []obs.Event, err error) {
+	w.inApply.Store(true)
+	defer w.inApply.Store(false)
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic in %s apply: %v\n%s", cmd.Kind(), p, debug.Stack())
