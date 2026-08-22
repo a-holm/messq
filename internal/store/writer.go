@@ -418,15 +418,19 @@ func (w *Writer) Fatal() <-chan *FatalError {
 	return w.fatalC
 }
 
-// Do submits one command to the writer and waits for its batch's outcome. The two waits are
-// deliberately different:
+// Do submits one command to the writer and waits for its batch's outcome. Context handling is
+// a deliberate two-phase contract, and errors.Is(err, ErrCommitUnknown) tells the phases
+// apart:
 //
-//  1. Enqueueing is cancellable — a caller whose context expires before the command reached
-//     the queue gets ctx.Err() and the command never runs.
-//  2. Waiting is NOT cancellable in effect: once accepted, the command always runs (SEMANTICS
-//     S2.3's total order must not develop holes for disconnected clients). A caller that
-//     stops waiting gets ErrCommitUnknown — the write may or may not have happened, which is
-//     exactly what idempotent retries with Messq-Msg-Id (#7) are for.
+//  1. A context that is already cancelled when Do is called refuses deterministically: the
+//     command is never enqueued and ctx.Err() is returned unwrapped.
+//  2. A context cancelled while WAITING — for capacity or for the commit — makes the outcome
+//     unknowable in advance, but the returned error always separates the two shapes.
+//     ErrCommitUnknown wrapping ctx.Err() means the command was accepted: it always runs once
+//     accepted (SEMANTICS S2.3's total order must not develop holes for disconnected
+//     clients), yet a caller that stopped waiting does not know whether it was applied —
+//     exactly what idempotent retries with Messq-Msg-Id (#7) are for. Bare ctx.Err() means
+//     the enqueue send never happened: the command was never accepted and never runs.
 //
 // A full channel blocks here: that is backpressure, propagating to the socket (PLAN §3.2).
 func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
@@ -445,6 +449,14 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 	// callers submitting from other goroutines while any command is being applied.
 	if marked, hasMark := ctx.Value(inApplyCtxKey{}).(bool); hasMark && marked {
 		panic("store: Writer.Do called from inside Apply — a command may not submit commands")
+	}
+	// Refuse BEFORE the enqueue select: with room in the queue, an already-cancelled context
+	// leaves both arms ready and Go picks pseudo-randomly — the PR #53 review measured 203 of
+	// 400 such commands enqueued and applied despite their caller's dead context. The check
+	// sits after the cheap guards so a latched or closing writer still names its own
+	// condition, and before the request is built so a refusal allocates nothing.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	r := &request{cmd: cmd, done: make(chan struct{})}
 	select {

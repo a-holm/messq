@@ -210,3 +210,114 @@ func TestInApplyDoDeadlockGuard(t *testing.T) {
 		t.Errorf("close: %v", closeErr)
 	}
 }
+
+// TestPreCancelledDoRefusesBeforeEnqueue pins the deterministic refusal of a context that is
+// already cancelled when Do is called: the command is never enqueued and ctx.Err() comes back
+// unwrapped. The census shape is the point — against an IDLE writer with queue room, the
+// enqueue select has TWO ready arms (send and ctx.Done), so without a pre-check Go picks
+// pseudo-randomly and roughly half the commands slip into the queue and apply anyway. The
+// PR #53 review measured exactly that: 203 of 400 pre-cancelled commands enqueued and applied
+// while every caller still received an errors.Is(context.Canceled) error — the wait phase
+// answers ErrCommitUnknown wrapping ctx.Err(), which made those coin-flip losses
+// indistinguishable from genuine unknown fates.
+func TestPreCancelledDoRefusesBeforeEnqueue(t *testing.T) {
+	ctx := context.Background()
+	handler := &logCapture{}
+	st, _, err := Open(ctx, testOptions(testDataDir(t), fakeClock(), handler))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if closeErr := st.Close(ctx); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
+	w, err := st.NewWriter(Config{QueueDepth: 8}, withLogger(handler.asLogger()))
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	// Seed one ACCEPTED command first: it creates the probe table (Apply creates it lazily,
+	// so a genuinely all-refused engine would leave readProbe with no table at all) and it
+	// keeps the zero-rows claim from being vacuous — a mutant that refused EVERY command
+	// would otherwise satisfy the census too.
+	if _, err := w.Do(ctx, &probeCmd{key: 4242, val: "seed"}); err != nil {
+		t.Fatalf("Do(seed): %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel() // dead on arrival: both enqueue arms are ready from the first call
+	for i := 0; i < 200; i++ {
+		_, doErr := w.Do(cancelled, &probeCmd{key: int64(i), val: "refused"})
+		if doErr == nil {
+			t.Fatalf("Do #%d with a pre-cancelled context returned a result instead of refusing", i)
+		}
+		if !errors.Is(doErr, context.Canceled) {
+			t.Fatalf("Do #%d refusal = %v, want context.Canceled", i, doErr)
+		}
+		if errors.Is(doErr, ErrCommitUnknown) {
+			t.Fatalf("Do #%d refusal = %v, must NOT satisfy ErrCommitUnknown: a caller could not tell this refusal (safe to retry blind) from an unknown fate", i, doErr)
+		}
+	}
+
+	if closeErr := w.Close(ctx); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	rows := readProbe(t, st.RO())
+	if len(rows) != 1 || rows[0].K != 4242 || rows[0].V != "seed" {
+		t.Fatalf("rows = %+v, want exactly the {4242 seed}: a command from a pre-cancelled context was enqueued and applied", rows)
+	}
+}
+
+// TestCancelErrorShapesAreDistinguishable pins the caller-side discriminator between the two
+// cancellation shapes: errors.Is(err, ErrCommitUnknown). A REFUSAL — context dead on arrival,
+// command never enqueued — is bare ctx.Err() and must never satisfy ErrCommitUnknown; a
+// MID-WAIT cancellation — context abandoned after acceptance, while the batch lingers toward
+// its commit — must always satisfy it, carrying ctx.Err() as the wrapped cause. That pair is
+// what tells a caller whether a blind retry is safe (refusal) or needs Messq-Msg-Id
+// deduplication (#7, unknown fate).
+func TestCancelErrorShapesAreDistinguishable(t *testing.T) {
+	ctx := context.Background()
+	handler := &logCapture{}
+	fc := fakeClock()
+	st, _, err := Open(ctx, testOptions(testDataDir(t), fc, handler))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if closeErr := st.Close(ctx); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
+	w, err := st.NewWriter(Config{CommitWindow: 50 * time.Millisecond}, withLogger(handler.asLogger()))
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	refused, cancelRefused := context.WithCancel(ctx)
+	cancelRefused()
+	if _, refusal := w.Do(refused, &probeCmd{key: 1, val: "refused"}); refusal == nil || !errors.Is(refusal, context.Canceled) || errors.Is(refusal, ErrCommitUnknown) {
+		t.Fatalf("pre-cancelled refusal = %v, want bare context.Canceled and NEVER ErrCommitUnknown", refusal)
+	}
+
+	waiterCtx, cancelWaiter := context.WithCancel(ctx)
+	resC := make(chan error, 1)
+	go func() {
+		_, doErr := w.Do(waiterCtx, &probeCmd{key: 9, val: "unknown"})
+		resC <- doErr
+	}()
+	fc.BlockUntil(1) // accepted; the batch is open and lingering
+	cancelWaiter()   // the caller gives up BEFORE the commit
+	if unknown := <-resC; !errors.Is(unknown, ErrCommitUnknown) || !errors.Is(unknown, context.Canceled) {
+		t.Fatalf("mid-wait cancellation = %v, want ErrCommitUnknown wrapping context.Canceled", unknown)
+	}
+
+	fc.Advance(50 * time.Millisecond) // the engine still owns the abandoned command
+	if closeErr := w.Close(ctx); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	rows := readProbe(t, st.RO())
+	if len(rows) != 1 || rows[0].K != 9 || rows[0].V != "unknown" {
+		t.Fatalf("rows = %+v, want exactly {9 unknown}: the refused command never ran, the abandoned one did", rows)
+	}
+}
