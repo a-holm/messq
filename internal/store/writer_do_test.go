@@ -147,7 +147,8 @@ type probeRow struct {
 }
 
 // readProbe reads the probe table through the read pool: the same data a restart would see.
-func readProbe(t *testing.T, ro *sql.DB) []probeRow {
+// It takes fatalHelper so both *testing.T and *rapid.T can drive it.
+func readProbe(t fatalHelper, ro *sql.DB) []probeRow {
 	t.Helper()
 	rows, err := ro.QueryContext(context.Background(), `SELECT k, v, ts FROM probe ORDER BY k`)
 	if err != nil {
@@ -158,7 +159,7 @@ func readProbe(t *testing.T, ro *sql.DB) []probeRow {
 
 // readProbeIfAny is readProbe for batches that may legitimately have left nothing behind,
 // table included.
-func readProbeIfAny(t *testing.T, ro *sql.DB) []probeRow {
+func readProbeIfAny(t fatalHelper, ro *sql.DB) []probeRow {
 	t.Helper()
 	rows, err := ro.QueryContext(context.Background(), `SELECT k, v, ts FROM probe ORDER BY k`)
 	if err != nil {
@@ -170,7 +171,7 @@ func readProbeIfAny(t *testing.T, ro *sql.DB) []probeRow {
 	return scanProbe(t, rows)
 }
 
-func scanProbe(t *testing.T, rows *sql.Rows) []probeRow {
+func scanProbe(t fatalHelper, rows *sql.Rows) []probeRow {
 	t.Helper()
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
