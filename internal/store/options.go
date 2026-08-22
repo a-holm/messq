@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/id"
+	"github.com/a-holm/messq/internal/queue"
 )
 
 // Options configures [Open]. Zero values mean "default", except where a field's comment says
@@ -36,6 +37,9 @@ type Options struct {
 	ReclaimJitter time.Duration
 	// ReadOnly opens for offline inspection: no rw handle, no recovery, no lock write.
 	ReadOnly bool
+	// Limits are the process-wide validation ceilings (issue §4.2) every stream
+	// configuration is checked against; zero value means DefaultLimits().
+	Limits queue.Limits
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -67,6 +71,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.ReclaimJitter < 0 {
 		o.ReclaimJitter = defaultReclaimJitter
+	}
+	if o.Limits == (queue.Limits{}) {
+		o.Limits = queue.DefaultLimits()
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}

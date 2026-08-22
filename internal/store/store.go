@@ -16,6 +16,7 @@ import (
 
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/id"
+	"github.com/a-holm/messq/internal/queue"
 )
 
 // The Store owns <data-dir>/messq.db for one process: the sole read-write handle (handed
@@ -45,6 +46,9 @@ const (
 type Store struct {
 	mu     sync.Mutex
 	closed bool
+	// writeMu serialises state-changing commands, standing in for #6's single writer
+	// goroutine. Once #6 lands, its queue owns this serialisation and the mutex goes.
+	writeMu sync.Mutex
 	// handedOff marks a successful TakeWriter: closing the returned handle then belongs to
 	// its owner, so Close skips every rw-dependent step instead of fighting over the fd.
 	handedOff bool
@@ -59,6 +63,9 @@ type Store struct {
 	durability    Durability
 	clk           clock.Clock
 	logger        *slog.Logger
+	// limits are the process-wide validation ceilings (issue §1); defaulted in
+	// applyDefaults so a zero Options still validates against the §4.2 numbers.
+	limits queue.Limits
 }
 
 // dbPath renders <dir>/messq.db.
@@ -212,6 +219,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	st := &Store{
 		dir:        opt.DataDir,
 		durability: opt.Durability,
+		limits:     opt.Limits,
 		clk:        opt.Clock,
 		logger:     opt.Logger,
 	}
