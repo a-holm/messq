@@ -16,11 +16,11 @@ import (
 	"github.com/a-holm/messq/internal/queue"
 )
 
-// Stream lifecycle (issue #7 §1–§2): create, read, list. Every state change runs
-// through [Store.runWrite] with its co-committed event row; every read runs on the
-// fenced read-only pool. The authoritative config check happens inside the
-// transaction, so a stream narrowed or deleted earlier in the same commit batch can
-// never be raced by a stale snapshot.
+// Stream lifecycle (issue #7 §1–§2): create, read, list. Every state change rides the
+// writer engine as a [Cmd] submitted through [Store.enqueue], its co-committed event
+// row inside the command's Apply; every read runs on the fenced read-only pool. The
+// authoritative config check happens inside the transaction, so a stream narrowed or
+// deleted earlier in the same commit batch can never be raced by a stale snapshot.
 
 // StreamInfo is the read shape of one stream: its configuration plus the live
 // statistics. The JSON field names are the CLI's --output contract (issue §7) and are
@@ -105,68 +105,16 @@ func (s *Store) CreateStream(ctx context.Context, cfg queue.StreamConfig, actor 
 	if verr := queue.ValidateStreamConfig(cfg, s.limits); verr != nil {
 		return StreamInfo{}, false, verr
 	}
-	err = s.runWrite(ctx, "store.CreateStream", func(tx txLike) error {
-		row := tx.QueryRowContext(ctx, `SELECT `+streamCols+` FROM streams WHERE name = ? COLLATE NOCASE`, cfg.Name)
-		existing, scanErr := scanStreamInfo(row)
-		switch {
-		case errors.Is(scanErr, sql.ErrNoRows):
-			// fresh name: fall through to the insert
-		case scanErr != nil:
-			return fmt.Errorf("read existing stream: %w", scanErr)
-		default:
-			if existing.Name == cfg.Name {
-				if diff := configDiff(existing.Config(), cfg); len(diff) > 0 {
-					return &StreamExistsError{Name: cfg.Name, Diff: diff, Existing: existing}
-				}
-				info, existed = existing, true
-				return nil
-			}
-			return &NameCaseCollisionError{Name: cfg.Name, Existing: existing.Name}
-		}
-
-		next, hwmErr := resumeSeq(ctx, tx, cfg.Name)
-		if hwmErr != nil {
-			return hwmErr
-		}
-		if _, execErr := tx.ExecContext(ctx, `INSERT INTO streams
-			(name, subjects, retention, max_msgs, max_bytes, max_age_ms, max_msg_size, discard, dedup_window_ms, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			cfg.Name, marshalSubjects(cfg.Subjects), string(cfg.Retention),
-			cfg.MaxMsgs, cfg.MaxBytes, cfg.MaxAge.Milliseconds(), cfg.MaxMsgSize,
-			string(cfg.Discard), cfg.DedupWindow.Milliseconds(), nowMS(s.clk),
-		); execErr != nil {
-			return fmt.Errorf("insert stream row: %w", execErr)
-		}
-		if _, execErr := tx.ExecContext(ctx,
-			`INSERT INTO stream_seq (stream, next) VALUES (?, ?)`, cfg.Name, next); execErr != nil {
-			return fmt.Errorf("insert stream_seq row: %w", execErr)
-		}
-		if _, execErr := tx.ExecContext(ctx,
-			`INSERT INTO stream_stats (stream, msgs, bytes) VALUES (?, 0, 0)`, cfg.Name); execErr != nil {
-			return fmt.Errorf("insert stream_stats row: %w", execErr)
-		}
-		evErr := insertEvent(ctx, tx, event{
-			ts:     nowMS(s.clk),
-			name:   "stream.create",
-			stream: nullStr(cfg.Name),
-			actor:  nullStr(actor),
-			detail: nullStr(fmt.Sprintf(`{"next_seq":%d}`, next)),
-		})
-		if evErr != nil {
-			return evErr
-		}
-		info = StreamInfo{
-			Name: cfg.Name, Subjects: cfg.Subjects,
-			Retention: string(cfg.Retention), MaxMsgs: cfg.MaxMsgs, MaxBytes: cfg.MaxBytes,
-			MaxAgeMS: cfg.MaxAge.Milliseconds(), MaxMsgSize: cfg.MaxMsgSize,
-			Discard: string(cfg.Discard), DedupWindowMS: cfg.DedupWindow.Milliseconds(),
-			CreatedAt: nowMS(s.clk),
-		}
-		return nil
-	})
+	res, err := s.enqueue(ctx, "store.CreateStream", createStreamCmd{cfg: cfg, actor: actor})
 	if err != nil {
 		return StreamInfo{}, false, err
 	}
+	cr, ok := res.(createStreamResult)
+	if !ok {
+		return StreamInfo{}, false,
+			fmt.Errorf("store.CreateStream: engine returned %T, want createStreamResult", res)
+	}
+	info, existed = cr.info, cr.existed
 	if !existed {
 		// Fill the live statistics of the freshly created row (all zero today, but the
 		// read path stays one code path).
@@ -183,7 +131,7 @@ func (s *Store) CreateStream(ctx context.Context, cfg queue.StreamConfig, actor 
 // one above the deleted stream's high-water mark otherwise, and it clears the marker
 // read (the key stays: ~40 bytes per name ever used, and a later recreate of the same
 // name must keep resuming forward even if this creation never publishes).
-func resumeSeq(ctx context.Context, tx txLike, name string) (int64, error) {
+func resumeSeq(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
 	var raw string
 	err := tx.QueryRowContext(ctx, `SELECT v FROM meta WHERE k = ?`, metaSeqHwmPrefix+name).Scan(&raw)
 	switch {
@@ -272,12 +220,19 @@ func scanStreamInfo(row interface{ Scan(dest ...any) error }) (StreamInfo, error
 	return info, nil
 }
 
+// querier is the read seam shared by pools and transactions: anything with a
+// QueryRowContext. GetStream hands it the fenced RO pool; command Applies may pass
+// their *sql.Tx.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // fillStreamStats loads msgs/bytes from stream_stats and first_seq/last_seq from the
 // messages index. Two separate min/max queries: SQLite only optimises a single bare
 // min() or max() per query, and combining them would scan the stream. An empty stream
 // reports first_seq 0 and last_seq next-1, so numbering continuity after a purge is
 // visible rather than mysterious (issue §5).
-func fillStreamStats(ctx context.Context, q txLike, info *StreamInfo) error {
+func fillStreamStats(ctx context.Context, q querier, info *StreamInfo) error {
 	var msgs, bytes sql.Null[int64]
 	if err := q.QueryRowContext(ctx,
 		`SELECT msgs, bytes FROM stream_stats WHERE stream = ?`, info.Name,

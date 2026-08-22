@@ -4,11 +4,10 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 
-	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/subject"
 )
@@ -50,88 +49,18 @@ func (s *Store) UpdateStream(ctx context.Context, name string, p StreamPatch, al
 	if err := queue.ValidateExistingStreamName(name); err != nil {
 		return UpdateResult{}, err
 	}
-	var res UpdateResult
-	err := s.runWrite(ctx, "store.UpdateStream", func(tx txLike) error {
-		row := tx.QueryRowContext(ctx, `SELECT `+streamCols+` FROM streams WHERE name = ?`, name)
-		old, scanErr := scanStreamInfo(row)
-		if scanErr != nil {
-			return errs.E(errs.ErrNotFound, "store.UpdateStream",
-				"stream %q does not exist", name)
-		}
-		next, fields := applyPatch(old.Config(), p)
-		if len(fields) == 0 { // empty patch: nothing to decide, nothing to audit
-			stats, statsErr := streamUsage(ctx, tx, name)
-			if statsErr != nil {
-				return statsErr
-			}
-			old.Msgs, old.Bytes = stats.msgs, stats.bytes
-			res.Info = old
-			return nil
-		}
-		if vErr := queue.ValidateStreamConfig(next, s.limits); vErr != nil {
-			return vErr
-		}
-
-		u, mErr := measureUsage(ctx, tx, name, next, nowMS(s.clk))
-		if mErr != nil {
-			return mErr
-		}
-		if uErr := queue.ValidateUpdate(old.Config(), next, u, allowDataLoss); uErr != nil {
-			return uErr
-		}
-
-		if _, xErr := tx.ExecContext(ctx, `UPDATE streams SET
-			subjects = ?, retention = ?, max_msgs = ?, max_bytes = ?, max_age_ms = ?,
-			max_msg_size = ?, discard = ?, dedup_window_ms = ?
-			WHERE name = ?`,
-			marshalSubjects(next.Subjects), string(next.Retention),
-			next.MaxMsgs, next.MaxBytes, next.MaxAge.Milliseconds(), next.MaxMsgSize,
-			string(next.Discard), next.DedupWindow.Milliseconds(), name,
-		); xErr != nil {
-			return fmt.Errorf("update stream row: %w", xErr)
-		}
-		raw, jErr := json.Marshal(map[string]any{"fields": fields})
-		if jErr != nil { // unreachable for []string
-			raw = []byte(`{}`)
-		}
-		if eErr := insertEvent(ctx, tx, event{
-			ts:     nowMS(s.clk),
-			name:   "stream.update",
-			stream: nullStr(name),
-			actor:  nullStr(actor),
-			detail: nullStr(string(raw)),
-		}); eErr != nil {
-			return eErr
-		}
-
-		res.Fields = fields
-		res.Info = old // sequence/stat fields are filled below
-		res.Info.Subjects = next.Subjects
-		res.Info.Retention = string(next.Retention)
-		res.Info.MaxMsgs = next.MaxMsgs
-		res.Info.MaxBytes = next.MaxBytes
-		res.Info.MaxAgeMS = next.MaxAge.Milliseconds()
-		res.Info.MaxMsgSize = next.MaxMsgSize
-		res.Info.Discard = string(next.Discard)
-		res.Info.DedupWindowMS = next.DedupWindow.Milliseconds()
-		stats, statsErr := streamUsage(ctx, tx, name)
-		if statsErr != nil {
-			return statsErr
-		}
-		res.Info.Msgs, res.Info.Bytes = stats.msgs, stats.bytes
-		if subjectsChanged(old.Config().Subjects, next.Subjects) {
-			n, nErr := countUnmatched(ctx, tx, name, next.Subjects)
-			if nErr != nil {
-				return nErr
-			}
-			res.NarrowedMsgs = n
-		}
-		return nil
+	res, err := s.enqueue(ctx, "store.UpdateStream", updateStreamCmd{
+		name: name, p: p, allowDataLoss: allowDataLoss, actor: actor, limits: s.limits,
 	})
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	return res, nil
+	upd, ok := res.(UpdateResult)
+	if !ok {
+		return UpdateResult{},
+			fmt.Errorf("store.UpdateStream: engine returned %T, want UpdateResult", res)
+	}
+	return upd, nil
 }
 
 // applyPatch lays the present patch fields over old and names what moved, in the
@@ -188,7 +117,7 @@ func subjectsChanged(old, next []string) bool {
 }
 
 // streamUsage reads the live counters inside a transaction.
-func streamUsage(ctx context.Context, tx txLike, name string) (struct{ msgs, bytes int64 }, error) {
+func streamUsage(ctx context.Context, tx *sql.Tx, name string) (struct{ msgs, bytes int64 }, error) {
 	var out struct{ msgs, bytes int64 }
 	err := tx.QueryRowContext(ctx,
 		`SELECT msgs, bytes FROM stream_stats WHERE stream = ?`, name,
@@ -204,7 +133,7 @@ func streamUsage(ctx context.Context, tx txLike, name string) (struct{ msgs, byt
 // pass computes the union of all three cuts (age, count, bytes) exactly: rbytes is the
 // running size sum from the newest row backwards (rows that overflow max_bytes), rnk
 // their recency rank (rows beyond max_msgs), published_at the age cut.
-func measureUsage(ctx context.Context, tx txLike, name string, next queue.StreamConfig, now int64) (queue.Usage, error) {
+func measureUsage(ctx context.Context, tx *sql.Tx, name string, next queue.StreamConfig, now int64) (queue.Usage, error) {
 	stats, err := streamUsage(ctx, tx, name)
 	if err != nil {
 		return queue.Usage{}, err
@@ -236,7 +165,7 @@ func measureUsage(ctx context.Context, tx txLike, name string, next queue.Stream
 // countUnmatched counts stored messages whose subject no longer matches the narrowed
 // pattern list. O(rows) on the admin path, which is the documented cost of telling
 // the operator what narrowing means for existing data.
-func countUnmatched(ctx context.Context, tx txLike, name string, patterns []string) (mismatched int64, err error) {
+func countUnmatched(ctx context.Context, tx *sql.Tx, name string, patterns []string) (mismatched int64, err error) {
 	set, pErr := subject.ParseSet(patterns)
 	if pErr != nil { // validated before we got here
 		return 0, fmt.Errorf("compile narrowed subjects for %q: %w", name, pErr)

@@ -54,28 +54,16 @@ func (s *Store) PublishBatch(ctx context.Context, c BatchCmd) (BatchAck, error) 
 			"batch holds %d entries, at most %d are allowed", len(c.Reqs), s.maxBatchMsgs)
 	}
 
-	var ack BatchAck
-	err := s.runWrite(ctx, "store.PublishBatch", func(tx txLike) error {
-		lc, cfgErr := loadStreamConfig(ctx, tx, c.Stream)
-		if cfgErr != nil {
-			return cfgErr
-		}
-		now := nowMS(s.clk)
-		ack.Results = make([]Ack, 0, len(c.Reqs))
-		for i, req := range c.Reqs {
-			a, pErr := publishTxWithConfig(ctx, tx, now, s.limits, s.newID,
-				lc, req, publishOpts{})
-			if pErr != nil {
-				// All-or-nothing: the wrapper keeps every sentinel findable via
-				// errors.Is/As while naming the offending entry for the response.
-				return fmt.Errorf("line %d: %w", i+1, pErr)
-			}
-			ack.Results = append(ack.Results, a)
-		}
-		return nil
+	res, err := s.enqueue(ctx, "store.PublishBatch", batchPublishCmd{
+		cmd: c, limits: s.limits, newID: s.newID,
 	})
 	if err != nil {
 		return BatchAck{}, err
+	}
+	ack, ok := res.(BatchAck)
+	if !ok {
+		return BatchAck{},
+			fmt.Errorf("store.PublishBatch: engine returned %T, want BatchAck", res)
 	}
 	ack.Stream = c.Stream
 	return ack, nil

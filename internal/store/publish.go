@@ -12,6 +12,7 @@ import (
 
 	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/id"
+	"github.com/a-holm/messq/internal/obs"
 	"github.com/a-holm/messq/internal/queue"
 )
 
@@ -65,18 +66,15 @@ func (s *Store) Publish(ctx context.Context, c PublishCmd) (Ack, error) {
 	if err := queue.ValidateExistingStreamName(c.Stream); err != nil {
 		return Ack{}, err
 	}
-	var ack Ack
-	err := s.runWrite(ctx, "store.Publish", func(tx txLike) error {
-		a, pErr := publishTx(ctx, tx, nowMS(s.clk), s.limits, s.newID,
-			c.Stream, c.Req, publishOpts{})
-		if pErr != nil {
-			return pErr
-		}
-		ack = a
-		return nil
+	res, err := s.enqueue(ctx, "store.Publish", publishWriteCmd{
+		cmd: c, limits: s.limits, newID: s.newID,
 	})
 	if err != nil {
 		return Ack{}, err
+	}
+	ack, ok := res.(Ack)
+	if !ok {
+		return Ack{}, fmt.Errorf("store.Publish: engine returned %T, want Ack", res)
 	}
 	return ack, nil
 }
@@ -94,25 +92,25 @@ func (s *Store) Publish(ctx context.Context, c PublishCmd) (Ack, error) {
 //
 // dedupWindowMS is the stream's live window: zero disables dedup entirely and the key
 // is stored NULL regardless of the request.
-func publishTx(ctx context.Context, tx txLike, now int64, limits queue.Limits,
+func publishTx(ctx context.Context, tx *sql.Tx, now int64, limits queue.Limits,
 	newID func() id.MsgID, stream string, r queue.PublishReq, o publishOpts,
-) (Ack, error) {
+) (Ack, obs.Event, error) {
 	lc, cfgErr := loadStreamConfig(ctx, tx, stream)
 	if cfgErr != nil {
-		return Ack{}, cfgErr
+		return Ack{}, obs.Event{}, cfgErr
 	}
 	return publishTxWithConfig(ctx, tx, now, limits, newID, lc, r, o)
 }
 
 // publishTxWithConfig is publishTx's body against an already-loaded authoritative
 // config — the shape PublishBatch uses so one batch costs one streams-row lookup.
-func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
+func publishTxWithConfig(ctx context.Context, tx *sql.Tx, now int64,
 	limits queue.Limits, newID func() id.MsgID, lc loadedConfig,
 	r queue.PublishReq, o publishOpts,
-) (Ack, error) {
+) (Ack, obs.Event, error) {
 	stream := lc.cfg.Name
 	if err := queue.ValidatePublish(lc.cfg, r, limits); err != nil {
-		return Ack{}, err
+		return Ack{}, obs.Event{}, err
 	}
 
 	dedupKey := nullStr(r.MsgID)
@@ -127,13 +125,13 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 	if r.MsgID != "" && lc.window > 0 {
 		orig, found, dErr := findDedupHit(ctx, tx, stream, r.MsgID)
 		if dErr != nil {
-			return Ack{}, dErr
+			return Ack{}, obs.Event{}, dErr
 		}
 		if found {
 			subjectDiffers := orig.subject != r.Subject
 			detail := fmt.Sprintf(`{"original_seq":%d,"subject_differs":%t}`,
 				orig.seq, subjectDiffers)
-			if eErr := insertEvent(ctx, tx, event{
+			ev, eErr := commitEvent(ctx, tx, event{
 				ts:      now,
 				name:    "msg.dup",
 				stream:  nullStr(stream),
@@ -142,19 +140,20 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 				seq:     nullI64(orig.seq),
 				traceID: nullStr(orig.traceID),
 				detail:  nullStr(detail),
-			}); eErr != nil {
-				return Ack{}, eErr
+			})
+			if eErr != nil {
+				return Ack{}, obs.Event{}, eErr
 			}
 			return Ack{
 				Stream: stream, Seq: orig.seq, ID: orig.id, TraceID: orig.traceID,
 				Duplicate: true, PublishedAt: orig.publishedAt,
-			}, nil
+			}, ev, nil
 		}
 	}
 
 	seq, seqErr := allocSeq(ctx, tx, stream)
 	if seqErr != nil {
-		return Ack{}, seqErr
+		return Ack{}, obs.Event{}, seqErr
 	}
 	msgID := newID().String()
 	if o.IDOverride != "" {
@@ -163,7 +162,7 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 	traceID := queue.ResolveTraceID(r.TraceID, "", rand.Reader)
 	hdrRaw, hdrErr := queue.EncodeHeaders(r.Headers, limits)
 	if hdrErr != nil {
-		return Ack{}, hdrErr // typed by EncodeHeaders; unreachable after ValidatePublish
+		return Ack{}, obs.Event{}, hdrErr // typed by EncodeHeaders; unreachable after ValidatePublish
 	}
 	hdr := nullStr(hdrRaw)
 
@@ -172,7 +171,7 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 	var last sql.Null[int64]
 	if err := tx.QueryRowContext(ctx,
 		`SELECT max(published_at) FROM messages WHERE stream = ?`, stream).Scan(&last); err != nil {
-		return Ack{}, fmt.Errorf("read last published_at of %q: %w", stream, err)
+		return Ack{}, obs.Event{}, fmt.Errorf("read last published_at of %q: %w", stream, err)
 	}
 	publishedAt := now
 	skew := now - last.V
@@ -190,18 +189,18 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 		ON CONFLICT (stream, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
 		stream, seq, msgID, r.Subject, hdr, body, len(body), publishedAt, traceID, dedupKey)
 	if iErr != nil {
-		return Ack{}, fmt.Errorf("insert message into %q: %w", stream, iErr)
+		return Ack{}, obs.Event{}, fmt.Errorf("insert message into %q: %w", stream, iErr)
 	}
 	if affected, aErr := res.RowsAffected(); aErr == nil && affected == 0 {
 		// Belt and braces (§3): the pre-check above should have caught this. If it ever
 		// fires, the pre-check was wrong — refuse loudly rather than lie about a dup.
-		return Ack{}, fmt.Errorf("store.publishTx: dedup pre-check missed an existing key for %q", stream)
+		return Ack{}, obs.Event{}, fmt.Errorf("store.publishTx: dedup pre-check missed an existing key for %q", stream)
 	}
 
 	if _, uErr := tx.ExecContext(ctx,
 		`UPDATE stream_stats SET msgs = msgs + 1, bytes = bytes + ? WHERE stream = ?`,
 		len(r.Body), stream); uErr != nil {
-		return Ack{}, fmt.Errorf("bump stats of %q: %w", stream, uErr)
+		return Ack{}, obs.Event{}, fmt.Errorf("bump stats of %q: %w", stream, uErr)
 	}
 
 	detail, jErr := json.Marshal(struct {
@@ -213,7 +212,7 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 	if jErr != nil { // unreachable struct
 		detail = []byte(`{}`)
 	}
-	if eErr := insertEvent(ctx, tx, event{
+	ev, eErr := commitEvent(ctx, tx, event{
 		ts:      now,
 		name:    eventName,
 		stream:  nullStr(stream),
@@ -222,14 +221,15 @@ func publishTxWithConfig(ctx context.Context, tx txLike, now int64,
 		seq:     nullI64(seq),
 		traceID: nullStr(traceID),
 		detail:  nullStr(string(detail)),
-	}); eErr != nil {
-		return Ack{}, eErr
+	})
+	if eErr != nil {
+		return Ack{}, obs.Event{}, eErr
 	}
 
 	return Ack{
 		Stream: stream, Seq: seq, ID: msgID, TraceID: traceID,
 		Duplicate: false, PublishedAt: publishedAt,
-	}, nil
+	}, ev, nil
 }
 
 func skewPtr(skew int64, last sql.Null[int64]) *int64 {
@@ -247,7 +247,7 @@ type loadedConfig struct {
 
 // loadStreamConfig reads the streams row inside the transaction; a missing row means
 // the stream never existed or was deleted earlier in the same commit batch.
-func loadStreamConfig(ctx context.Context, tx txLike, name string) (loadedConfig, error) {
+func loadStreamConfig(ctx context.Context, tx *sql.Tx, name string) (loadedConfig, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT subjects, max_msg_size, dedup_window_ms FROM streams WHERE name = ?`, name)
 	var subjectsJSON string
@@ -276,7 +276,7 @@ type dupHit struct {
 
 // findDedupHit runs the pre-check on the partial index. It sees rows written earlier
 // in the same transaction, which covers duplicates inside one batch or commit window.
-func findDedupHit(ctx context.Context, tx txLike, stream, key string) (dupHit, bool, error) {
+func findDedupHit(ctx context.Context, tx *sql.Tx, stream, key string) (dupHit, bool, error) {
 	var h dupHit
 	err := tx.QueryRowContext(ctx, `
 		SELECT seq, id, subject, trace_id, published_at FROM messages
@@ -295,7 +295,7 @@ func findDedupHit(ctx context.Context, tx txLike, stream, key string) (dupHit, b
 // values come back, so next - n is the first of the n allocated sequences. It runs
 // inside the command's savepoint, so a later rejection rolls the allocation back —
 // a rejected publish leaves no gap (P1).
-func allocSeq(ctx context.Context, tx txLike, stream string) (int64, error) {
+func allocSeq(ctx context.Context, tx *sql.Tx, stream string) (int64, error) {
 	var first int64
 	err := tx.QueryRowContext(ctx,
 		`UPDATE stream_seq SET next = next + 1 WHERE stream = ? RETURNING next - 1`,

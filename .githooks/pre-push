@@ -2,9 +2,41 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Full local gate. GitHub Actions runs the same `make ci`, so a red push is caught here first.
+#
+# git feeds this hook the planned ref updates on stdin, one
+# "<local-ref> <local-oid> <remote-ref> <remote-oid>" line per update. Verified against live
+# pushes: a branch creation carries a real local oid, a deletion arrives as
+# "(delete) <all-zero-local-oid> <remote-ref> <old-oid>", and a mixed delete-and-push is ONE
+# invocation carrying both kinds of lines. A deletion carries no commits, so there is nothing
+# for the gate to validate; when every line is a deletion (or stdin is empty, meaning git
+# announced no updates at all) the gate is skipped with a note. Any line with a real local
+# oid -- including every mixed push -- runs the full gate as before.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+
+saw_update=0
+carry_commits=0
+while read -r _local_ref local_oid _remote_ref _remote_oid || [[ -n ${local_oid:-} ]]; do
+	case $local_oid in
+	'' | '#'*) continue ;; # defensive: blank and comment lines carry no updates
+	esac
+	saw_update=1
+	# The all-zero oid is 40 digits on SHA-1 repositories and 64 on SHA-256 ones, hence the
+	# all-zeros match instead of one pinned constant.
+	if [[ ! $local_oid =~ ^0+$ ]]; then
+		carry_commits=1
+	fi
+done
+
+if [[ $carry_commits -eq 0 ]]; then
+	if [[ $saw_update -eq 1 ]]; then
+		echo "pre-push: deletion-only push, skipping make ci"
+	else
+		echo "pre-push: no ref updates on stdin, skipping make ci"
+	fi
+	exit 0
+fi
 
 if ! make ci; then
 	echo >&2

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/id"
 	"github.com/a-holm/messq/internal/queue"
 )
@@ -47,9 +48,11 @@ const (
 type Store struct {
 	mu     sync.Mutex
 	closed bool
-	// writeMu serialises state-changing commands, standing in for #6's single writer
-	// goroutine. Once #6 lands, its queue owns this serialisation and the mutex goes.
-	writeMu sync.Mutex
+	// writer is the attached group-commit engine (#6): command methods submit their
+	// [Cmd] values through [Store.enqueue] onto it. Nil until [*Store.NewWriter]
+	// constructs one — which also takes the rw handle, so a nil writer and a live rw
+	// never coexist.
+	writer *Writer
 	// handedOff marks a successful TakeWriter: closing the returned handle then belongs to
 	// its owner, so Close skips every rw-dependent step instead of fighting over the fd.
 	handedOff bool
@@ -372,6 +375,17 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	report.Reclaimed = reclaimed
 	report.DedupExpired = dedupExpired
 
+	// #7 §9: a process that died mid-delete leaves its reap.<name> marker behind.
+	// Finish those chunk deletions here, on the raw handle and before the clean
+	// marker is written, so no recreated name can ever see orphaned rows.
+	reaped, reapErr := finishInterruptedReaps(ctx, rw)
+	if reapErr != nil {
+		return fail(reapErr)
+	}
+	if len(reaped) > 0 {
+		st.logger.Info("recovery.reap", "node", nodeID, "completed", strings.Join(reaped, ","))
+	}
+
 	busy, pages, err := checkpointTruncate(ctx, rw)
 	if err != nil {
 		return fail(err)
@@ -515,6 +529,42 @@ func (s *Store) TakeWriter() (*sql.DB, error) {
 	return db, nil
 }
 
+// NewWriter constructs the group-commit engine over this store's sole read-write handle,
+// which it takes internally via [TakeWriter]: callers never touch the rw *sql.DB, which is
+// how the "exactly one writer" rule stays structural (PLAN §3.2). The writer inherits the
+// store's clock, logger, node identity and durability mode; a Config demanding a different
+// durability is refused before anything is constructed — the pragma the pool was opened with
+// and the pragma the engine verifies must be one decision, not two.
+//
+// If construction fails after the hand-off (the pool failed its read-back), the rw handle is
+// closed here: a store whose writer cannot start has no further use for it.
+func (s *Store) NewWriter(cfg Config, opts ...WriterOption) (*Writer, error) {
+	s.mu.Lock()
+	durability, clk, logger, nodeID := s.durability, s.clk, s.logger, s.nodeID
+	s.mu.Unlock()
+
+	if cfg.Durability != durability {
+		return nil, fmt.Errorf("%w: store opened with --durability=%s, writer configured durability=%s",
+			errs.ErrBadRequest, durability, cfg.Durability)
+	}
+	rw, err := s.TakeWriter()
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, withLogger(logger), withNodeID(nodeID))
+	w, err := NewWriter(rw, clk, cfg, opts...)
+	if err != nil {
+		if cerr := rw.Close(); cerr != nil {
+			logger.Warn("writer.construct", "error", fmt.Sprintf("close refused rw handle: %v", cerr))
+		}
+		return nil, err
+	}
+	s.mu.Lock()
+	s.writer = w // command methods submit through this engine from now on
+	s.mu.Unlock()
+	return w, nil
+}
+
 // RO exposes the shared read pool for peek, trace, list, lag, and metrics. Every pooled
 // connection is fenced write-off by query_only=1, verified on creation by the hook.
 func (s *Store) RO() *sql.DB {
@@ -530,6 +580,12 @@ func (s *Store) SchemaVersion() int {
 	defer s.mu.Unlock()
 	return s.schemaVersion
 }
+
+// nowMS is the wall clock through the seam, in the unix-millisecond unit every persisted
+// timestamp uses. Command Applies take theirs from the engine's batch clock instead —
+// every row of one batch shares it — so this remains only for read-side checks and
+// sweeps that run outside a commit.
+func nowMS(clk clock.Clock) int64 { return clk.Now().UnixMilli() }
 
 // NodeID returns the identity minted once at database creation and stable forever.
 func (s *Store) NodeID() string {
