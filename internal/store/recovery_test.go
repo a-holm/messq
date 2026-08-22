@@ -25,15 +25,22 @@ func testDataDir(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "data")
 }
 
+// fatalHelper is the slice of the testing/rapid T types the kill simulation needs; both
+// *testing.T and rapid's *T satisfy it.
+type fatalHelper interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
 // killSimulate drops a live store exactly the way SIGKILL would: database handles are closed
 // out from under it and the flock released, with none of Close's clean-shutdown writes — no
 // optimize, no checkpoint, no marker flip. taken is the handle returned by TakeWriter when
 // the test claimed it; everything else is read off the store itself.
-func killSimulate(t *testing.T, s *Store, taken *sql.DB) {
-	t.Helper()
+func killSimulate(tb fatalHelper, s *Store, taken *sql.DB) {
+	tb.Helper()
 	if taken != nil {
 		if err := taken.Close(); err != nil {
-			t.Fatalf("kill-simulate writer close: %v", err)
+			tb.Fatalf("kill-simulate writer close: %v", err)
 		}
 	}
 	s.mu.Lock()
@@ -43,12 +50,12 @@ func killSimulate(t *testing.T, s *Store, taken *sql.DB) {
 	s.mu.Unlock()
 	if ro != nil {
 		if err := ro.Close(); err != nil {
-			t.Fatalf("kill-simulate reader close: %v", err)
+			tb.Fatalf("kill-simulate reader close: %v", err)
 		}
 	}
 	if lock != nil {
 		if err := lock.unlock(); err != nil {
-			t.Fatalf("kill-simulate unlock: %v", err)
+			tb.Fatalf("kill-simulate unlock: %v", err)
 		}
 	}
 }
