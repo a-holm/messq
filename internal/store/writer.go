@@ -52,18 +52,25 @@ func isDomainError(err error) bool {
 	return false
 }
 
-// runWrite runs fn inside one IMMEDIATE transaction on the writer handle, wrapped in a
-// single-command savepoint (the cmd_0 of a one-element #6 batch):
+// runWrite serialises writers and runs fn in one IMMEDIATE transaction (see
+// runWriteLocked for the transaction shape).
+func (s *Store) runWrite(ctx context.Context, op string, fn func(tx txLike) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.runWriteLocked(ctx, op, fn)
+}
+
+// runWriteLocked is runWrite's transaction body for a caller that already holds
+// writeMu — DeleteStream runs many chunk transactions under one lock acquisition so
+// no create/publish can interleave with a deletion in progress.
+//
+// One IMMEDIATE transaction on the writer handle, wrapped in a single-command
+// savepoint (the cmd_0 of a one-element #6 batch):
 //
 //	fn(tx) nil        → RELEASE cmd_0, COMMIT   (fsync under full durability)
 //	fn(tx) domain err → ROLLBACK TO cmd_0, RELEASE, COMMIT; the waiter gets err
 //	fn(tx) I/O err    → ROLLBACK everything; startup-class refusal semantics
-//
-// The mutex serialises writers locally, standing in for #6's single goroutine.
-func (s *Store) runWrite(ctx context.Context, op string, fn func(tx txLike) error) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
+func (s *Store) runWriteLocked(ctx context.Context, op string, fn func(tx txLike) error) error {
 	s.mu.Lock()
 	rw := s.rw
 	s.mu.Unlock()
