@@ -49,6 +49,10 @@ type Options struct {
 	// MaxBatchMessages caps one PublishBatch command (§7, --max-batch-messages);
 	// <= 0 means 1000.
 	MaxBatchMessages int
+	// DedupSweepInterval is how often serve invokes SweepDedup (§4,
+	// --dedup-sweep-interval). The invariant checker allows keys to outlive their
+	// window by this much before calling them stale. <= 0 means 60s.
+	DedupSweepInterval time.Duration
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -66,6 +70,7 @@ const (
 	defaultPeekMaxLimit  = 1_000
 	defaultPeekScanLimit = 10_000
 	defaultMaxBatch      = 1_000
+	defaultDedupSweep    = 60 * time.Second
 )
 
 // applyDefaults fills unset fields with their documented defaults and never replaces a value
@@ -95,6 +100,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.MaxBatchMessages <= 0 {
 		o.MaxBatchMessages = defaultMaxBatch
+	}
+	if o.DedupSweepInterval <= 0 {
+		o.DedupSweepInterval = defaultDedupSweep
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/id"
@@ -72,6 +73,7 @@ type Store struct {
 	peekMaxLimit  int
 	peekScanLimit int
 	maxBatchMsgs  int
+	dedupSweep    time.Duration
 }
 
 // dbPath renders <dir>/messq.db.
@@ -229,6 +231,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		peekMaxLimit:  opt.PeekMaxLimit,
 		peekScanLimit: opt.PeekScanLimit,
 		maxBatchMsgs:  opt.MaxBatchMessages,
+		dedupSweep:    opt.DedupSweepInterval,
 		clk:           opt.Clock,
 		logger:        opt.Logger,
 		newID:         opt.NewID,
