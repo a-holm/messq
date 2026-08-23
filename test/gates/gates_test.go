@@ -16,7 +16,10 @@ import (
 )
 
 // makeTimeout bounds one sabotage run. A gate that hangs is a failed gate, not a stalled suite.
-const makeTimeout = 5 * time.Minute
+// The cover and test rows run the full `go test -race` suite in a scratch copy; under the
+// -parallel 8 load the process tests (SIGKILL re-exec, curl transcript, golden socket suite)
+// push a single run past five minutes, so the bound is ten.
+const makeTimeout = 10 * time.Minute
 
 // gate is one row of the sabotage matrix: a mutation, the make target that must notice it, and
 // the message the failure must carry. Asserting only the exit code is not enough, because a
@@ -76,7 +79,7 @@ func matrix() []gate {
 		},
 		{
 			id: "B2", name: "an unsabotaged copy meets its floors", target: "cover",
-			want: "PENDING", wantOK: true,
+			want: "covergate: OK", wantOK: true,
 		},
 		{
 			id: "G1", name: "time.Sleep in a test", target: "lint",
@@ -147,7 +150,7 @@ func matrix() []gate {
 		{
 			id: "G13", name: "a floored package deleted outright", target: "cover",
 			want:    "package directory does not exist",
-			prepare: remove("internal/queue"),
+			prepare: remove("internal/docsguard"),
 		},
 		{
 			id: "G14", name: "a lowered coverage floor", target: "cover-ratchet-check",
