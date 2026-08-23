@@ -659,7 +659,7 @@ POST   /v1/streams/{s}/consumers/{c}/fetch        {batch, wait_ms, max_bytes} �
                                                   200 with messages[] (empty on timeout);
                                                   each carries ack_token, attempt/of, deadline,
                                                   body_b64, trace_id, headers
-POST   /v1/ack     {tokens: […]}                  batch; per-token result (ok|stale|unknown)
+POST   /v1/ack     {tokens: […]}                  batch; per-token result (ok|stale|stale_ack|wrong_generation|unknown)
 POST   /v1/nak     {token, delay_ms?, reason?}    (also {items:[…]})
 POST   /v1/term    {token, reason}
 POST   /v1/extend  {tokens: […]}

@@ -42,7 +42,7 @@ Three merged packages are facts this document is written against, not proposals 
 
 ### S1.5 Clarifications register
 
-Two entries, C1 and C13, do not resolve an ambiguity. They **override** something PLAN.md states plainly, and each says what it overrides and what it keeps.
+Three entries, C1, C13 and C15, do not resolve an ambiguity. They **override** something PLAN.md states plainly, and each says what it overrides and what it keeps.
 
 | ID | Ambiguity or override | Resolution | Ratified in |
 |---|---|---|---|
@@ -60,6 +60,7 @@ Two entries, C1 and C13, do not resolve an ambiguity. They **override** somethin
 | C12 | PLAN.md section 5.1's T11 guards a redrive on "operator, rate-limited" only. It defines neither a redrive counter nor a limit. | T11 also refuses a message already redriven three times unless `--force` is given. The count lives in `Messq-Redrive-Count` and the refusal is `errs.ErrConflict`. A redrive loop is the shortest path from one poison message to an outage. A1 carries the bound and #29 owns the flag. | ADR-0004 (D3) |
 | C13 | **Override.** PLAN.md section 5.1 fixes the dead-letter header set as `Messq-Origin-Stream/-Seq/-Consumer`, `Messq-Attempts`, `Messq-Cause`, `Messq-Last-Reason`, `Messq-Dead-At`. It carries no origin id, because under its own reading the id did not change. | This overrides that set by adding `Messq-Origin-Id`. It rides on C1: once the copy mints a new id, the origin id has nowhere else to live on the message itself. S9.2 lists the full set. | ADR-0004 (D3) |
 | C14 | PLAN.md section 4.2 types `attempts` and `generation` as SQLite `INTEGER`, which is 64 bits, while the ack-token grammar has to bound its fields before a parser can be safe. | The token's `attempt` and `generation` fields are bounded at 4294967295, which is what makes the 171-byte length of S3.3 derivable. `max_deliver` is validated at or below that bound at consumer create, and a consumer already at that generation refuses a further seek or purge. A1 carries both. | ADR-0008 (D7) |
+| C15 | PLAN.md section 7 annotates the per-token `/v1/ack` result with the three-value shorthand `ok`, `stale`, `unknown` — an abbreviation that omits the two fenced outcomes the token grammar (S3.3) can produce. | The settle-result status is FROZEN at five values: `ok`, `stale`, `stale_ack`, `wrong_generation`, `unknown`. `ok` is a live mutation; `stale` is the idempotent success of the absent row (T3a); `stale_ack` is a token-attempt mismatch (T3b, `errs.ErrStaleAck`); `wrong_generation` is a token predating a `seek` or `purge` (T3b, `errs.ErrWrongGen`); `unknown` is a token that does not parse (S3.3 step 1, `errs.ErrUnknownToken`). Two adjudicated settle conflicts keep the merged spec normative, so neither needs a separate ADR: an extend past the total-extension cap returns `errs.ErrBadRequest` with the deadline unchanged (S6.1 T7, S13), and `nak --delay D` is not jittered (S8.3); the issue #10 body's `capped:true` and jittered-explicit-delay proposals are rejected. The delivery-dead seam's transition vocabulary belongs to `internal/queue`: `DeadCause` and `DeadCtx` are defined there by #10 and consumed by #12. | ADR-0008 (D7) |
 
 ## S2. Object model and vocabulary
 
