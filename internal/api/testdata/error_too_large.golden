@@ -1,0 +1,9 @@
+413
+{
+  "error": {
+    "code": "too_large",
+    "message": "body is 100 bytes, limit is 10",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

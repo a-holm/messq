@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/id"
+	"github.com/a-holm/messq/internal/queue"
 )
 
 // Options configures [Open]. Zero values mean "default", except where a field's comment says
@@ -36,6 +37,22 @@ type Options struct {
 	ReclaimJitter time.Duration
 	// ReadOnly opens for offline inspection: no rw handle, no recovery, no lock write.
 	ReadOnly bool
+	// Limits are the process-wide validation ceilings (issue §4.2) every stream
+	// configuration is checked against; zero value means DefaultLimits().
+	Limits queue.Limits
+	// PeekMaxLimit caps a listing page's effective limit (issue §6, --peek-max-limit);
+	// pages that include bodies cap at one tenth of it. <= 0 means 1000.
+	PeekMaxLimit int
+	// PeekScanLimit bounds the rows a wildcard-subject listing may scan before it
+	// returns an honest partial answer (issue §6, --peek-scan-limit). <= 0 means 10000.
+	PeekScanLimit int
+	// MaxBatchMessages caps one PublishBatch command (§7, --max-batch-messages);
+	// <= 0 means 1000.
+	MaxBatchMessages int
+	// DedupSweepInterval is how often serve invokes SweepDedup (§4,
+	// --dedup-sweep-interval). The invariant checker allows keys to outlive their
+	// window by this much before calling them stale. <= 0 means 60s.
+	DedupSweepInterval time.Duration
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -50,6 +67,10 @@ const (
 	defaultBusyTimeout   = 5 * time.Second
 	defaultCacheBytes    = int64(64) << 20
 	defaultReclaimJitter = time.Second
+	defaultPeekMaxLimit  = 1_000
+	defaultPeekScanLimit = 10_000
+	defaultMaxBatch      = 1_000
+	defaultDedupSweep    = 60 * time.Second
 )
 
 // applyDefaults fills unset fields with their documented defaults and never replaces a value
@@ -67,6 +88,21 @@ func (o *Options) applyDefaults() {
 	}
 	if o.ReclaimJitter < 0 {
 		o.ReclaimJitter = defaultReclaimJitter
+	}
+	if o.Limits == (queue.Limits{}) {
+		o.Limits = queue.DefaultLimits()
+	}
+	if o.PeekMaxLimit <= 0 {
+		o.PeekMaxLimit = defaultPeekMaxLimit
+	}
+	if o.PeekScanLimit <= 0 {
+		o.PeekScanLimit = defaultPeekScanLimit
+	}
+	if o.MaxBatchMessages <= 0 {
+		o.MaxBatchMessages = defaultMaxBatch
+	}
+	if o.DedupSweepInterval <= 0 {
+		o.DedupSweepInterval = defaultDedupSweep
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}

@@ -1,0 +1,11 @@
+409
+{
+  "error": {
+    "code": "would_lose_data",
+    "message": "changing max_msgs would delete 2 messages (10 bytes); pass allow_data_loss to proceed",
+    "next": [
+      "messq stream edit orders --allow-data-loss"
+    ],
+    "trace_id": "<trace-id>"
+  }
+}

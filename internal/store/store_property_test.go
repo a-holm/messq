@@ -64,11 +64,11 @@ func (m *propStore) open(t *rapid.T) {
 	}
 	m.st = st
 
-	if report.SchemaTo != 1 || report.SchemaFrom > report.SchemaTo {
-		t.Errorf("schema moved %d -> %d, want monotone into 1", report.SchemaFrom, report.SchemaTo)
+	if report.SchemaTo != 2 || report.SchemaFrom > report.SchemaTo {
+		t.Errorf("schema moved %d -> %d, want monotone into 2", report.SchemaFrom, report.SchemaTo)
 	}
-	if got := st.SchemaVersion(); got != 1 {
-		t.Errorf("SchemaVersion() = %d, want 1", got)
+	if got := st.SchemaVersion(); got != 2 {
+		t.Errorf("SchemaVersion() = %d, want 2", got)
 	}
 	if report.Unclean != m.dirty {
 		t.Errorf("Unclean = %v, want %v (previous generation ended dirty=%v)", report.Unclean, m.dirty, m.dirty)

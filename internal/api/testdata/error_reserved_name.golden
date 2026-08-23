@@ -1,0 +1,9 @@
+400
+{
+  "error": {
+    "code": "reserved_name",
+    "message": "stream \"orders.dlq\" ends in \".dlq\"",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

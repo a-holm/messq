@@ -21,14 +21,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// updateGolden regenerates testdata/schema_v1.golden from a fresh migration instead of
+// updateGolden regenerates testdata/schema_v2.golden from a fresh migration instead of
 // comparing against it:
 //
 //	go test ./internal/store -run TestSchemaGolden -update-golden
 //
 // The golden file is the frozen shape of schema v1 (PLAN §4.2); regenerate only when a
 // reviewed schema change is intentional, never to make a failing test pass.
-var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/schema_v1.golden from a fresh migration")
+var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/schema_v2.golden from a fresh migration")
 
 // stepClock is a fake clock whose Now advances a fixed step on every call. The advance is
 // the point: a timestamp that would change if migrate rewrote schema_applied_at provably
@@ -138,15 +138,16 @@ func dumpSchema(t *testing.T, db *sql.DB) string {
 }
 
 // TestSchemaGolden pins the exact schema a fresh migration produces against
-// testdata/schema_v1.golden. This is the byte-level guarantee behind the frozen-artefact
-// rule: any edit to 0001_init.sql — a dropped index, a changed column, a reformat — changes
-// the dump and fails here until the golden is deliberately regenerated.
+// testdata/schema_v2.golden. This is the byte-level guarantee behind the frozen-artefact
+// rule: any edit to a shipped migration — a dropped index, a changed column, a reformat —
+// changes the dump and fails here until the golden is deliberately regenerated (as when
+// #7 added migration 0002).
 func TestSchemaGolden(t *testing.T) {
 	dir := t.TempDir()
 	migrateFresh(t, filepath.Join(dir, dbFileName), newStepClock(time.Unix(1700000000, 0)))
 	got := dumpSchema(t, openTestDB(t, filepath.Join(dir, dbFileName)))
 
-	const goldenPath = "testdata" + string(os.PathSeparator) + "schema_v1.golden"
+	const goldenPath = "testdata" + string(os.PathSeparator) + "schema_v2.golden"
 	if *updateGolden {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 			t.Fatalf("create testdata dir: %v", err)
@@ -169,11 +170,11 @@ func TestSchemaGolden(t *testing.T) {
 // to the top, exactly one migration is embedded, and the version pair reads (0, 1).
 func TestMigrateFreshCreatesSchemaV1(t *testing.T) {
 	from, to := migrateFresh(t, filepath.Join(t.TempDir(), dbFileName), newStepClock(time.Unix(1700000000, 0)))
-	if from != 0 || to != 1 {
-		t.Fatalf("migrate fresh = (%d, %d), want (0, 1)", from, to)
+	if from != 0 || to != 2 {
+		t.Fatalf("migrate fresh = (%d, %d), want (0, 2)", from, to)
 	}
-	if len(embeddedMigrations) != 1 {
-		t.Fatalf("len(embeddedMigrations) = %d, want 1", len(embeddedMigrations))
+	if len(embeddedMigrations) != 2 {
+		t.Fatalf("len(embeddedMigrations) = %d, want 2", len(embeddedMigrations))
 	}
 }
 
@@ -186,7 +187,7 @@ func TestMigrateFreshBookkeeping(t *testing.T) {
 	migrateFresh(t, path, newStepClock(base))
 
 	db := openTestDB(t, path)
-	if got, want := metaValue(t, db, "schema_version"), "1"; got != want {
+	if got, want := metaValue(t, db, "schema_version"), "2"; got != want {
 		t.Fatalf("meta[schema_version] = %q, want %q", got, want)
 	}
 	if got := metaValue(t, db, "schema_applied_at"); got == "" {
@@ -199,15 +200,15 @@ func TestMigrateFreshBookkeeping(t *testing.T) {
 	if got, want := embeddedMigrations[0].sha, sha; got != want {
 		t.Fatalf("embedded sha %q != recorded sha %q", got, want)
 	}
-	if got := queryInt(t, db, `PRAGMA user_version`); got != 1 {
-		t.Fatalf("PRAGMA user_version = %d, want 1", got)
+	if got := queryInt(t, db, `PRAGMA user_version`); got != 2 {
+		t.Fatalf("PRAGMA user_version = %d, want 2", got)
 	}
 }
 
 // TestMigrateReopenIsNoop covers the steady state: reopening an already-current directory
 // runs the ladder again (validating checksums and the mirror) but writes nothing —
 // schema_applied_at stays at the first run's value even though the fake clock has advanced
-// far past it, and the version pair reads (1, 1).
+// far past it, and the version pair reads (2, 2).
 func TestMigrateReopenIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, dbFileName)
@@ -223,14 +224,14 @@ func TestMigrateReopenIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate reopen: %v", err)
 	}
-	if from != 1 || to != 1 {
-		t.Fatalf("migrate reopen = (%d, %d), want (1, 1)", from, to)
+	if from != 2 || to != 2 {
+		t.Fatalf("migrate reopen = (%d, %d), want (2, 2)", from, to)
 	}
 	if got := metaValue(t, db, "schema_applied_at"); got != appliedAt {
 		t.Fatalf("schema_applied_at changed on no-op reopen: %q -> %q", appliedAt, got)
 	}
-	if got := queryInt(t, db, `PRAGMA user_version`); got != 1 {
-		t.Fatalf("PRAGMA user_version = %d after reopen, want 1", got)
+	if got := queryInt(t, db, `PRAGMA user_version`); got != 2 {
+		t.Fatalf("PRAGMA user_version = %d after reopen, want 2", got)
 	}
 }
 
@@ -300,8 +301,8 @@ func TestMigrateRefusesSchemaTooNew(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatalf("refused migrate modified the database file (%d -> %d bytes)", len(before), len(after))
 	}
-	if got := queryInt(t, db, `PRAGMA user_version`); got != 1 {
-		t.Fatalf("PRAGMA user_version = %d after refusal, want the directory's own 1", got)
+	if got := queryInt(t, db, `PRAGMA user_version`); got != 2 {
+		t.Fatalf("PRAGMA user_version = %d after refusal, want the directory's own 2", got)
 	}
 }
 
@@ -342,7 +343,7 @@ func TestMigrateRefusesUserVersionMirrorMismatch(t *testing.T) {
 	if !errors.Is(err, ErrMigrationDrift) {
 		t.Fatalf("migrate with mirror mismatch = %v, want ErrMigrationDrift", err)
 	}
-	if got, want := metaValue(t, db, "schema_version"), "1"; got != want {
+	if got, want := metaValue(t, db, "schema_version"), "2"; got != want {
 		t.Fatalf("meta[schema_version] = %q after refused migrate, want untouched %q", got, want)
 	}
 }

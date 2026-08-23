@@ -1,0 +1,10 @@
+200
+{
+  "id": "<ulid>",
+  "published_at": "<ts>",
+  "seq": 1,
+  "size": 5,
+  "stream": "orders",
+  "subject": "orders.eu.created",
+  "trace_id": "<trace-id>"
+}

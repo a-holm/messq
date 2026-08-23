@@ -13,10 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/id"
+	"github.com/a-holm/messq/internal/queue"
 )
 
 // The Store owns <data-dir>/messq.db for one process: the sole read-write handle (handed
@@ -46,6 +48,11 @@ const (
 type Store struct {
 	mu     sync.Mutex
 	closed bool
+	// writer is the attached group-commit engine (#6): command methods submit their
+	// [Cmd] values through [Store.enqueue] onto it. Nil until [*Store.NewWriter]
+	// constructs one — which also takes the rw handle, so a nil writer and a live rw
+	// never coexist.
+	writer *Writer
 	// handedOff marks a successful TakeWriter: closing the returned handle then belongs to
 	// its owner, so Close skips every rw-dependent step instead of fighting over the fd.
 	handedOff bool
@@ -60,6 +67,16 @@ type Store struct {
 	durability    Durability
 	clk           clock.Clock
 	logger        *slog.Logger
+	// newID mints message ULIDs; defaulted from Options.NewID at Open.
+	newID func() id.MsgID
+	// limits are the process-wide validation ceilings (issue §1); defaulted in
+	// applyDefaults so a zero Options still validates against the §4.2 numbers.
+	limits queue.Limits
+	// peek bounds from Options (§6); defaulted in applyDefaults.
+	peekMaxLimit  int
+	peekScanLimit int
+	maxBatchMsgs  int
+	dedupSweep    time.Duration
 }
 
 // dbPath renders <dir>/messq.db.
@@ -211,10 +228,16 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	start := opt.Clock.Now()
 
 	st := &Store{
-		dir:        opt.DataDir,
-		durability: opt.Durability,
-		clk:        opt.Clock,
-		logger:     opt.Logger,
+		dir:           opt.DataDir,
+		durability:    opt.Durability,
+		limits:        opt.Limits,
+		peekMaxLimit:  opt.PeekMaxLimit,
+		peekScanLimit: opt.PeekScanLimit,
+		maxBatchMsgs:  opt.MaxBatchMessages,
+		dedupSweep:    opt.DedupSweepInterval,
+		clk:           opt.Clock,
+		logger:        opt.Logger,
+		newID:         opt.NewID,
 	}
 	fail := func(err error) (*Store, *RecoveryReport, error) {
 		st.cleanup(context.WithoutCancel(ctx))
@@ -351,6 +374,17 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	}
 	report.Reclaimed = reclaimed
 	report.DedupExpired = dedupExpired
+
+	// #7 §9: a process that died mid-delete leaves its reap.<name> marker behind.
+	// Finish those chunk deletions here, on the raw handle and before the clean
+	// marker is written, so no recreated name can ever see orphaned rows.
+	reaped, reapErr := finishInterruptedReaps(ctx, rw)
+	if reapErr != nil {
+		return fail(reapErr)
+	}
+	if len(reaped) > 0 {
+		st.logger.Info("recovery.reap", "node", nodeID, "completed", strings.Join(reaped, ","))
+	}
 
 	busy, pages, err := checkpointTruncate(ctx, rw)
 	if err != nil {
@@ -525,6 +559,9 @@ func (s *Store) NewWriter(cfg Config, opts ...WriterOption) (*Writer, error) {
 		}
 		return nil, err
 	}
+	s.mu.Lock()
+	s.writer = w // command methods submit through this engine from now on
+	s.mu.Unlock()
 	return w, nil
 }
 
@@ -543,6 +580,12 @@ func (s *Store) SchemaVersion() int {
 	defer s.mu.Unlock()
 	return s.schemaVersion
 }
+
+// nowMS is the wall clock through the seam, in the unix-millisecond unit every persisted
+// timestamp uses. Command Applies take theirs from the engine's batch clock instead —
+// every row of one batch shares it — so this remains only for read-side checks and
+// sweeps that run outside a commit.
+func nowMS(clk clock.Clock) int64 { return clk.Now().UnixMilli() }
 
 // NodeID returns the identity minted once at database creation and stable forever.
 func (s *Store) NodeID() string {

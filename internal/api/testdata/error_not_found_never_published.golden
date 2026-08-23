@@ -1,0 +1,9 @@
+404
+{
+  "error": {
+    "code": "not_found",
+    "message": "message 5 does not exist yet: never_published (last_seq 0)",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

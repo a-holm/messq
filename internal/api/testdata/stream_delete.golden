@@ -1,0 +1,8 @@
+200
+{
+  "deleted": {
+    "bytes": 0,
+    "consumers": 0,
+    "messages": 0
+  }
+}

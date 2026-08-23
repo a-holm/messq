@@ -1,0 +1,9 @@
+400
+{
+  "error": {
+    "code": "reserved_header",
+    "message": "header \"Messq-Foo\" is in the reserved \"Messq-\" namespace",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

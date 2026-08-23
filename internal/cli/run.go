@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/a-holm/messq/internal/buildinfo"
@@ -27,10 +28,15 @@ Usage:
 
 Commands:
   version    Print build information.
+  serve      Run the daemon (messq serve --data-dir DIR).
   help       Print this message.
 
 Flags for version:
   --output text|json    Output format. Default text.
+
+Flags for serve:
+  --data-dir DIR        Data directory (required; or MESSQ_DATA_DIR).
+  --listen ADDR         unix://PATH or tcp://HOST:PORT. Default unix:///run/messq/messq.sock.
 
 Exit codes: 0 ok, 1 error, 2 usage.
 `
@@ -45,6 +51,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitOK
 	case args[0] == "version", args[0] == "--version":
 		return runVersion(args[1:], stdout, stderr)
+	case args[0] == "serve":
+		return runServe(args[1:], os.Getenv, stdout, stderr)
 	default:
 		return usageError(stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}

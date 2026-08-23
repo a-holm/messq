@@ -1,0 +1,11 @@
+409
+{
+  "error": {
+    "code": "conflict",
+    "message": "confirm parameter \"wrong-name\" does not match stream name \"orders\"",
+    "next": [
+      "messq stream rm orders --confirm orders"
+    ],
+    "trace_id": "<trace-id>"
+  }
+}

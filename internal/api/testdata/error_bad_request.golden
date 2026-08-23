@@ -1,0 +1,9 @@
+400
+{
+  "error": {
+    "code": "bad_request",
+    "message": "invalid JSON body: unexpected EOF",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

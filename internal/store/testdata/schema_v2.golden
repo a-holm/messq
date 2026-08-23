@@ -65,10 +65,16 @@ index|sqlite_autoindex_deliveries_1|<NULL>
 index|sqlite_autoindex_messages_1|<NULL>
 index|sqlite_autoindex_meta_1|<NULL>
 index|sqlite_autoindex_stream_seq_1|<NULL>
+index|sqlite_autoindex_stream_stats_1|<NULL>
 index|sqlite_autoindex_streams_1|<NULL>
 table|stream_seq|CREATE TABLE stream_seq (                          -- monotonic even across purge
   stream TEXT PRIMARY KEY REFERENCES streams(name) ON DELETE CASCADE,
   next   INTEGER NOT NULL
+) STRICT
+table|stream_stats|CREATE TABLE stream_stats (
+  stream TEXT PRIMARY KEY REFERENCES streams(name) ON DELETE CASCADE,
+  msgs   INTEGER NOT NULL,
+  bytes  INTEGER NOT NULL
 ) STRICT
 table|streams|CREATE TABLE streams (
   name            TEXT PRIMARY KEY,
