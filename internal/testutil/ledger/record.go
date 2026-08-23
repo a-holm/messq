@@ -65,7 +65,7 @@ type Record struct {
 	Cycle     int     `json:"cycle"`               // kill/restart cycle this attempt ran in
 	SentAt    int64   `json:"sent_at_ms"`          // unix ms the intent was recorded
 	Verdict   Verdict `json:"verdict"`             // Unknown=0, OK=1, Failed=2
-	Seq       uint64  `json:"seq,omitempty"`       // set on OK
+	Seq       int64   `json:"seq,omitempty"`       // set on OK
 	ID        string  `json:"id,omitempty"`        // server ULID, set on OK
 	Duplicate bool    `json:"duplicate,omitempty"` // dedup hit: returned the first record's seq
 	Status    int     `json:"status,omitempty"`    // HTTP status; 0 = transport failure

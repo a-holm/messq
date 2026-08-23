@@ -32,7 +32,7 @@ const (
 // Outcome carries the fields a resolved attempt contributes back to its record: the
 // server's receipt on OK, or the status/code of a rejection.
 type Outcome struct {
-	Seq       uint64
+	Seq       int64
 	ID        string
 	Duplicate bool
 	Status    int    // HTTP status; 0 = transport failure

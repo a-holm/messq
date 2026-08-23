@@ -28,14 +28,29 @@ import (
 // request; a daemon that cannot answer within this budget has failed startup.
 const readinessDeadline = 10 * time.Second
 
-// Config carries the harness knobs that belong to the SUT lifecycle. The load-generator,
-// kill-strategy and cycle fields are added by later slices alongside their tests; only what
-// this slice drives is declared here.
+// Config carries the harness knobs. The load-generator, kill-strategy and cycle fields are
+// filled by [Config.defaults] from their documented defaults when zero.
 type Config struct {
 	// Durability is the serve --durability value: "full" or "relaxed".
 	Durability string
 	// Clock is the timing seam (readiness polling, kill timing). nil means clock.System.
 	Clock clock.Clock
+	// Root is the parent directory; the data dir and the ledger both live under it.
+	Root string
+	// Stream is the harness stream name. "" means "crash".
+	Stream string
+	// Subject is the publish subject. "" means "crash.a".
+	Subject string
+	// Publishers is the number of concurrent publisher goroutines. 0 means 8.
+	Publishers int
+	// Sizes is the round-robin payload size set. nil means {64, 1024, 16384, 65536}.
+	Sizes []int
+	// Cycles is the number of kill/restart cycles. 0 means 8.
+	Cycles int
+	// Seed drives every cycle; cycle N uses seed+N. 0 means time-derived (and always printed).
+	Seed int64
+	// Kill overrides the per-cycle seeded strategy pick (used to force one strategy in a test).
+	Kill KillStrategy
 }
 
 func (c *Config) clk() clock.Clock {
@@ -44,6 +59,32 @@ func (c *Config) clk() clock.Clock {
 	}
 	return c.Clock
 }
+
+// defaults fills the documented zero-value defaults and returns the (possibly new) Config.
+func (c Config) defaults() Config {
+	if c.Stream == "" {
+		c.Stream = "crash"
+	}
+	if c.Subject == "" {
+		c.Subject = "crash.a"
+	}
+	if c.Publishers == 0 {
+		c.Publishers = 8
+	}
+	if len(c.Sizes) == 0 {
+		c.Sizes = []int{64, 1024, 16384, 65536}
+	}
+	if c.Cycles == 0 {
+		c.Cycles = 8
+	}
+	return c
+}
+
+// dataDir is where the daemon's data directory lives under Root.
+func (c Config) dataDir() string { return filepath.Join(c.Root, "data") }
+
+// ledgerPath is where the external ledger lives under Root.
+func (c Config) ledgerPath() string { return filepath.Join(c.Root, "ledger.jsonl") }
 
 var (
 	binOnce sync.Once
@@ -190,9 +231,10 @@ func (s *SUT) Ready(ctx context.Context) error {
 
 // Kill SIGKILLs the daemon's whole process group and reaps it, asserting the death was a
 // SIGKILL signal. An exit code here means the process died some other way — itself a bug
-// worth failing on.
+// worth failing on. It is idempotent: a second call on an already-reaped SUT is a no-op, so
+// a t.Cleanup or error-path kill never fights the cycle's own kill.
 func (s *SUT) Kill() error {
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.cmd == nil || s.cmd.Process == nil || s.cmd.ProcessState != nil {
 		return nil
 	}
 	if err := syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL); err != nil {
@@ -212,9 +254,9 @@ func (s *SUT) Kill() error {
 }
 
 // Stop asks the daemon to shut down gracefully (SIGTERM) and reaps it. A clean serve exits
-// 0; any other exit is reported.
+// 0; any other exit is reported. It is idempotent like Kill.
 func (s *SUT) Stop() error {
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.cmd == nil || s.cmd.Process == nil || s.cmd.ProcessState != nil {
 		return nil
 	}
 	if err := s.cmd.Process.Signal(syscall.SIGTERM); err != nil {

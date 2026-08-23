@@ -80,10 +80,10 @@ type envelope struct {
 	} `json:"error"`
 }
 
-// classifyResponse decodes an error-envelope body and classifies it against the status.
+// ClassifyResponse decodes an error-envelope body and classifies it against the status.
 // A body that is not a valid envelope is reported as an unclassified code, never as a
 // verdict.
-func classifyResponse(status int, body []byte) (Verdict, string, error) {
+func ClassifyResponse(status int, body []byte) (Verdict, string, error) {
 	var env envelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return Unknown, "", fmt.Errorf("unclassified response code (status %d): envelope does not parse: %w", status, err)

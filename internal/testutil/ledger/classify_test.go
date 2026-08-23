@@ -46,15 +46,15 @@ func TestClassifyTable(t *testing.T) {
 // TestClassifyResponseEnvelope proves the envelope-decode path classifies the code field and
 // refuses a body that is not an envelope.
 func TestClassifyResponseEnvelope(t *testing.T) {
-	v, code, err := classifyResponse(400, []byte(`{"error":{"code":"bad_request","message":"nope"}}`))
+	v, code, err := ClassifyResponse(400, []byte(`{"error":{"code":"bad_request","message":"nope"}}`))
 	if err != nil {
-		t.Fatalf("classifyResponse: %v", err)
+		t.Fatalf("ClassifyResponse: %v", err)
 	}
 	if v != Failed || code != "bad_request" {
-		t.Errorf("classifyResponse = (%v, %q), want (Failed, bad_request)", v, code)
+		t.Errorf("ClassifyResponse = (%v, %q), want (Failed, bad_request)", v, code)
 	}
 
-	if _, _, err := classifyResponse(500, []byte(`not json`)); err == nil {
-		t.Error("classifyResponse of a non-envelope body must error")
+	if _, _, err := ClassifyResponse(500, []byte(`not json`)); err == nil {
+		t.Error("ClassifyResponse of a non-envelope body must error")
 	}
 }
