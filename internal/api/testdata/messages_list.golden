@@ -1,0 +1,26 @@
+200
+{
+  "complete": true,
+  "limit": 1000,
+  "messages": [
+    {
+      "id": "<ulid>",
+      "published_at": "<ts>",
+      "seq": 1,
+      "size": 3,
+      "stream": "orders",
+      "subject": "orders.eu.created",
+      "trace_id": "<trace-id>"
+    },
+    {
+      "id": "<ulid>",
+      "published_at": "<ts>",
+      "seq": 2,
+      "size": 3,
+      "stream": "orders",
+      "subject": "orders.us.created",
+      "trace_id": "<trace-id>"
+    }
+  ],
+  "scanned_to_seq": 0
+}

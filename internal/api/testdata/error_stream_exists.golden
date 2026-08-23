@@ -1,0 +1,11 @@
+409
+{
+  "error": {
+    "code": "stream_exists",
+    "message": "stream \"orders\" already exists with a different configuration (max_msg_size)",
+    "next": [
+      "messq stream edit orders"
+    ],
+    "trace_id": "<trace-id>"
+  }
+}

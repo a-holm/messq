@@ -1,0 +1,9 @@
+400
+{
+  "error": {
+    "code": "bad_subject",
+    "message": "a publish target holds no \"*\" and no \">\" (rule S10)",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

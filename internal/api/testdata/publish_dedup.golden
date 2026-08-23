@@ -1,0 +1,9 @@
+200
+{
+  "duplicate": true,
+  "id": "<ulid>",
+  "published_at": "<ts>",
+  "seq": 1,
+  "stream": "orders",
+  "trace_id": "<trace-id>"
+}

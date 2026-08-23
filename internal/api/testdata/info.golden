@@ -1,0 +1,9 @@
+200
+{
+  "db_bytes": "<db-bytes>",
+  "durability": "full",
+  "node_id": "<ulid>",
+  "synchronous": 2,
+  "uptime_ms": "<ts>",
+  "version": "<version>"
+}

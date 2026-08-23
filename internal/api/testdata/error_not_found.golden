@@ -1,0 +1,9 @@
+404
+{
+  "error": {
+    "code": "not_found",
+    "message": "stream \"missing\" does not exist",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}

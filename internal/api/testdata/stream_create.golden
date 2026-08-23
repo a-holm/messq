@@ -1,0 +1,19 @@
+201
+{
+  "bytes": 0,
+  "created_at": "<ts>",
+  "dedup_window_ms": 300000,
+  "discard": "old",
+  "first_seq": 0,
+  "last_seq": 0,
+  "max_age_ms": 604800000,
+  "max_bytes": 0,
+  "max_msg_size": 262144,
+  "max_msgs": 0,
+  "msgs": 0,
+  "name": "orders",
+  "retention": "limits",
+  "subjects": [
+    "orders.>"
+  ]
+}

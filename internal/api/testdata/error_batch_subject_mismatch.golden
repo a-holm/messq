@@ -1,0 +1,9 @@
+400
+{
+  "error": {
+    "code": "subject_mismatch",
+    "message": "line 2: subject \"other.a\" matches none of the stream's patterns [orders.>]",
+    "next": [],
+    "trace_id": "<trace-id>"
+  }
+}
