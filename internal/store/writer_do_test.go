@@ -217,6 +217,12 @@ func TestDoRoundTripsResultEventsAndDurability(t *testing.T) {
 		t.Fatalf("probe rows = %+v, want one row {1 alpha}", rows)
 	}
 
+	// Fan-out is off the reply path (a deliberate latency decision, writer.go:672: "fan-out
+	// — off the latency path, never blocking"), so the hand-off can reach the sink a
+	// scheduling step after the caller unblocks. Bound the read with the same in-repo
+	// waitFor Gosched poll the other engine tests use — green under load, still failing
+	// fast if the pump never delivers. No wall-clock sleep.
+	waitFor(func() bool { return len(sink.events()) == 1 })
 	evs := sink.events()
 	if len(evs) != 1 {
 		t.Fatalf("sink saw %d events, want 1", len(evs))

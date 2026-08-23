@@ -5,7 +5,6 @@ package store
 import (
 	"context"
 	"log/slog"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -243,17 +242,11 @@ func TestFanOutOverflowDropsLoudly(t *testing.T) {
 	}
 	// The engine closes replies BEFORE the fan-out hand-off on purpose (replies first,
 	// fan-out off the latency path), so the drop warning can land a scheduling step
-	// after the caller unblocks. Yield until the writer's hand-off becomes visible: a
-	// bounded spin stays free of wall-clock sleeps and still fails fast if the drop
-	// never happens.
-	var drops []slog.Record
-	for i := 0; i < 10_000; i++ {
-		drops = handler.find(slog.LevelWarn, "events.dropped")
-		if len(drops) > 0 {
-			break
-		}
-		runtime.Gosched()
-	}
+	// after the caller unblocks. Poll with the same package-level waitFor used across
+	// the writer tests (bounded Gosched, no wall-clock sleep, and it still fails fast
+	// if the drop never happens).
+	waitFor(func() bool { return len(handler.find(slog.LevelWarn, "events.dropped")) > 0 })
+	drops := handler.find(slog.LevelWarn, "events.dropped")
 	if len(drops) != 1 {
 		t.Fatalf("events.dropped warnings = %d, want exactly 1", len(drops))
 	}
