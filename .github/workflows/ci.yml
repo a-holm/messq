@@ -40,12 +40,32 @@ jobs:
           go-version-file: go.mod
           check-latest: false
           cache-dependency-path: go.sum
-      - run: make ci
+      - run: make ci-core
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: messq-binaries
           path: dist/messq-linux-*
           if-no-files-found: error
+
+  # The gates self-test in its own job, per PLAN.md section 11: a gate that outgrew the
+  # ten-minute lane budget is sharded, never weakened. Each row of the matrix runs a full
+  # make cover/test/lint in its own scratch copy of the tree, so with the store/api/cli
+  # suites grown it needs more wall clock than the ci job's ten-minute budget allows.
+  # Unlike fuzz it IS a required check: a gate nobody has seen fail is a gate nobody knows
+  # works, and every row here is deterministic (no fuzz-style coordinator flake).
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.sum
+      - run: make gates-selftest
 
   # A job of its own rather than a step in `make ci`. Four fuzz targets at sixty seconds each is
   # four minutes, which does not fit inside the ten-minute budget the ci job is held to; running

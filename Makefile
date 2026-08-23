@@ -255,8 +255,14 @@ hooks: ## Route git at the repository hooks in .githooks.
 	@echo "hooks: pre-commit checks staged formatting and vets the worktree, pre-push runs make ci"
 
 # The gate, in order. static-check pulls in build-all, so the binaries are built once.
-CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test cover \
-              cover-ratchet-check vuln gates-selftest static-check
+# gates-selftest is deliberately NOT in CI_CORE_TARGETS: it runs a full make cover/test/lint
+# in its own scratch copy per row, and with the store/api/cli suites grown it outgrew the
+# ten-minute lane budget on its own. GitHub shards it into its own job (PLAN.md section 11:
+# shard, never weaken); a local `make ci` still runs the whole gate.
+CI_CORE_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test cover \
+                   cover-ratchet-check vuln static-check
+CI_GATES_TARGETS := gates-selftest
+CI_TARGETS := $(CI_CORE_TARGETS) $(CI_GATES_TARGETS)
 
 # PLAN.md section 11 budgets the whole lane at ten minutes, which is a constraint rather than an
 # aspiration, so the per-target wall clock is printed at the end and appended to the GitHub run
@@ -264,10 +270,11 @@ CI_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint
 # move it to the nightly lane; it is never the signal to weaken it.
 CI_WARN_SECONDS ?= 480
 
-ci: ## Run the whole gate. GitHub Actions runs exactly this.
+# ci-run renders one target list with the shared wall-clock table; ci and ci-core both use it.
+define ci-run
 	@start=$$SECONDS; \
 	rows=""; \
-	for target in $(CI_TARGETS); do \
+	for target in $(1); do \
 		target_start=$$SECONDS; \
 		$(MAKE) --no-print-directory "$$target"; \
 		rows="$$rows| $$target | $$((SECONDS - target_start))s |"$$'\n'; \
@@ -279,6 +286,13 @@ ci: ## Run the whole gate. GitHub Actions runs exactly this.
 	if ((total >= $(CI_WARN_SECONDS))); then \
 		echo "ci: $${total}s is past the $(CI_WARN_SECONDS)s warning line; shard a job or move it to nightly" >&2; \
 	fi
+endef
+
+ci: ## Run the whole gate. GitHub Actions runs ci-core here and gates-selftest in its own job.
+	$(call ci-run,$(CI_TARGETS))
+
+ci-core: ## Run the gate without the gates self-test (the GitHub `ci` job's target).
+	$(call ci-run,$(CI_CORE_TARGETS))
 
 clean: ## Remove build and coverage artifacts.
 	rm -rf dist cover.out
