@@ -136,6 +136,11 @@ func matrix() []gate {
 			prepare: install("exit.go", "internal/api/sabotage_exit.go"),
 		},
 		{
+			id: "G34", name: "Secret.Reveal outside internal/auth", target: "lint",
+			want:    "single, greppable exit",
+			prepare: install("reveal.go", "internal/api/sabotage_reveal.go"),
+		},
+		{
 			id: "G11", name: "an invalid workflow expression", target: "lint",
 			want:    "does not exist in this workflow",
 			prepare: install("workflow.yml", ".github/workflows/sabotage.yml"),
