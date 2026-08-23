@@ -261,6 +261,14 @@ func wireCode(err error) string {
 	if errors.Is(err, queue.ErrReservedName) {
 		return "reserved_name"
 	}
+	var immErr *store.ImmutableFieldError
+	if errors.As(err, &immErr) {
+		return "immutable_field"
+	}
+	var unsupErr *unsupportedError
+	if errors.As(err, &unsupErr) {
+		return "unsupported"
+	}
 	var loseErr *queue.WouldLoseDataError
 	if errors.As(err, &loseErr) {
 		return "would_lose_data"
@@ -305,9 +313,9 @@ func statusFor(code string) int {
 	switch code {
 	case "not_found":
 		return http.StatusNotFound
-	case "stream_exists", "would_lose_data", "conflict":
+	case "stream_exists", "would_lose_data", "conflict", "immutable_field":
 		return http.StatusConflict
-	case "reserved_name", "bad_request", "bad_subject", "subject_mismatch", "header_too_large", "reserved_header":
+	case "reserved_name", "bad_request", "bad_subject", "subject_mismatch", "header_too_large", "reserved_header", "unsupported":
 		return http.StatusBadRequest
 	case "too_large":
 		return http.StatusRequestEntityTooLarge

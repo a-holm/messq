@@ -93,6 +93,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}", s.handlePeekMessage)
 	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}/data", s.handlePeekMessageData)
 	mux.HandleFunc("GET /v1/messages/{id}", s.handlePeekMessageByID)
+	mux.HandleFunc("POST /v1/streams/{stream}/consumers", s.handleCreateConsumer)
+	mux.HandleFunc("GET /v1/streams/{stream}/consumers", s.handleListConsumers)
+	mux.HandleFunc("GET /v1/streams/{stream}/consumers/{consumer}", s.handleGetConsumer)
+	mux.HandleFunc("PATCH /v1/streams/{stream}/consumers/{consumer}", s.handleUpdateConsumer)
+	mux.HandleFunc("DELETE /v1/streams/{stream}/consumers/{consumer}", s.handleDeleteConsumer)
+	mux.HandleFunc("POST /v1/streams/{stream}/consumers/{consumer}/fetch", s.handleFetchConsumer)
 	return mux
 }
 

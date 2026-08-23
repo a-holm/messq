@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package queue holds the pure validation layer of the publish and stream-lifecycle
-// paths (issue #7): stream names, stream configs, sparse updates, publish requests,
-// header encoding and trace-id precedence. It performs no I/O, reads no wall clock
-// and iterates no maps, so the fuzzers can hammer it (PLAN §3.3) and #13's reference
-// model can drive it directly.
+// paths (issue #7) and the consumer-side configuration, token and start-position
+// grammar (issue #9): stream names, stream configs, sparse updates, publish requests,
+// header encoding, trace-id precedence, consumer configs and the ack token. It
+// performs no I/O, reads no wall clock and iterates no maps, so the fuzzers can hammer
+// it (PLAN §3.3) and #13's reference model can drive it directly.
 package queue
 
 import (

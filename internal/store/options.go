@@ -40,6 +40,9 @@ type Options struct {
 	// Limits are the process-wide validation ceilings (issue §4.2) every stream
 	// configuration is checked against; zero value means DefaultLimits().
 	Limits queue.Limits
+	// ConsumerLimits are the consumer-side ceilings (issue #9 §10); zero value means
+	// DefaultConsumerLimits().
+	ConsumerLimits queue.ConsumerLimits
 	// PeekMaxLimit caps a listing page's effective limit (issue §6, --peek-max-limit);
 	// pages that include bodies cap at one tenth of it. <= 0 means 1000.
 	PeekMaxLimit int
@@ -91,6 +94,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.Limits == (queue.Limits{}) {
 		o.Limits = queue.DefaultLimits()
+	}
+	if o.ConsumerLimits == (queue.ConsumerLimits{}) {
+		o.ConsumerLimits = queue.DefaultConsumerLimits()
 	}
 	if o.PeekMaxLimit <= 0 {
 		o.PeekMaxLimit = defaultPeekMaxLimit
