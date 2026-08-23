@@ -10,12 +10,20 @@ import (
 	"github.com/a-holm/messq/internal/queue"
 )
 
-// plantDelivery inserts one delivery row directly (white-box fixture).
+// plantDelivery inserts one well-formed delivery row directly (white-box fixture):
+// READY rows have delivered_at NULL and visible_at 0; INFLIGHT rows have
+// delivered_at set and visible_at strictly after it.
 func plantDelivery(t *testing.T, st *Store, seq, state, attempts int64) {
 	t.Helper()
+	var deliveredAt, visibleAt any
+	if state == 0 {
+		deliveredAt, visibleAt = nil, int64(0)
+	} else {
+		deliveredAt, visibleAt = seq, seq+1
+	}
 	if _, err := st.rw.ExecContext(context.Background(), `
 		INSERT INTO deliveries (stream, consumer, seq, subject, state, attempts, visible_at, generation, delivered_at)
-		VALUES ('orders','worker',?,?,?,?,0,1,?)`, seq, "orders.1", state, attempts, seq); err != nil {
+		VALUES ('orders','worker',?,?,?,?,?,1,?)`, seq, "orders.1", state, attempts, visibleAt, deliveredAt); err != nil {
 		t.Fatalf("plant delivery %d: %v", seq, err)
 	}
 }

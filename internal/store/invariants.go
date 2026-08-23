@@ -13,11 +13,15 @@ import (
 // the reference model (#13). Every check runs on the read-only pool; a violation is
 // reported with its stream and a detail naming the offending boundary, never repaired.
 
-// Violation is one broken publish-path invariant.
+// Violation is one broken invariant.
 type Violation struct {
-	ID     string `json:"id"`     // P1..P5, the closed set from issue §10
-	Stream string `json:"stream"` // "" for store-wide findings
-	Detail string `json:"detail"`
+	ID       string `json:"id"`                 // P1..P5, C1..C6: the closed set from issue §10/#9 §12
+	Stream   string `json:"stream"`             // "" for store-wide findings
+	Consumer string `json:"consumer,omitempty"` // the consumer, for C* findings
+	Detail   string `json:"detail"`
+	// Advisory marks a finding the operator is expected to see but that is not a bug:
+	// the shrink residue after lowering max_ack_pending below the pending set (I5).
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // CheckPublishInvariants audits every live stream against P1–P5 and returns all
