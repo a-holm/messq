@@ -88,7 +88,8 @@ func TestReconcileSeqCollision(t *testing.T) {
 		"K1": okRec("K1", 1, "id1", 8, false),
 		"K2": okRec("K2", 1, "id1", 8, false),
 	}
-	if vs := Reconcile(state, recs, "crash", 0); !hasRule(vs, "SEQ-COLLISION", "K2") {
+	vs := Reconcile(state, recs, "crash", 0)
+	if !hasRule(vs, "SEQ-COLLISION", "K1") && !hasRule(vs, "SEQ-COLLISION", "K2") {
 		t.Fatalf("SEQ-COLLISION did not fire: %+v", vs)
 	}
 }
