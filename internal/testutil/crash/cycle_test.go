@@ -21,7 +21,7 @@ func TestOneGreenCycle(t *testing.T) {
 		Publishers: 4,
 		Cycles:     2,
 		Seed:       42,
-		Kill:       afterNOK{n: 60}, // deterministic: kill once 60 OK publishes are durable
+		Kill:       AfterNOK{N: 60}, // deterministic: kill once 60 OK publishes are durable
 	}
 	report, err := Run(ctx, cfg)
 	if err != nil {

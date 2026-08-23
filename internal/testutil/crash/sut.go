@@ -51,6 +51,10 @@ type Config struct {
 	Seed int64
 	// Kill overrides the per-cycle seeded strategy pick (used to force one strategy in a test).
 	Kill KillStrategy
+	// SkipGuards disables the vacuity-guard assertion. A sweep that does not sustain load
+	// (the migration-window test's immediate kills) legitimately fails the liveness and
+	// survivorship guards, which exist for the kill9 sweep.
+	SkipGuards bool
 }
 
 func (c *Config) clk() clock.Clock {

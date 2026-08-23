@@ -77,8 +77,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return nil, fmt.Errorf("load state for report: %w", loadErr)
 	}
 	report := summarize(results, recs, state)
-	if g := report.Guards(); len(g) > 0 {
-		return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+	if !cfg.SkipGuards {
+		if g := report.Guards(); len(g) > 0 {
+			return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+		}
 	}
 	return &report, nil
 }

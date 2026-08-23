@@ -33,7 +33,7 @@ func TestPickStrategyCoversAllThree(t *testing.T) {
 func TestAfterNOKImmediateWhenSatisfied(t *testing.T) {
 	obs := &loadgen.Observations{}
 	obs.OK.Store(50)
-	s := afterNOK{n: 20}
+	s := AfterNOK{N: 20}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := s.Wait(ctx, clock.System{}, rand.New(rand.NewSource(0)), obs); err != nil {
@@ -45,7 +45,7 @@ func TestAfterNOKImmediateWhenSatisfied(t *testing.T) {
 // until a concurrent publisher crosses the threshold.
 func TestAfterNOKWaitsForOKs(t *testing.T) {
 	obs := &loadgen.Observations{}
-	s := afterNOK{n: 5}
+	s := AfterNOK{N: 5}
 	done := make(chan error, 1)
 	go func() {
 		done <- s.Wait(context.Background(), clock.System{}, rand.New(rand.NewSource(0)), obs)

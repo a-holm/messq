@@ -33,25 +33,25 @@ func uniform(rng *rand.Rand, lo, hi time.Duration) time.Duration {
 	return lo + time.Duration(rng.Int63n(span))
 }
 
-// randomDelay kills in a uniform window [50 ms, 2 s] after load starts — the steady-state,
+// RandomDelay kills in a uniform window [50 ms, 2 s] after load starts — the steady-state,
 // mid-batch window.
-type randomDelay struct{}
+type RandomDelay struct{}
 
-func (randomDelay) Name() string { return "randomDelay" }
+func (RandomDelay) Name() string { return "randomDelay" }
 
-func (randomDelay) Wait(ctx context.Context, clk clock.Clock, rng *rand.Rand, _ *loadgen.Observations) error {
+func (RandomDelay) Wait(ctx context.Context, clk clock.Clock, rng *rand.Rand, _ *loadgen.Observations) error {
 	return clk.Sleep(ctx, uniform(rng, 50*time.Millisecond, 2*time.Second))
 }
 
-// afterNOK kills once the driver has observed n OK responses — the post-commit,
-// pre-response window. n is drawn U(1, 200) by the cycle loop and fixed here, so a cycle's
-// plan is deterministic.
-type afterNOK struct{ n int64 }
+// AfterNOK kills once the driver has observed N OK responses — the post-commit,
+// pre-response window. N is fixed here (drawn by the cycle loop's RNG in a sweep), so a
+// cycle's plan is deterministic.
+type AfterNOK struct{ N int64 }
 
-func (a afterNOK) Name() string { return "afterNOK" }
+func (a AfterNOK) Name() string { return "afterNOK" }
 
-func (a afterNOK) Wait(ctx context.Context, clk clock.Clock, _ *rand.Rand, obs *loadgen.Observations) error {
-	for obs.OK.Load() < a.n {
+func (a AfterNOK) Wait(ctx context.Context, clk clock.Clock, _ *rand.Rand, obs *loadgen.Observations) error {
+	for obs.OK.Load() < a.N {
 		if err := clk.Sleep(ctx, time.Millisecond); err != nil {
 			return err
 		}
@@ -59,13 +59,13 @@ func (a afterNOK) Wait(ctx context.Context, clk clock.Clock, _ *rand.Rand, obs *
 	return nil
 }
 
-// immediate kills in a uniform window [0, 150 ms] after start — migrations, and
+// Immediate kills in a uniform window [0, 150 ms] after start — migrations, and
 // recovery-during-recovery.
-type immediate struct{}
+type Immediate struct{}
 
-func (immediate) Name() string { return "immediate" }
+func (Immediate) Name() string { return "immediate" }
 
-func (immediate) Wait(ctx context.Context, clk clock.Clock, rng *rand.Rand, _ *loadgen.Observations) error {
+func (Immediate) Wait(ctx context.Context, clk clock.Clock, rng *rand.Rand, _ *loadgen.Observations) error {
 	return clk.Sleep(ctx, uniform(rng, 0, 150*time.Millisecond))
 }
 
@@ -74,10 +74,10 @@ func (immediate) Wait(ctx context.Context, clk clock.Clock, rng *rand.Rand, _ *l
 func pickStrategy(rng *rand.Rand) KillStrategy {
 	switch rng.Intn(3) {
 	case 0:
-		return randomDelay{}
+		return RandomDelay{}
 	case 1:
-		return afterNOK{n: int64(1 + rng.Intn(200))}
+		return AfterNOK{N: int64(1 + rng.Intn(200))}
 	default:
-		return immediate{}
+		return Immediate{}
 	}
 }
