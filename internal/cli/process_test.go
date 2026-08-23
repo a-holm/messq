@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,4 +123,34 @@ func stopServe(t *testing.T, cmd *exec.Cmd) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("serve did not shut down cleanly: %v", err)
 	}
+}
+
+// doPost issues one POST over the unix socket and returns the status and body.
+func doPost(t *testing.T, client *http.Client, path, body string, headers map[string]string) (int, string) {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://messq"+path, rd)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Logf("close body: %v", cerr)
+		}
+	}()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, string(b)
 }

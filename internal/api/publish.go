@@ -84,6 +84,12 @@ func (s *Server) handlePublishMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The 2xx is sent only after the commit's fsync returned (D4). This is the fault point
+	// between commit and reply: a no-op except under `-tags messq_fault` with MESSQ_FAULT
+	// armed, where it crashes the process so the reply never leaves. #8's harness and the
+	// internal/cli crash tests exercise it.
+	faultAfterCommit()
+
 	w.Header().Set("Messq-Seq", strconv.FormatInt(ack.Seq, 10))
 	w.Header().Set("Messq-Msg-Id", ack.ID)
 	w.Header().Set("Messq-Trace-Id", ack.TraceID)
