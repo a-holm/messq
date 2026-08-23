@@ -67,6 +67,24 @@ jobs:
           cache-dependency-path: go.sum
       - run: make gates-selftest
 
+  # The main-push crash lane: 100 kill/restart cycles in both durability modes against the
+  # three-valued ledger oracle. It is deliberately NOT on the pull-request path — the 8-cycle
+  # smoke already runs inside `make test` in the `ci` job — and its budget exceeds the ci job's
+  # ten minutes, so it rides a runner of its own, gated to main.
+  crash-kill9:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.sum
+      - name: SIGKILL sweep, both durability modes
+        run: go test ./test/crash/ -run TestCrashKill9 -crash.cycles=100 -crash.durability=both -timeout 20m
+
   # A job of its own rather than a step in `make ci`. Four fuzz targets at sixty seconds each is
   # four minutes, which does not fit inside the ten-minute budget the ci job is held to; running
   # them on a second runner keeps both under their limits. Fuzzing is a generator, not a gate on
