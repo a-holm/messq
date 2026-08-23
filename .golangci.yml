@@ -117,6 +117,12 @@ linters:
             Data goes to the injected stdout writer, narration to stderr. Library packages must
             not print at all.
 
+        - pattern: ^auth\.Secret\.Reveal$
+          msg: >-
+            Secret.Reveal is the single, greppable exit for a secret and is banned outside
+            internal/auth and pkg/client. Every other formatting path must keep the secret
+            redacted (issue #16, §11).
+
   exclusions:
     generated: lax
     # Every rule below names the message fragment it suppresses rather than disabling the whole
@@ -125,6 +131,13 @@ linters:
       # internal/clock is the seam, so it is the one package allowed to read the wall clock.
       - path: internal/clock/
         text: Wall-clock access outside internal/clock
+        linters:
+          - forbidigo
+
+      # internal/auth owns the Secret type, and pkg/client loads the credential (#22/#23), so
+      # those are the only packages allowed to call Reveal.
+      - path: (internal/auth|pkg/client)/
+        text: Secret.Reveal is the single
         linters:
           - forbidigo
 
