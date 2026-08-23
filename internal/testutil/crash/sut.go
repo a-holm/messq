@@ -55,6 +55,10 @@ type Config struct {
 	// (the migration-window test's immediate kills) legitimately fails the liveness and
 	// survivorship guards, which exist for the kill9 sweep.
 	SkipGuards bool
+	// Resume reopens the existing ledger (append), reconciles every OK record against the
+	// recovered state — the acknowledged-loss check across a driver death — and continues the
+	// sweep from the cycle after the last committed one.
+	Resume bool
 }
 
 func (c *Config) clk() clock.Clock {

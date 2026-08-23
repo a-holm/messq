@@ -57,8 +57,16 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		}
 	}()
 
+	startCycle := 0
+	if cfg.Resume {
+		startCycle, err = resumeStart(ctx, cfg, clk)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	results := make([]CycleResult, 0, cfg.Cycles)
-	for cycle := 0; cycle < cfg.Cycles; cycle++ {
+	for cycle := startCycle; cycle < startCycle+cfg.Cycles; cycle++ {
 		res, err := runCycle(ctx, cfg, clk, lg, cycle)
 		if err != nil {
 			return nil, fmt.Errorf("cycle %d: %w", cycle, err)
@@ -92,6 +100,31 @@ func renderGuards(vs []Violation) string {
 		out += fmt.Sprintf("  %s: %s\n", v.Rule, v.Detail)
 	}
 	return out
+}
+
+// resumeStart folds the existing ledger into the recovered state before any new cycle: every
+// OK record must survive the driver death, every FAILED record must stay absent, and nothing
+// unrecorded may exist. It returns the cycle after the last committed one, where the sweep
+// resumes.
+func resumeStart(ctx context.Context, cfg Config, clk clock.Clock) (int, error) {
+	recs, _, replayErr := ledger.Replay(cfg.ledgerPath())
+	if replayErr != nil {
+		return 0, fmt.Errorf("resume: replay ledger: %w", replayErr)
+	}
+	state, loadErr := LoadState(ctx, cfg.dataDir())
+	if loadErr != nil {
+		return 0, fmt.Errorf("resume: load state: %w", loadErr)
+	}
+	if vs := Reconcile(state, recs, cfg.Stream, 0); len(vs) > 0 {
+		return 0, fmt.Errorf("resume: %d reconciliation violation(s) after driver death:\n%s", len(vs), renderViolations(vs))
+	}
+	maxCycle := -1
+	for _, rec := range recs {
+		if rec.Cycle > maxCycle {
+			maxCycle = rec.Cycle
+		}
+	}
+	return maxCycle + 1, nil
 }
 
 // runCycle executes one kill/restart cycle and returns its result. It never leaves a leaked
