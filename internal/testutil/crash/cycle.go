@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -29,13 +30,14 @@ type CycleResult struct {
 	OK       int64
 	Unknown  int64
 	Failed   int64
+	WALTail  bool // a non-empty -wal was observed at kill time
 }
 
 // Run drives the whole sweep: Cycles kill/restart cycles against the real binary, appending
-// every intent and outcome to the external ledger under Root, and returning the per-cycle
-// results. The ledger is opened once and closed here, so the reconciler (a later slice) can
-// join the full ledger against the full recovered state.
-func Run(ctx context.Context, cfg Config) ([]CycleResult, error) {
+// every intent and outcome to the external ledger under Root, reconciling after every
+// restart, and returning the sweep report with the vacuity guards enforced. The ledger is
+// opened once and closed here.
+func Run(ctx context.Context, cfg Config) (*Report, error) {
 	cfg = cfg.defaults()
 	clk := cfg.clk()
 	if cfg.Seed == 0 {
@@ -59,11 +61,35 @@ func Run(ctx context.Context, cfg Config) ([]CycleResult, error) {
 	for cycle := 0; cycle < cfg.Cycles; cycle++ {
 		res, err := runCycle(ctx, cfg, clk, lg, cycle)
 		if err != nil {
-			return results, fmt.Errorf("cycle %d: %w", cycle, err)
+			return nil, fmt.Errorf("cycle %d: %w", cycle, err)
 		}
 		results = append(results, res)
 	}
-	return results, nil
+
+	// The final reconciliation pass: replay the whole ledger and load the final state once,
+	// so the report carries the survivorship split and the guard values.
+	recs, _, replayErr := ledger.Replay(cfg.ledgerPath())
+	if replayErr != nil {
+		return nil, fmt.Errorf("replay ledger for report: %w", replayErr)
+	}
+	state, loadErr := LoadState(ctx, cfg.dataDir())
+	if loadErr != nil {
+		return nil, fmt.Errorf("load state for report: %w", loadErr)
+	}
+	report := summarize(results, recs, state)
+	if g := report.Guards(); len(g) > 0 {
+		return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+	}
+	return &report, nil
+}
+
+// renderGuards renders the guard violations as a bulleted list for the failure message.
+func renderGuards(vs []Violation) string {
+	out := ""
+	for _, v := range vs {
+		out += fmt.Sprintf("  %s: %s\n", v.Rule, v.Detail)
+	}
+	return out
 }
 
 // runCycle executes one kill/restart cycle and returns its result. It never leaves a leaked
@@ -132,6 +158,7 @@ func runCycle(ctx context.Context, cfg Config, clk clock.Clock, lg *ledger.Ledge
 		pubWG.Wait()
 		return CycleResult{}, killErr
 	}
+	walTail := walNonEmpty(cfg.dataDir())
 
 	// 6. Stop issuing, drain the publishers (each in-flight request resolves UNKNOWN), and
 	// make the ledger durable before touching the recovered state.
@@ -156,15 +183,30 @@ func runCycle(ctx context.Context, cfg Config, clk clock.Clock, lg *ledger.Ledge
 		return CycleResult{}, errors.Join(readyErr, sut2.Kill())
 	}
 
-	// 9. The §4.4 recovery contract, lite: recovery.unclean was emitted on the restart, and
-	// a probe publish after recovery receives a sequence number.
+	// 8-9. The §4.4 recovery contract: recovery.unclean was emitted, then reconcile the full
+	// ledger against the recovered state, then a probe publish whose seq must exceed every
+	// pre-crash seq (SEQ-REGRESSION).
 	if !strings.Contains(sut2.Stderr(), "recovery.unclean") {
 		return CycleResult{}, errors.Join(
 			fmt.Errorf("restart did not emit recovery.unclean:\n%s", sut2.Stderr()),
 			sut2.Kill())
 	}
-	if _, probeErr := probePublish(ctx, loadgen.UnixClient(sock), cfg.Stream, cfg.Subject); probeErr != nil {
+	state, loadErr := LoadState(ctx, cfg.dataDir())
+	if loadErr != nil {
+		return CycleResult{}, errors.Join(loadErr, sut2.Kill())
+	}
+	recs, _, replayErr := ledger.Replay(cfg.ledgerPath())
+	if replayErr != nil {
+		return CycleResult{}, errors.Join(replayErr, sut2.Kill())
+	}
+	probeSeq, probeErr := probePublish(ctx, loadgen.UnixClient(sock), cfg.Stream, cfg.Subject)
+	if probeErr != nil {
 		return CycleResult{}, errors.Join(probeErr, sut2.Kill())
+	}
+	if vs := Reconcile(state, recs, cfg.Stream, probeSeq); len(vs) > 0 {
+		return CycleResult{}, errors.Join(
+			fmt.Errorf("%d reconciliation violation(s):\n%s", len(vs), renderViolations(vs)),
+			sut2.Kill())
 	}
 
 	// End the cycle with a graceful stop: a killed subprocess flushes no coverage counters,
@@ -180,7 +222,28 @@ func runCycle(ctx context.Context, cfg Config, clk clock.Clock, lg *ledger.Ledge
 		OK:       obs.OK.Load(),
 		Unknown:  obs.Unknown.Load(),
 		Failed:   obs.Failed.Load(),
+		WALTail:  walTail,
 	}, nil
+}
+
+// renderViolations renders reconciliation violations as a bulleted list.
+func renderViolations(vs []Violation) string {
+	out := ""
+	for _, v := range vs {
+		out += fmt.Sprintf("  %s %s: %s\n", v.Rule, v.Key, v.Detail)
+	}
+	return out
+}
+
+// walNonEmpty reports whether the data dir's -wal file is non-empty at kill time: a
+// non-empty WAL proves the kill landed with durable-but-unreplayed frames, so recovery had
+// real work to do.
+func walNonEmpty(dataDir string) bool {
+	st, err := os.Stat(filepath.Join(dataDir, "messq.db-wal"))
+	if err != nil {
+		return false
+	}
+	return st.Size() > 0
 }
 
 // sock is the Unix socket path under Root.
@@ -188,7 +251,8 @@ func (c Config) sock() string { return c.Root + "/messq.sock" }
 
 // ensureStream creates the harness stream with a 24 h dedup window and no retention limits,
 // so no message the oracle expects can ever be deleted before reconciliation. It is
-// idempotent: a 409 (already exists, e.g. after a restart) is success.
+// idempotent: a 201 (created) and a 200 (already exists, matching config) are both success;
+// a 409 would mean the harness config drifted from the existing stream, which is a bug.
 func ensureStream(ctx context.Context, client *http.Client, stream string) error {
 	body := fmt.Sprintf(`{"name":%q,"subjects":[">"],"dedup_window_ms":86400000,"max_age_ms":0,"max_msgs":0,"max_bytes":0,"max_msg_size":8388608}`, stream)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://messq/v1/streams", strings.NewReader(body))
@@ -200,7 +264,7 @@ func ensureStream(ctx context.Context, client *http.Client, stream string) error
 		return fmt.Errorf("create stream %q: %w", stream, err)
 	}
 	closeErr := resp.Body.Close()
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
 		return nil
 	}
 	if closeErr != nil {

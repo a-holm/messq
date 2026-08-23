@@ -8,32 +8,32 @@ import (
 	"testing"
 )
 
-// TestOneGreenCycle drives one full kill/restart cycle against the real binary: start,
-// publish, SIGKILL, restart with no cleanup, probe. The cycle loop itself asserts the
-// §4.4 recovery contract (recovery.unclean emitted, probe publish receives a seq), so this
-// test's job is to prove the loop runs green and produces a non-vacuous number of OK
-// publishes — a cycle that killed before any publish tests nothing (G7 liveness).
+// TestOneGreenCycle drives kill/restart cycles against the real binary: start, publish,
+// SIGKILL, restart with no cleanup, reconcile, probe. The cycle loop itself asserts the
+// §4.4 recovery contract (recovery.unclean emitted, probe seq regression) and the seven
+// reconciliation rules, so this test's job is to prove a sweep runs green with a
+// non-vacuous load — enough OK publishes that the liveness and survivorship guards hold.
 func TestOneGreenCycle(t *testing.T) {
 	ctx := context.Background()
 	cfg := Config{
 		Durability: "full",
 		Root:       filepath.Join(t.TempDir(), "root"),
 		Publishers: 4,
-		Cycles:     1,
+		Cycles:     2,
 		Seed:       42,
-		Kill:       afterNOK{n: 20}, // deterministic: kill once 20 OK publishes are durable
+		Kill:       afterNOK{n: 60}, // deterministic: kill once 60 OK publishes are durable
 	}
-	results, err := Run(ctx, cfg)
+	report, err := Run(ctx, cfg)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("Run returned %d results, want 1", len(results))
+	if report.Cycles != 2 {
+		t.Fatalf("report.Cycles = %d, want 2", report.Cycles)
 	}
-	r := results[0]
-	if r.OK < 20 {
-		t.Errorf("cycle observed %d OK publishes, want >= 20 (the afterNOK kill point)", r.OK)
+	if report.OK < 120 {
+		t.Errorf("sweep observed %d OK publishes, want >= 120 (2 × afterNOK(60))", report.OK)
 	}
-	t.Logf("cycle result: ok=%d unknown=%d failed=%d strategy=%s",
-		r.OK, r.Unknown, r.Failed, r.Strategy)
+	t.Logf("report: ok=%d unknown=%d failed=%d present=%d absent=%d wal_tail=%t",
+		report.OK, report.Unknown, report.Failed,
+		report.UnknownPresent, report.UnknownAbsent, report.WALTailObserved)
 }
