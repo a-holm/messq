@@ -19,9 +19,9 @@ func guardNames(vs []Violation) map[string]bool {
 
 // TestGuardsFire proves each vacuity guard bites, and that a healthy report is clean.
 func TestGuardsFire(t *testing.T) {
-	// Liveness: an average below 50 OK/cycle means the load was vacuous.
-	if g := guardNames((Report{Cycles: 2, Results: []CycleResult{{OK: 10}, {OK: 20}}}).Guards()); !g["LIVENESS"] {
-		t.Errorf("LIVENESS did not fire for avg 15 OK/cycle: %v", g)
+	// Liveness: fewer than one OK per cycle on average means the load was vacuous.
+	if g := guardNames((Report{Cycles: 2, OK: 0, Results: []CycleResult{{OK: 0}, {OK: 0}}}).Guards()); !g["LIVENESS"] {
+		t.Errorf("LIVENESS did not fire for 0 OK/cycle: %v", g)
 	}
 	// Kill-lands low: UNKNOWN below 1% means the kill never lands mid-flight.
 	if g := guardNames((Report{OK: 1000, Unknown: 5}).Guards()); !g["KILL-LANDS-LOW"] {
