@@ -398,7 +398,7 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		"note", "delivery, auth and drain land in #9/#14/#16/#17",
 	)
 
-	srv := api.New(st, clk, logger, cfg.dedupSweepInterval, opt.Limits)
+	srv := api.New(st, clk, logger, cfg.dedupSweepInterval, opt.Limits, cfg.maxBatchBytes)
 	if err := srv.Serve(ctx, ln); err != nil {
 		fmt.Fprintf(stderr, "messq: serve: %v\n", err)
 		return exitError

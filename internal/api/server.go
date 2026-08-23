@@ -24,6 +24,10 @@ import (
 // timeout policy.
 const readHeaderTimeout = 10 * time.Second
 
+// defaultMaxBatchBytes is the NDJSON batch-body ceiling when the serve command does not
+// pass one (tests and embedders). It matches the --max-batch-bytes default (8 MiB).
+const defaultMaxBatchBytes = int64(8 << 20)
+
 // Server is the HTTP surface of the daemon: the ServeMux route table plus the
 // dedup-sweep ticker. It owns the net/http server and the sweep loop; the store's
 // open/close lifecycle belongs to the caller (the serve command), so Serve never closes
@@ -37,14 +41,18 @@ type Server struct {
 	// limits are the process-wide validation ceilings the handlers use for fast-path
 	// rejection; the store re-validates the same numbers inside the transaction.
 	limits queue.Limits
+	// maxBatchBytes is the NDJSON body ceiling for messages:batch (§7, --max-batch-bytes),
+	// enforced here in the HTTP layer with http.MaxBytesReader.
+	maxBatchBytes int64
 }
 
 // New builds a Server around a live, already-recovered store. A nil clock or logger falls
 // back to the production implementations. sweepEvery must be positive: it is the period
 // the dedup sweep ticks at (--dedup-sweep-interval). A zero limits value means
 // queue.DefaultLimits(); the serve command passes its flag-derived limits so the handler
-// fast-path and the store's authoritative check agree.
-func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.Duration, limits queue.Limits) *Server {
+// fast-path and the store's authoritative check agree. maxBatchBytes <= 0 means
+// defaultMaxBatchBytes.
+func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.Duration, limits queue.Limits, maxBatchBytes int64) *Server {
 	if clk == nil {
 		clk = clock.System{}
 	}
@@ -54,18 +62,22 @@ func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.
 	if limits == (queue.Limits{}) {
 		limits = queue.DefaultLimits()
 	}
+	if maxBatchBytes <= 0 {
+		maxBatchBytes = defaultMaxBatchBytes
+	}
 	return &Server{
-		store:      st,
-		clk:        clk,
-		logger:     logger,
-		startedAt:  clk.Now(),
-		sweepEvery: sweepEvery,
-		limits:     limits,
+		store:         st,
+		clk:           clk,
+		logger:        logger,
+		startedAt:     clk.Now(),
+		sweepEvery:    sweepEvery,
+		limits:        limits,
+		maxBatchBytes: maxBatchBytes,
 	}
 }
 
-// Handler assembles the route table. Slice A owns /healthz and /v1/info; slices B, C
-// and D register the streams, publish/batch and peek routes on this same mux.
+// Handler assembles the route table. Slice A owns /healthz and /v1/info; slice B the
+// stream CRUD routes; slice C the publish, batch and peek routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -75,6 +87,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/streams/{stream}", s.handleGetStream)
 	mux.HandleFunc("PATCH /v1/streams/{stream}", s.handleUpdateStream)
 	mux.HandleFunc("DELETE /v1/streams/{stream}", s.handleDeleteStream)
+	mux.HandleFunc("POST /v1/streams/{stream}/messages", s.handlePublishMessage)
+	mux.HandleFunc("POST /v1/streams/{stream}/messages:batch", s.handlePublishBatch)
+	mux.HandleFunc("GET /v1/streams/{stream}/messages", s.handleListMessages)
+	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}", s.handlePeekMessage)
+	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}/data", s.handlePeekMessageData)
+	mux.HandleFunc("GET /v1/messages/{id}", s.handlePeekMessageByID)
 	return mux
 }
 

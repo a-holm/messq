@@ -27,7 +27,7 @@ func newStreamsServer(t *testing.T) (*store.Store, *Server) {
 	t.Helper()
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
-	return st, New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	return st, New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 }
 
 // doJSON issues one request against the handler and returns the recorder.
@@ -593,6 +593,11 @@ func TestErrorEnvelopeMapping(t *testing.T) {
 		{"stream_exists", &store.StreamExistsError{Name: "orders", Diff: []string{"max_msgs", "subjects"}}, "stream_exists", http.StatusConflict},
 		{"reserved_name", queue.ErrReservedName, "reserved_name", http.StatusBadRequest},
 		{"bad_request", errs.ErrBadRequest, "bad_request", http.StatusBadRequest},
+		{"bad_subject", errs.E(errs.ErrBadSubject, "", "a publish target holds no wildcard"), "bad_subject", http.StatusBadRequest},
+		{"subject_mismatch", &queue.MismatchError{Subject: "other.a", Accepted: []string{"orders.>"}}, "subject_mismatch", http.StatusBadRequest},
+		{"too_large", &queue.TooLargeError{What: "body", Size: 100, Limit: 10}, "too_large", http.StatusRequestEntityTooLarge},
+		{"header_too_large", &queue.TooLargeError{What: "headers", Size: 5000, Limit: 4096}, "header_too_large", http.StatusBadRequest},
+		{"reserved_header", &queue.ReservedHeaderError{Key: "Messq-Foo"}, "reserved_header", http.StatusBadRequest},
 		{"would_lose_data", &queue.WouldLoseDataError{Field: "max_msgs", AtRiskMsgs: 2, AtRiskBytes: 10}, "would_lose_data", http.StatusConflict},
 		{"conflict", errs.ErrConflict, "conflict", http.StatusConflict},
 		{"read_only", errs.ErrReadOnly, "read_only", http.StatusServiceUnavailable},

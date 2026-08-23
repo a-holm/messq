@@ -58,7 +58,7 @@ func waitFor(cond func() bool) {
 
 func TestHealthz(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
-	srv := New(openTestStore(t, clk, store.DurabilityFull), clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(openTestStore(t, clk, store.DurabilityFull), clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
@@ -72,7 +72,7 @@ func TestHealthz(t *testing.T) {
 func TestInfo(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityFull)
-	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	clk.Advance(1500 * time.Millisecond)
 
@@ -111,7 +111,7 @@ func TestInfo(t *testing.T) {
 // TestInfoJSONKeys pins the /v1/info wire shape: six fields, nothing more, nothing less.
 func TestInfoJSONKeys(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
-	srv := New(openTestStore(t, clk, store.DurabilityFull), clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(openTestStore(t, clk, store.DurabilityFull), clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/info", nil)
@@ -147,7 +147,7 @@ func TestInfoSynchronousTracksDurability(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
-			srv := New(openTestStore(t, clk, tc.dur), clk, discardLogger(), time.Minute, queue.DefaultLimits())
+			srv := New(openTestStore(t, clk, tc.dur), clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/info", nil)
@@ -191,7 +191,7 @@ func makeOrdersStream(t *testing.T, st *store.Store, dedupWindow time.Duration) 
 func TestSweepOnce(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
-	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	makeOrdersStream(t, st, 100*time.Millisecond)
 
@@ -223,7 +223,7 @@ func TestSweepOnce(t *testing.T) {
 func TestSweepOnceEveryStream(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
-	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	for _, name := range []string{"orders", "shipments"} {
 		cfg := queue.DefaultConfig(name)
@@ -267,7 +267,7 @@ func TestServeSweepTickerAndShutdown(t *testing.T) {
 
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
-	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits())
+	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
 
 	makeOrdersStream(t, st, 50*time.Millisecond)
 	first := publishOne(t, st, "k1")

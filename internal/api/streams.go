@@ -249,8 +249,10 @@ func (s *Server) writeError(w http.ResponseWriter, err error, next ...string) {
 }
 
 // wireCode maps an error to its wire code. The order matters: stream_exists, reserved_name
-// and would_lose_data each wrap a broader sentinel (conflict / bad_request), so their
-// typed checks run before the generic ones.
+// and would_lose_data each wrap a broader sentinel (conflict / bad_request), and the
+// publish-layer typed errors (subject_mismatch, reserved_header, too_large vs
+// header_too_large) wrap ErrBadSubject / ErrBadRequest / ErrTooLarge, so their typed
+// checks run before the generic ones.
 func wireCode(err error) string {
 	var existsErr *store.StreamExistsError
 	if errors.As(err, &existsErr) {
@@ -263,11 +265,30 @@ func wireCode(err error) string {
 	if errors.As(err, &loseErr) {
 		return "would_lose_data"
 	}
+	var mismatchErr *queue.MismatchError
+	if errors.As(err, &mismatchErr) {
+		return "subject_mismatch"
+	}
+	var reservedHdrErr *queue.ReservedHeaderError
+	if errors.As(err, &reservedHdrErr) {
+		return "reserved_header"
+	}
+	var tooLargeErr *queue.TooLargeError
+	if errors.As(err, &tooLargeErr) {
+		if tooLargeErr.What == "body" {
+			return "too_large"
+		}
+		return "header_too_large"
+	}
 	switch {
 	case errors.Is(err, errs.ErrNotFound):
 		return "not_found"
 	case errors.Is(err, errs.ErrConflict):
 		return "conflict"
+	case errors.Is(err, errs.ErrBadSubject):
+		return "bad_subject"
+	case errors.Is(err, errs.ErrTooLarge):
+		return "too_large"
 	case errors.Is(err, errs.ErrBadRequest):
 		return "bad_request"
 	case errors.Is(err, errs.ErrReadOnly):
@@ -286,8 +307,10 @@ func statusFor(code string) int {
 		return http.StatusNotFound
 	case "stream_exists", "would_lose_data", "conflict":
 		return http.StatusConflict
-	case "reserved_name", "bad_request":
+	case "reserved_name", "bad_request", "bad_subject", "subject_mismatch", "header_too_large", "reserved_header":
 		return http.StatusBadRequest
+	case "too_large":
+		return http.StatusRequestEntityTooLarge
 	case "read_only", "shutting_down":
 		return http.StatusServiceUnavailable
 	default:
