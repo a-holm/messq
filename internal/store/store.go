@@ -75,6 +75,10 @@ type Store struct {
 	// consumerLimits are the consumer-side ceilings (issue #9 §10); defaulted in
 	// applyDefaults.
 	consumerLimits queue.ConsumerLimits
+	// flowBlocked is the per-consumer flow.blocked rate-limit map (issue #9 §5). It is
+	// mutated only on the writer goroutine, so it needs no lock; entries are pruned on
+	// consumer delete (bounded by consumer count, I11).
+	flowBlocked map[string]int64
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
@@ -235,6 +239,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		durability:     opt.Durability,
 		limits:         opt.Limits,
 		consumerLimits: opt.ConsumerLimits,
+		flowBlocked:    make(map[string]int64),
 		peekMaxLimit:   opt.PeekMaxLimit,
 		peekScanLimit:  opt.PeekScanLimit,
 		maxBatchMsgs:   opt.MaxBatchMessages,

@@ -222,7 +222,7 @@ func (s *Store) DeleteConsumer(ctx context.Context, stream, name, actor string) 
 	if err := queue.ValidateConsumerName(name); err != nil {
 		return ConsumerDeleteResult{}, err
 	}
-	res, err := s.enqueue(ctx, "store.DeleteConsumer", deleteConsumerCmd{stream: stream, name: name, actor: actor})
+	res, err := s.enqueue(ctx, "store.DeleteConsumer", deleteConsumerCmd{stream: stream, name: name, actor: actor, flow: s.flowBlocked})
 	if err != nil {
 		return ConsumerDeleteResult{}, err
 	}
@@ -603,6 +603,7 @@ type deleteConsumerCmd struct {
 	stream string
 	name   string
 	actor  string
+	flow   map[string]int64
 }
 
 func (c deleteConsumerCmd) Kind() CmdKind { return kindDeleteConsumer }
@@ -636,6 +637,9 @@ func (c deleteConsumerCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time)
 	if _, xErr := tx.ExecContext(ctx,
 		`DELETE FROM meta WHERE k = ?`, consumerStartKey(c.stream, c.name)); xErr != nil {
 		return nil, nil, fmt.Errorf("drop start record of %q/%q: %w", c.stream, c.name, xErr)
+	}
+	if c.flow != nil {
+		delete(c.flow, flowKey(c.stream, c.name)) // prune the rate-limit map (I11)
 	}
 	raw, jErr := jsonMarshal(map[string]int64{"pending": pending, "inflight": inflight})
 	if jErr != nil {
