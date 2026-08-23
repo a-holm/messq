@@ -53,11 +53,13 @@ func TestMain(m *testing.M) {
 	}
 	// The property machine's actions are real SQLite opens with durability=full fsyncs, so
 	// rapid's library defaults (100 checks × ~30 steps) cost minutes per run. The PR lane
-	// gets a deliberately light machine (8 × 10); the nightly property job (#13) is where
-	// depth belongs, via -rapid.checks/-rapid.steps on the command line — an explicit flag
-	// always wins over this preset, because Parse runs after it.
-	mustFlagSet("rapid.checks", "8")
-	mustFlagSet("rapid.steps", "10")
+	// gets a deliberately light machine (4 × 8) — trimmed twice (20×15 → 8×10 → 4×8) so the
+	// FULL parallel `make test` still finishes with margin inside TEST_TIMEOUT; the nightly
+	// property job (#13) is where depth belongs, via -rapid.checks/-rapid.steps on the
+	// command line — an explicit flag always wins over this preset, because Parse runs
+	// after it.
+	mustFlagSet("rapid.checks", "4")
+	mustFlagSet("rapid.steps", "8")
 	m.Run() // the testing package exits with m.Run's code when TestMain returns
 }
 
