@@ -12,7 +12,11 @@ import (
 	"fmt"
 	"path/filepath"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver (the pure-Go engine)
+	// The SQLite driver lives inside internal/store only (the single-writer surface gate
+	// forbids importing the engine directly here — a raw driver import would open a private
+	// writable handle). Importing the store registers the "sqlite" driver and its connection
+	// hooks; the read-only open below then borrows that registration.
+	_ "github.com/a-holm/messq/internal/store"
 )
 
 // Open opens the data dir's messq.db for read-only inspection: the connection is permitted
