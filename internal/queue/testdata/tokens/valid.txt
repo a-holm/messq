@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Ack-token corpus (D7 grammar "#4 §S3"). Each line is one valid token in the wire form
+# "stream/consumer/seq/attempt/generation", minted by queue.Token.String(). #10's fuzz
+# target seeds from this file; token_test.go pins the shape so the seed set stays
+# well-formed for the parser that arrives with #10.
+orders/worker/10494/1/1
+orders/worker/10495/2/1
+orders.eu/refund-worker/1000000/5/3
+a/b/0/0/0
+stream.with.dots/worker/42/7/2
+events/archive-consumer/9223372036854775807/2147483647/2147483647
