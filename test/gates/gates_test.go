@@ -7,12 +7,15 @@ package gates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/a-holm/messq/internal/clock"
 )
 
 // makeTimeout bounds one sabotage run. A gate that hangs is a failed gate, not a stalled suite.
@@ -21,6 +24,72 @@ import (
 // push a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
 // row, PR #55), so the bound is twenty.
 const makeTimeout = 20 * time.Minute
+
+// modDownloadTimeout bounds the single module-cache warm-up in TestMain. Downloading the whole
+// universe of transitive dependencies on a cold GitHub runner can take a while, so the bound
+// is a generous five minutes; on a warm cache (the local case) `go mod download` returns in
+// seconds because the modules are already present, so this is effectively free.
+const modDownloadTimeout = 5 * time.Minute
+
+// TestMain warms the module cache before any row runs a `go` invocation.
+//
+// Every sabotage row (TestGates) copies the working tree into a scratch directory
+// (scratchCopy) and runs its make target there. The scratch copies share THIS binary's process
+// environment, including GOMODCACHE (the per-user module cache under GOPATH/pkg/mod), so when
+// the GitHub actions/setup-go cache restore misses — as it does on a cold runner, which is the
+// rule right after a main merge — the first eight rows all race to download the same modules
+// at the same time, into the same cache, from the same network paths. What looks like robust
+// parallelism is actually a thundering herd of `go` processes each fetching on first use. That
+// is not a latent edge; it is exactly the failure the required gates job hit on main e41b480,
+// and it shows up in two symptoms:
+//
+//   - G12 ("a floored package below its floor") ran its cover row while lines like
+//     `go: downloading github.com/prometheus/client_golang v1.24.1 ...` polluted stderr, so
+//     the run failed exit=2 but WITHOUT the expected "< 90.0%" message — the row was reported
+//     as having "failed for the wrong reason".
+//   - G15 ("a lowered floor a branch commit explains") PASSED its assertion, but the test
+//     framework's TempDir cleanup failed mid-download ("testing.go:1466 TempDir RemoveAll
+//     cleanup: unlinkat ...") because the row's own `go` was still writing modules into its
+//     scratch tree when RemoveAll ran.
+//
+// The fix is a single warm-up HERE, in TestMain, BEFORE m.Run() fans the rows out in parallel.
+// One `go mod download` in the real repository root makes every module the rows will need land
+// in the shared cache while only one downloader is running. Because every scratch copy shares
+// that same cache, every subsequent row `go` invocation finds its modules already present: no
+// concurrent downloads, no stderr pollution, no TempDir-cleanup race. This must hold even when
+// the setup-go cache restore misses, so this deliberately does NOT depend on the cache being
+// warm — it warms the cache itself.
+func TestMain(m *testing.M) {
+	start := clock.System{}.Now()
+	root := repoRoot()
+	ctx, cancel := context.WithTimeout(context.Background(), modDownloadTimeout)
+	cmd := exec.CommandContext(ctx, "go", "mod", "download")
+	cmd.Dir = root
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
+	cancel()
+	fmt.Fprintf(os.Stderr, "gates: module-cache warm-up (%s) took %v\n", "go mod download", clock.System{}.Since(start).Round(time.Millisecond))
+	if err != nil {
+		// The warm-up failing is a real preflight failure, not a gate verdict. Do not shrug it
+		// off: every row below would then race concurrent downloads again, and the whole point
+		// of the gates selftest is to prove the gates bite, not to rediscover the cold-cache
+		// herd. Fail loudly, with the downloader's own stderr. A test binary must not call
+		// os.Exit directly (forbidigo), and returning skips m.Run, so a panic is the one
+		// remaining way to stop the suite with a nonzero exit here.
+		panic("gates: module-cache warm-up failed: " + err.Error() + "\n" + string(out))
+	}
+	m.Run() // the testing package exits with m.Run's code when TestMain returns
+}
+
+// repoRoot returns the repository root as an absolute path. The test binary runs from
+// test/gates, so the workspace root is two levels up.
+func repoRoot() string {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		panic(err)
+	}
+	return root
+}
 
 // gate is one row of the sabotage matrix: a mutation, the make target that must notice it, and
 // the message the failure must carry. Asserting only the exit code is not enough, because a
@@ -523,10 +592,8 @@ func git(t *testing.T, root string, args ...string) {
 func scratchCopy(t *testing.T) string {
 	t.Helper()
 
-	repo, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// repo is the repository root; scratchCopy mirrors the working tree from there.
+	repo := repoRoot()
 
 	cmd := exec.CommandContext(t.Context(), "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
 	cmd.Dir = repo
@@ -575,6 +642,16 @@ func runMake(t *testing.T, root, target string, extra ...string) (int, string) {
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	output, err := cmd.CombinedOutput()
+
+	// Diagnostic guard: if a row's make run still shows `go: downloading ...` on its stderr,
+	// the module cache was raced despite the TestMain warm-up (e.g. a module added by this
+	// row's own code, or a cache-restore miss). The warm-up in TestMain is the fix; this is not
+	// a second verdict but a breadcrumb so a "failed for the wrong reason" row is
+	// distinguishable from a gate that genuinely does not bite. The row's own assertion below
+	// still decides.
+	if strings.Contains(string(output), "go: downloading") {
+		t.Logf("gates: %s: make output shows 'go: downloading ...' (module cache was cold for this row; see TestMain warm-up)", target)
+	}
 
 	var exitErr *exec.ExitError
 	switch {
