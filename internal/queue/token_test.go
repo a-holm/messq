@@ -3,12 +3,18 @@
 package queue
 
 import (
-	"bufio"
-	"os"
+	_ "embed"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// tokenCorpus is the committed ack-token corpus (testdata/tokens/valid.txt), embedded so the
+// package stays free of os (layers.sh: internal/queue is a pure state machine, no I/O). #10's
+// fuzz target seeds from the same file on disk.
+//
+//go:embed testdata/tokens/valid.txt
+var tokenCorpus string
 
 func TestTokenString(t *testing.T) {
 	tests := []struct {
@@ -32,19 +38,8 @@ func TestTokenString(t *testing.T) {
 // numeric seq/attempt/generation, so the parser #10 writes has a well-formed seed set and
 // this test is the guard that keeps it that way.
 func TestTokenCorpusWellFormed(t *testing.T) {
-	f, err := os.Open("testdata/tokens/valid.txt")
-	if err != nil {
-		t.Fatalf("open corpus: %v", err)
-	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil {
-			t.Fatalf("close corpus: %v", cerr)
-		}
-	}()
-	sc := bufio.NewScanner(f)
 	seen := 0
-	for sc.Scan() {
-		line := sc.Text()
+	for _, line := range strings.Split(tokenCorpus, "\n") {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
@@ -61,9 +56,6 @@ func TestTokenCorpusWellFormed(t *testing.T) {
 				t.Fatalf("corpus line %q field %d is not an integer: %v", line, i, err)
 			}
 		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan corpus: %v", err)
 	}
 	if seen == 0 {
 		t.Fatal("corpus is empty")
