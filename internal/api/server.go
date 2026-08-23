@@ -14,6 +14,7 @@ import (
 
 	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
 
@@ -33,17 +34,25 @@ type Server struct {
 	logger     *slog.Logger
 	startedAt  time.Time
 	sweepEvery time.Duration
+	// limits are the process-wide validation ceilings the handlers use for fast-path
+	// rejection; the store re-validates the same numbers inside the transaction.
+	limits queue.Limits
 }
 
 // New builds a Server around a live, already-recovered store. A nil clock or logger falls
 // back to the production implementations. sweepEvery must be positive: it is the period
-// the dedup sweep ticks at (--dedup-sweep-interval).
-func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.Duration) *Server {
+// the dedup sweep ticks at (--dedup-sweep-interval). A zero limits value means
+// queue.DefaultLimits(); the serve command passes its flag-derived limits so the handler
+// fast-path and the store's authoritative check agree.
+func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.Duration, limits queue.Limits) *Server {
 	if clk == nil {
 		clk = clock.System{}
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if limits == (queue.Limits{}) {
+		limits = queue.DefaultLimits()
 	}
 	return &Server{
 		store:      st,
@@ -51,6 +60,7 @@ func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.
 		logger:     logger,
 		startedAt:  clk.Now(),
 		sweepEvery: sweepEvery,
+		limits:     limits,
 	}
 }
 
@@ -60,6 +70,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/info", s.handleInfo)
+	mux.HandleFunc("POST /v1/streams", s.handleCreateStream)
+	mux.HandleFunc("GET /v1/streams", s.handleListStreams)
+	mux.HandleFunc("GET /v1/streams/{stream}", s.handleGetStream)
+	mux.HandleFunc("PATCH /v1/streams/{stream}", s.handleUpdateStream)
+	mux.HandleFunc("DELETE /v1/streams/{stream}", s.handleDeleteStream)
 	return mux
 }
 
