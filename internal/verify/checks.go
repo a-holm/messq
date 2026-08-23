@@ -29,6 +29,7 @@ const (
 	I4  = "I4"
 	I5  = "I5"
 	I6  = "I6"
+	I7  = "I7"
 	I8  = "I8"
 	I10 = "I10"
 )
@@ -277,3 +278,30 @@ WHERE d.seq >= c.cursor_seq`, 100)
 // arrives with it.
 const i8Query = `SELECT stream, seq, COUNT(*) AS n FROM events
 WHERE event = 'msg.dead' GROUP BY stream, seq HAVING n > 1 LIMIT 100`
+
+// checkI7 is the settle-fence invariant (issue #10 §5.2, S15): no stale-fenced
+// ack/nak/term/extend ever mutates a live row. Every settle write repeats the
+// generation/attempts fence, so a violation cannot be produced by the settle path —
+// it is reported when an out-of-band write (or a planner bug that got past the second
+// line of defence) leaves a delivery row that contradicts the fence. The observable
+// fingerprints checked here:
+//
+//   - an INFLIGHT row with attempts = 0 — a claim or settle wrote the row without the
+//     post-increment (D6: claims always number the row);
+//   - a delivery row whose generation differs from its consumer's current generation —
+//     #28 deletes rows when it bumps, so a survivor with a stale generation is an I7 anomaly.
+func checkI7(ctx context.Context, tx *sql.Tx, _ bool) ([]Violation, error) {
+	v1, err := runQueryCheck(ctx, tx, I7,
+		`SELECT stream, consumer, seq, state, attempts FROM deliveries WHERE state = 1 AND attempts < 1 LIMIT 100`, 100)
+	if err != nil {
+		return nil, err
+	}
+	v2, err := runQueryCheck(ctx, tx, I7,
+		`SELECT d.stream, d.consumer, d.seq, d.generation, c.generation
+		   FROM deliveries d JOIN consumers c ON c.stream = d.stream AND c.name = d.consumer
+		  WHERE d.generation <> c.generation LIMIT 100`, 100)
+	if err != nil {
+		return nil, err
+	}
+	return append(v1, v2...), nil
+}

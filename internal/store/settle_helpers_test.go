@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -57,9 +58,9 @@ func (r *recordMetrics) total() (acked, lateAck, naked, termed, extended, staleA
 
 // openSettleStore opens an engine-less store with a deterministic identity jitter so
 // exact visible_at arithmetic is possible, and a recording metrics twin installed.
-func openSettleStore(t *testing.T) (*Store, *clock.Fake, *recordMetrics) {
+func openSettleStore(t testing.TB) (*Store, *clock.Fake, *recordMetrics) {
 	t.Helper()
-	opt := testOptions(testDataDir(t), fakeClock(), &logCapture{})
+	opt := testOptions(filepath.Join(t.TempDir(), "data"), fakeClock(), &logCapture{})
 	opt.Jitter = func(d time.Duration) time.Duration { return d } // deterministic
 	st, _, err := Open(context.Background(), opt)
 	if err != nil {
@@ -90,7 +91,7 @@ func qtok(s, c string, seq int64, att, gen int32) queue.Token {
 
 // seedSettle publishes n messages, creates consumer "worker", and claims batch messages,
 // returning the parsed ack tokens of the claimed deliveries.
-func seedSettle(t *testing.T, st *Store, n, batch int) []queue.Token {
+func seedSettle(t testing.TB, st *Store, n, batch int) []queue.Token {
 	t.Helper()
 	for i := 1; i <= n; i++ {
 		if _, err := st.Publish(context.Background(), PublishCmd{
