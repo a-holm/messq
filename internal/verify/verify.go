@@ -48,17 +48,18 @@ func (o *Options) limit() int {
 
 // CheckResult is one check's outcome within a report.
 type CheckResult struct {
-	ID         string
-	Name       string
-	OK         bool
-	Skipped    bool // deep check excluded in a non-deep run
-	Violations []Violation
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	OK         bool        `json:"ok"`
+	Skipped    bool        `json:"skipped,omitempty"`
+	Violations []Violation `json:"violations"`
 }
 
-// Report is the outcome of one Run.
+// Report is the outcome of one Run. The JSON field names are the frozen `messq verify
+// --output json` shape, schema-tested alongside #18.
 type Report struct {
-	Checks     []CheckResult
-	Violations []Violation // flattened, in check order
+	Checks     []CheckResult `json:"checks"`
+	Violations []Violation   `json:"violations"`
 }
 
 // Failed reports whether any check produced a violation.

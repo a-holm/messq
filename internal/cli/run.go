@@ -16,9 +16,11 @@ import (
 // 3 not found, 4 conflict/stale, 5 empty/timeout, 6 daemon unreachable, 7 permission.
 // Only the codes this command surface can reach are defined.
 const (
-	exitOK    = 0
-	exitError = 1
-	exitUsage = 2
+	exitOK         = 0
+	exitError      = 1
+	exitUsage      = 2
+	exitNotFound   = 3
+	exitPermission = 7
 )
 
 const usage = `messq is a lightweight, single-binary queue daemon for Linux.
@@ -29,6 +31,7 @@ Usage:
 Commands:
   version    Print build information.
   serve      Run the daemon (messq serve --data-dir DIR).
+  verify     Check a data directory's invariants (messq verify --data-dir DIR).
   help       Print this message.
 
 Flags for version:
@@ -37,6 +40,13 @@ Flags for version:
 Flags for serve:
   --data-dir DIR        Data directory (required; or MESSQ_DATA_DIR).
   --listen ADDR         unix://PATH or tcp://HOST:PORT. Default unix:///run/messq/messq.sock.
+
+Flags for verify:
+  --data-dir DIR        Data directory (or MESSQ_DATA_DIR, else /var/lib/messq).
+  --deep                Add integrity_check, I8 and the I10 event fold.
+  --output table|json   Output format. Default table on a TTY, json otherwise.
+  --fail-fast           Stop at the first violating check.
+  --limit N             Violating rows printed per check. Default 100.
 
 Exit codes: 0 ok, 1 error, 2 usage.
 `
@@ -53,6 +63,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runVersion(args[1:], stdout, stderr)
 	case args[0] == "serve":
 		return runServe(args[1:], os.Getenv, stdout, stderr)
+	case args[0] == "verify":
+		return runVerify(args[1:], os.Getenv, stdout, stderr)
 	default:
 		return usageError(stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}
