@@ -149,6 +149,17 @@ for leaf in internal/subject internal/id internal/clock internal/errs; do
 	check_leaf "$leaf"
 done
 
+# internal/auth is a pure decision engine over (Principal, Role, stream name). It reaches
+# internal/errs (and, for the gated reload/coalescing slices, internal/clock) only; the HTTP
+# middleware that consumes it lives in internal/api, so auth must not reach the API, the store,
+# the CLI, the metrics registry or net/http, and it must not share code with internal/subject
+# (the stream-pattern matcher is deliberately not the subject matcher — issue #16).
+auth_reason="Issue #16 design: internal/auth is a pure decision over (Principal, Role, streams); it reaches internal/errs and internal/clock only, never internal/api, internal/store, internal/cli, internal/obs, internal/subject or net/http."
+forbid_deps test internal/auth "$auth_reason" \
+	net/http \
+	"$module/internal/api" "$module/internal/store" "$module/internal/cli" "$module/internal/obs" \
+	"$module/internal/model" "$module/internal/queue" "$module/internal/subject" "$module/internal/id"
+
 client_reason="Issue #1 design: pkg/client is public and must not depend on internal packages."
 # Two steps, for the reason dep-budget.sh gives: grep exits 1 when nothing leaked, which is the
 # expected state, so its status must be tolerated. Tolerating deps_of's status in the same
