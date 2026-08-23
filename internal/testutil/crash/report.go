@@ -49,6 +49,25 @@ const livenessOKFloor = 1
 // still catches it with margin.
 const killLandsHighShare = 0.40
 
+// survivorshipRule names the both-outcome guard. It is the one guard whose trigger is
+// runner-scheduling-dependent, so [Config.SkipSurvivorship] drops exactly it — never the
+// deterministic KILL-LANDS-LOW/HIGH or WAL-TAIL bounds.
+const survivorshipRule = "SURVIVORSHIP"
+
+// withoutSurvivorship returns the violations with the both-outcome SURVIVORSHIP guard
+// filtered out, keeping every other guard. Used by [Run] when [Config.SkipSurvivorship]
+// is set; the both-outcomes requirement stays covered by the deterministic fixtures
+// (TestGuardsFire, TestSummarizeSurvivorship) and the nightly real-sweep lane.
+func withoutSurvivorship(vs []Violation) []Violation {
+	out := make([]Violation, 0, len(vs))
+	for _, v := range vs {
+		if v.Rule != survivorshipRule {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Guards computes the vacuity-guard violations for the whole sweep. The guard values are
 // printed by [Report.Print] regardless, so a sweep can report them even when none fire.
 func (r Report) Guards() []Violation {

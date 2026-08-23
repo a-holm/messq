@@ -87,7 +87,16 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	report := summarize(results, recs, state)
 	if !cfg.SkipGuards {
 		if g := report.Guards(); len(g) > 0 {
-			return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+			// SkipSurvivorship keeps the KILL-LANDS-LOW/HIGH and WAL-TAIL guards but drops the
+			// SURVIVORSHIP both-outcome requirement, which is runner-scheduling-dependent (see
+			// Config.SkipSurvivorship). The real-sweep both-outcomes survivorship is the nightly
+			// lane; the PR smoke asserts only the deterministic guarantees.
+			if !cfg.SkipSurvivorship {
+				return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+			}
+			if g = withoutSurvivorship(g); len(g) > 0 {
+				return &report, fmt.Errorf("%d vacuity guard(s) failed:\n%s", len(g), renderGuards(g))
+			}
 		}
 	}
 	return &report, nil

@@ -55,6 +55,14 @@ type Config struct {
 	// (the migration-window test's immediate kills) legitimately fails the liveness and
 	// survivorship guards, which exist for the kill9 sweep.
 	SkipGuards bool
+	// SkipSurvivorship disables only the SURVIVORSHIP both-outcome guard, keeping the
+	// KILL-LANDS-LOW/HIGH and WAL-TAIL guards active. Whether an UNKNOWN record survives
+	// recovery or stays absent in a given run depends on whether a publish was mid-flight
+	// when the kill landed — runner-scheduling-dependent, not a property the smoke asserts.
+	// Both-outcomes survivorship is proven deterministically by the report/reconciler
+	// fixtures (TestGuardsFire, TestSummarizeSurvivorship) and the real-sweep both-outcomes
+	// lane is nightly; the PR smoke asserts only the deterministic guarantees.
+	SkipSurvivorship bool
 	// Resume reopens the existing ledger (append), reconciles every OK record against the
 	// recovered state — the acknowledged-loss check across a driver death — and continues the
 	// sweep from the cycle after the last committed one.
