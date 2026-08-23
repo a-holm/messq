@@ -15,7 +15,8 @@ import (
 )
 
 // Peek reads (issue §6): side-effect free by construction — every query runs on the
-// read-only pool, which carries mode=ro AND query_only(1), not on discipline. Reads
+// read pool, fenced read-only by query_only(1) (ADR-0002; mode=ro is reserved for
+// offline inspection and accepts the -shm constraint), not on discipline. Reads
 // join on stream existence, so rows stranded mid-delete are invisible. Peeking keeps
 // working while the writer is latched read-only: reading the evidence must survive
 // the failure.
