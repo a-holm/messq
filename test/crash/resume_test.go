@@ -10,11 +10,16 @@ import (
 	"github.com/a-holm/messq/internal/testutil/crash"
 )
 
-// TestResumeAfterDriverDeath proves the resume mode: a second driver opens the ledger the
-// first driver left behind, reconciles every OK record against the recovered state — the
-// acknowledged-loss check across the driver's death — and continues the sweep from the next
-// cycle. The second run must be green, which means the first run's durable records all
-// survived the driver boundary.
+// TestResumeAfterDriverDeath exercises the resume mode across a driver boundary that was
+// cleanly completed: the first sweep finishes every cycle normally (each cycle's own
+// kill/restart + reconcile is contained within that run), so when the second driver opens
+// the same ledger with Resume set, resumeStart reconciles the whole existing ledger against
+// the recovered state and then continues from the next cycle number. Because the first sweep
+// completed cleanly, the resume reconcile has no mid-flight records to adjudicate — this
+// test proves the resume path itself (reconciliation of an existing ledger with no new load,
+// and cycle-number continuity), not a mid-run driver death. A genuinely mid-run death — a
+// driver killed between publishes within a cycle, leaving in-flight records for resume to
+// classify — is a follow-up for issue #49.
 func TestResumeAfterDriverDeath(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "root")

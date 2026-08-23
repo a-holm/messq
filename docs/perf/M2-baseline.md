@@ -66,13 +66,18 @@ Decision, per the D1 revisit trigger ("this issue does not fix it — it decides
    storage-limit finding. The honest next step is to wire `Store.NewWriter` into `serve`
    (a `#7`-follow-up, tracked outside this issue — this issue does not modify
    `internal/cli` or `internal/api` behaviour), then re-measure this gate.
-2. **The smoke floor stands.** The per-merge crash-smoke asserts `≥ 200 msg/s`, which is
-   calibrated to catch a regression *back* to one-fsync-per-message; the current number
-   (353 msg/s) clears it, so the smoke stays green while the writer remains unwired.
-3. **The gate is the alarm.** `TestDurableThroughput -crash.gate` is now the mechanism that
-   would have surfaced this on day one; CI does not assert the 5 000 number as evidence
-   (per the brief, CI asserts only the smoke floor), but the number above is what the
-   escape-hatch decision will be made on once the writer is wired.
+2. **The smoke sweep is a liveness check, not a throughput gate.** The per-merge crash-smoke
+   asserts exactly one thing: liveness — an average of at least one OK publish per cycle
+   (`livenessOKFloor = 1`, a vacuity catcher, not a msg/s floor). There is no `≥ 200 msg/s`
+   assertion in CI — no such floor exists in the harness, the smoke wiring or the Makefile —
+   so the 353 msg/s number does not "clear" a smoke floor, it simply is not asserted by the
+   smoke. The smoke's job is to prove the kill/restart loop runs, not to certify throughput.
+3. **The gate is the alarm, and it is manual/nightly.** `TestDurableThroughput -crash.gate`
+   is the mechanism that would have surfaced this wiring gap on day one. It is not part of
+   the per-merge CI assertions: CI asserts only the smoke liveness line, never this
+   throughput number as evidence. The 353 msg/s measured above (ecryptfs-on-NVMe, with the
+   fsync probe noted in Methodology) is a measured baseline — the number the escape-hatch
+   decision will be made on once the writer is wired — not a CI gate.
 
 ## Crash-harness summary (M2)
 
