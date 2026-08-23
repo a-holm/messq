@@ -72,6 +72,9 @@ type Store struct {
 	// limits are the process-wide validation ceilings (issue §1); defaulted in
 	// applyDefaults so a zero Options still validates against the §4.2 numbers.
 	limits queue.Limits
+	// consumerLimits are the consumer-side ceilings (issue #9 §10); defaulted in
+	// applyDefaults.
+	consumerLimits queue.ConsumerLimits
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
@@ -228,16 +231,17 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 	start := opt.Clock.Now()
 
 	st := &Store{
-		dir:           opt.DataDir,
-		durability:    opt.Durability,
-		limits:        opt.Limits,
-		peekMaxLimit:  opt.PeekMaxLimit,
-		peekScanLimit: opt.PeekScanLimit,
-		maxBatchMsgs:  opt.MaxBatchMessages,
-		dedupSweep:    opt.DedupSweepInterval,
-		clk:           opt.Clock,
-		logger:        opt.Logger,
-		newID:         opt.NewID,
+		dir:            opt.DataDir,
+		durability:     opt.Durability,
+		limits:         opt.Limits,
+		consumerLimits: opt.ConsumerLimits,
+		peekMaxLimit:   opt.PeekMaxLimit,
+		peekScanLimit:  opt.PeekScanLimit,
+		maxBatchMsgs:   opt.MaxBatchMessages,
+		dedupSweep:     opt.DedupSweepInterval,
+		clk:            opt.Clock,
+		logger:         opt.Logger,
+		newID:          opt.NewID,
 	}
 	fail := func(err error) (*Store, *RecoveryReport, error) {
 		st.cleanup(context.WithoutCancel(ctx))

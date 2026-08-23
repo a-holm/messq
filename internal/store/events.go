@@ -19,16 +19,17 @@ import (
 // event is one audit row. Null fields store SQL NULL; the events table's columns are
 // nullable by design — a stream.create has no msg_id, a publish no actor.
 type event struct {
-	ts      int64
-	name    string // the §9.2 vocabulary entry
-	stream  sql.Null[string]
-	subject sql.Null[string]
-	msgID   sql.Null[string]
-	seq     sql.Null[int64]
-	attempt sql.Null[int64]
-	traceID sql.Null[string]
-	actor   sql.Null[string]
-	detail  sql.Null[string]
+	ts       int64
+	name     string // the §9.2 vocabulary entry
+	stream   sql.Null[string]
+	consumer sql.Null[string]
+	subject  sql.Null[string]
+	msgID    sql.Null[string]
+	seq      sql.Null[int64]
+	attempt  sql.Null[int64]
+	traceID  sql.Null[string]
+	actor    sql.Null[string]
+	detail   sql.Null[string]
 }
 
 func nullStr(s string) sql.Null[string] { return sql.Null[string]{V: s, Valid: s != ""} }
@@ -46,7 +47,7 @@ func insertEvent(ctx context.Context, tx *sql.Tx, e event) error {
 		(ts, event, stream, consumer, subject, msg_id, seq, attempt, trace_id, actor, detail)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if _, err := tx.ExecContext(ctx, q,
-		e.ts, e.name, e.stream, nil, e.subject, e.msgID, e.seq, e.attempt, e.traceID, e.actor, e.detail,
+		e.ts, e.name, e.stream, e.consumer, e.subject, e.msgID, e.seq, e.attempt, e.traceID, e.actor, e.detail,
 	); err != nil {
 		return fmt.Errorf("insert %s event row: %w", e.name, err)
 	}
@@ -63,15 +64,16 @@ func commitEvent(ctx context.Context, tx *sql.Tx, e event) (obs.Event, error) {
 		return obs.Event{}, err
 	}
 	carrier := obs.Event{
-		Event:   e.name,
-		TS:      e.ts,
-		Stream:  e.stream.V,
-		Subject: e.subject.V,
-		MsgID:   e.msgID.V,
-		TraceID: e.traceID.V,
-		Actor:   e.actor.V,
-		Seq:     e.seq.V,
-		Attempt: e.attempt.V,
+		Event:    e.name,
+		TS:       e.ts,
+		Stream:   e.stream.V,
+		Consumer: e.consumer.V,
+		Subject:  e.subject.V,
+		MsgID:    e.msgID.V,
+		TraceID:  e.traceID.V,
+		Actor:    e.actor.V,
+		Seq:      e.seq.V,
+		Attempt:  e.attempt.V,
 	}
 	if e.detail.Valid && e.detail.V != "" {
 		var d map[string]any
