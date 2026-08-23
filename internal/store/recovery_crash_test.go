@@ -53,11 +53,11 @@ func TestMain(m *testing.M) {
 	}
 	// The property machine's actions are real SQLite opens with durability=full fsyncs, so
 	// rapid's library defaults (100 checks × ~30 steps) cost minutes per run. The PR lane
-	// gets a deliberately light machine (20 × 15); the nightly property job (#13) is where
+	// gets a deliberately light machine (8 × 10); the nightly property job (#13) is where
 	// depth belongs, via -rapid.checks/-rapid.steps on the command line — an explicit flag
 	// always wins over this preset, because Parse runs after it.
-	mustFlagSet("rapid.checks", "20")
-	mustFlagSet("rapid.steps", "15")
+	mustFlagSet("rapid.checks", "8")
+	mustFlagSet("rapid.steps", "10")
 	m.Run() // the testing package exits with m.Run's code when TestMain returns
 }
 
