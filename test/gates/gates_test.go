@@ -18,8 +18,9 @@ import (
 // makeTimeout bounds one sabotage run. A gate that hangs is a failed gate, not a stalled suite.
 // The cover and test rows run the full `go test -race` suite in a scratch copy; under the
 // -parallel 8 load the process tests (SIGKILL re-exec, curl transcript, golden socket suite)
-// push a single run past five minutes, so the bound is ten.
-const makeTimeout = 10 * time.Minute
+// push a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
+// row, PR #55), so the bound is twenty.
+const makeTimeout = 20 * time.Minute
 
 // gate is one row of the sabotage matrix: a mutation, the make target that must notice it, and
 // the message the failure must carry. Asserting only the exit code is not enough, because a

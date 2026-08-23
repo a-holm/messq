@@ -43,7 +43,7 @@ status=0
 load_errors="$(
 	go list -e -deps -test \
 		-f '{{with .Error}}{{$.ImportPath}}: {{.Err}}{{end}}{{range .DepsErrors}}{{$.ImportPath}}: {{.Err}}{{end}}' \
-		./... 2>&1 | grep -v '^$' || true
+		./... 2>&1 | grep -v '^$' | grep -v '^go: downloading ' || true
 )"
 if [[ -n "$load_errors" ]]; then
 	echo "layers: the tree does not load, so its import graph proves nothing:" >&2
