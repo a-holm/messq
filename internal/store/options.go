@@ -56,6 +56,15 @@ type Options struct {
 	// --dedup-sweep-interval). The invariant checker allows keys to outlive their
 	// window by this much before calling them stale. <= 0 means 60s.
 	DedupSweepInterval time.Duration
+	// MaxSettleBatch caps one SettleCmd (issue #10 §10, --max-settle-batch); above it
+	// the whole batch is refused with ErrBadRequest (I11). <= 0 means 1024.
+	MaxSettleBatch int
+	// MaxReasonBytes caps a nak/term reason before UTF-8-boundary truncation
+	// (--max-reason-bytes). <= 0 means 4096.
+	MaxReasonBytes int
+	// EventRepeatInterval is the repeat-rate window that bounds rejection event rows
+	// per (consumer, event) (issue #10 §8, --event-repeat-interval). <= 0 means 10s.
+	EventRepeatInterval time.Duration
 	// Clock is the time seam from #3; never nil after applyDefaults.
 	Clock clock.Clock
 	// Logger receives the store's slog lines; nil means slog.Default().
@@ -64,6 +73,10 @@ type Options struct {
 	// generator over Clock. Injected so node_id is deterministic in tests. The id type is
 	// id.MsgID — internal/id's alias for oklog/ulid/v2's ULID.
 	NewID func() id.MsgID
+	// Jitter is the settle scheduling seam (issue #10 §4). nil means a production
+	// ±20% uniform jitter over its own PCG — never crypto/rand, and deterministic in
+	// tests only when injected.
+	Jitter queue.Jitter
 }
 
 const (
@@ -74,6 +87,9 @@ const (
 	defaultPeekScanLimit = 10_000
 	defaultMaxBatch      = 1_000
 	defaultDedupSweep    = 60 * time.Second
+	defaultSettleBatch   = 1_024
+	defaultReasonBytes   = 4_096
+	defaultEventInterval = 10 * time.Second
 )
 
 // applyDefaults fills unset fields with their documented defaults and never replaces a value
@@ -109,6 +125,15 @@ func (o *Options) applyDefaults() {
 	}
 	if o.DedupSweepInterval <= 0 {
 		o.DedupSweepInterval = defaultDedupSweep
+	}
+	if o.MaxSettleBatch <= 0 {
+		o.MaxSettleBatch = defaultSettleBatch
+	}
+	if o.MaxReasonBytes <= 0 {
+		o.MaxReasonBytes = defaultReasonBytes
+	}
+	if o.EventRepeatInterval <= 0 {
+		o.EventRepeatInterval = defaultEventInterval
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System{}
