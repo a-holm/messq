@@ -121,6 +121,10 @@ type Config struct {
 	// Zero selects [DefaultDrainTimeout] (A1's register value; --drain-timeout
 	// overrides at runtime).
 	DrainTimeout time.Duration
+	// Exit terminates the process on the third TERM/INT (the escalation ladder's
+	// last rung). Only a command entry point may exit, so it stays nil here and is
+	// wired to os.Exit by the composition root; nil means the loop just returns.
+	Exit func(code int)
 }
 
 // Manager starts components in declaration order and stops them in the exact reverse,
@@ -146,6 +150,12 @@ type Manager struct {
 	drained   bool        // a Drain already ran; further calls are inert echoes
 	lastDrain DrainResult // what the first drain returned
 
+	// Signal escalation (signals.go): the second TERM/INT closes escCh, which cuts
+	// a parked Shutdown wait short; exit is os.Exit in production and captured in tests.
+	escOnce sync.Once
+	escCh   chan struct{}
+	exit    func(code int)
+
 	state atomic.Uint32
 }
 
@@ -170,6 +180,8 @@ func NewManager(logger *slog.Logger, cfg Config, comps ...Component) *Manager {
 		drainTimeout: drainTimeout,
 		clock:        clock.System{},
 		notify:       nopNotifier{},
+		escCh:        make(chan struct{}),
+		exit:         cfg.Exit,
 	}
 }
 

@@ -150,6 +150,12 @@ func (m *Manager) shutdownAPI(ctx context.Context) bool {
 		forced = true
 		cancel()
 		<-done
+	case <-m.escCh:
+		// A second TERM/INT: the operator said stop waiting. Same contract as the
+		// budget path — force close, but teardown and the final commit still run.
+		forced = true
+		cancel()
+		<-done
 	}
 	if !forced {
 		return false
