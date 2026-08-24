@@ -32,7 +32,11 @@ import (
 // enforced). There is deliberately no wall-clock or stochastic guard on the matrix: a gate
 // that tests elapsed time is a gate nobody can trust, and the owner rule is that the saboteur
 // battery never carries one.
-const makeTimeout = 20 * time.Minute
+// const makeTimeout bounds one sabotage run's child `make` process. Owner rule (2026-08-24):
+// every timeout is at least 6 hours, so a slow-but-progressing row is never killed (only a true
+// hang would exhaust it). The matrix still has no timing assertion; this is purely an external
+// process bound.
+const makeTimeout = 6 * time.Hour
 
 // modDownloadTimeout bounds the single module-cache warm-up in TestMain. Downloading the whole
 // universe of transitive dependencies on a cold GitHub runner can take a while, so the bound

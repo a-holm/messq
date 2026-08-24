@@ -183,7 +183,7 @@ gates-selftest: ## Prove every gate bites, by breaking each one on a scratch cop
 	fi
 	# -parallel here bounds the fan-out of sibling row process trees, not a CPU count: each row
 	# is already a full lint or test of its own scratch copy and parallelizes internally.
-	go test -tags gatecheck -count=1 -v -parallel $(GATES_PARALLEL) -timeout 20m ./test/gates/...
+	go test -tags gatecheck -count=1 -v -parallel $(GATES_PARALLEL) -timeout 6h ./test/gates/...
 
 # One target per invocation: `go test -fuzz` drives a single target at a time, so the lane is a
 # loop rather than a pattern. The committed seed corpus under each package's
