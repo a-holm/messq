@@ -5,13 +5,16 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/a-holm/messq/internal/store"
@@ -111,8 +114,21 @@ func TestPublishSurvivesSIGKILL(t *testing.T) {
 	if err := proc.Process.Kill(); err != nil {
 		t.Fatalf("kill serve: %v", err)
 	}
+	// The death must be a signal death, and specifically by SIGKILL (issue #49, mirroring
+	// the crash harness's assertion at recovery_crash_test.go:179). A non-clean exit alone
+	// would also accept a graceful-then-crash or a different terminating signal, which a
+	// future refactor to a different kill could drift into silently.
 	if err := proc.Wait(); err == nil {
 		t.Fatalf("serve exited cleanly after SIGKILL, want a signal death")
+	} else {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("kill serve: Wait returned %v, want a *exec.ExitError carrying the SIGKILL", err)
+		}
+		status, ok := exitErr.Sys().(syscall.WaitStatus)
+		if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+			t.Fatalf("serve died with %v, want WaitStatus.Signaled() && Signal()==SIGKILL", err)
+		}
 	}
 	wg.Wait()
 
