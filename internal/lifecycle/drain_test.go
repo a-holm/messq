@@ -92,6 +92,8 @@ func (f *fakeNotifier) Set(fields ...string) error {
 	return nil
 }
 
+func (f *fakeNotifier) Close() error { return nil }
+
 // fakeAPI is the APIServer seam. blockShutdown makes Shutdown hang until Close or ctx
 // cancellation, which is how a parked long-poll holds the drain hostage.
 type fakeAPI struct {

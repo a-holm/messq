@@ -31,6 +31,7 @@ type Health interface {
 // failure is never fatal — telling systemd is not a durability property.
 type Notifier interface {
 	Set(fields ...string) error
+	Close() error
 }
 
 // nopNotifier is the default when nothing is wired: running under a plain terminal
@@ -38,6 +39,7 @@ type Notifier interface {
 type nopNotifier struct{}
 
 func (nopNotifier) Set(...string) error { return nil }
+func (nopNotifier) Close() error        { return nil }
 
 // drainStartEvent is logged when a drain begins. Local constant until #19's event
 // vocabulary lands (same stubbing rule as server.start).
