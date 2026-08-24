@@ -394,6 +394,11 @@ func matrix() []gate {
 		// nothing into vulngate and `TEST_COUNT=0` runs no tests at all, both reported as success.
 		// The seam-defaults target asserts the runner's view of both; these rows are what keep that
 		// assertion honest.
+		//
+		// #49 D: these rows originally landed (b4e7efe) before the seam-defaults target they assert
+		// exists (which arrived separately in e996097), leaving the matrix red mid-series. That is
+		// now the standing rule for every future slice: a matrix row and the target it asserts must
+		// share the same commit, so each commit in the series bisects green.
 		{
 			id: "B4", name: "the seams hold their defaults", target: "seam-defaults",
 			want:   "hold their defaults",
