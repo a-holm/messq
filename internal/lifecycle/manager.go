@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/a-holm/messq/internal/clock"
 )
 
 // State is one position in the daemon's one-way process machine (issue #17 §2):
@@ -115,18 +117,34 @@ type Config struct {
 	// StopTimeout is the budget given to each component's Stop as its own sub-context.
 	// Zero selects [DefaultStopTimeout].
 	StopTimeout time.Duration
+	// DrainTimeout is the §4.4 budget for in-flight handlers during Shutdown.
+	// Zero selects [DefaultDrainTimeout] (A1's register value; --drain-timeout
+	// overrides at runtime).
+	DrainTimeout time.Duration
 }
 
 // Manager starts components in declaration order and stops them in the exact reverse,
 // whatever the failure pattern in between. The zero state is Starting.
 type Manager struct {
-	logger      *slog.Logger
-	comps       []Component
-	stopTimeout time.Duration
+	logger       *slog.Logger
+	comps        []Component
+	stopTimeout  time.Duration
+	drainTimeout time.Duration
+
+	// Seams the drain orchestrates; nil-safe except notify, which defaults to a
+	// nop so an unwired daemon behaves like one running outside systemd.
+	clock  clock.Clock
+	api    APIServer
+	health Health
+	notify Notifier
 
 	mu      sync.Mutex
 	started int  // comps[:started] hold successful Starts
 	stopped bool // a StopAll (or a failed Start) already ran
+
+	drainMu   sync.Mutex
+	drained   bool        // a Drain already ran; further calls are inert echoes
+	lastDrain DrainResult // what the first drain returned
 
 	state atomic.Uint32
 }
@@ -141,10 +159,17 @@ func NewManager(logger *slog.Logger, cfg Config, comps ...Component) *Manager {
 	if stopTimeout <= 0 {
 		stopTimeout = DefaultStopTimeout
 	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = DefaultDrainTimeout
+	}
 	return &Manager{
-		logger:      logger,
-		comps:       append([]Component(nil), comps...),
-		stopTimeout: stopTimeout,
+		logger:       logger,
+		comps:        append([]Component(nil), comps...),
+		stopTimeout:  stopTimeout,
+		drainTimeout: drainTimeout,
+		clock:        clock.System{},
+		notify:       nopNotifier{},
 	}
 }
 
