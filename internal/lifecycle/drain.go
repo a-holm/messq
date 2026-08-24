@@ -21,10 +21,13 @@ type APIServer interface {
 	Close() error
 }
 
-// Health is the readiness seam (#15's HealthState, local until that lands): the flip
-// happens first so load balancers learn we are going away before we stop accepting.
+// Health is the readiness seam the drain and the fatal supervisor drive (#15's
+// HealthState, local until that lands): the flip happens first so load balancers
+// learn we are going away before we stop accepting, and a storage fatal latches
+// read-only without ever flipping /healthz off.
 type Health interface {
 	SetDraining()
+	SetReadOnly()
 }
 
 // Notifier is the sd_notify seam; slice 5 ships the unixgram client. A notify

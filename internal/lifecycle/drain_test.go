@@ -69,11 +69,16 @@ func (d *drainFakes) journalHas(want string) bool {
 type fakeHealth struct {
 	j        *journal
 	draining bool
+	readonly bool
 }
 
 func (f *fakeHealth) SetDraining() {
 	f.draining = true
 	f.j.add("health:draining")
+}
+
+func (f *fakeHealth) SetReadOnly() {
+	f.readonly = true
 }
 
 // fakeNotifier captures sd_notify datagram lines and journals them on the shared
