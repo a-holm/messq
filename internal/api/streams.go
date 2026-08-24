@@ -3,7 +3,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -108,8 +107,8 @@ type deleteStreamResponse struct {
 
 func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
 	req := defaultStreamConfigRequest()
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, errs.E(errs.ErrBadRequest, "api.createStream", "invalid JSON body: %v", err))
+	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
+		s.writeError(w, err)
 		return
 	}
 	cfg := req.config()
@@ -167,8 +166,8 @@ func (s *Server) handleUpdateStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req streamPatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, errs.E(errs.ErrBadRequest, "api.updateStream", "invalid JSON body: %v", err))
+	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
+		s.writeError(w, err)
 		return
 	}
 	allowDataLoss := r.URL.Query().Get("allow_data_loss") == "1"

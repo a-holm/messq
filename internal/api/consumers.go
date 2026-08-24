@@ -3,7 +3,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -138,8 +137,8 @@ func (s *Server) handleCreateConsumer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := defaultConsumerConfigRequest()
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, errs.E(errs.ErrBadRequest, "api.createConsumer", "invalid JSON body: %v", err))
+	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
+		s.writeError(w, err)
 		return
 	}
 	if req.Ordered != nil {
@@ -217,8 +216,8 @@ func (s *Server) handleUpdateConsumer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req consumerPatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, errs.E(errs.ErrBadRequest, "api.updateConsumer", "invalid JSON body: %v", err))
+	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
+		s.writeError(w, err)
 		return
 	}
 	info, err := s.store.UpdateConsumer(r.Context(), stream, consumer, req.patch(), actorAPI)
@@ -270,8 +269,8 @@ func (s *Server) handleFetchConsumer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req fetchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, errs.E(errs.ErrBadRequest, "api.fetchConsumer", "invalid JSON body: %v", err))
+	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
+		s.writeError(w, err)
 		return
 	}
 	res, err := s.store.Fetch(r.Context(), store.FetchReq{

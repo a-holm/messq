@@ -24,7 +24,7 @@ import (
 // mappingServer builds the minimal server the envelope path needs; writeError consults
 // no store state, so the mapping tests run without a database.
 func mappingServer() *Server {
-	return &Server{logger: discardLogger()}
+	return New(Config{Logger: discardLogger()})
 }
 
 // TestEverySentinelIsMapped iterates the closed #3 registry and fails on any sentinel
