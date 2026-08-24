@@ -39,6 +39,10 @@ type Server struct {
 	// waiters is the bounded long-poll park/wake fabric: store.Waker for the sweeper
 	// and obs.Sink for committed publishes.
 	waiters *Registry
+	// closing is closed ONCE when Serve's context ends, before ReleaseAll, so parked
+	// handlers can answer hold_reason=shutting_down.
+	closing   chan struct{}
+	closeOnce sync.Once
 	// cfg carries every §9 knob with its default already applied; handlers read the
 	// effective values from here so clamps echo what the server actually enforces.
 	cfg Config
@@ -150,6 +154,7 @@ func New(cfg Config) *Server {
 		reqGen:    id.NewGen(cfg.Clock, id.WithEntropy(rand.Reader)),
 		conns:     newConnLimiter(cfg.MaxConns),
 		waiters:   NewRegistry(cfg.MaxWaiters, cfg.MaxWaitersPerConsumer),
+		closing:   make(chan struct{}),
 		cfg:       cfg,
 		limits:    cfg.Limits,
 	}
@@ -201,6 +206,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		case <-ctx.Done():
 			// Release parked long polls FIRST so their handlers finish writing
 			// (200 empty, hold_reason shutting_down) while the HTTP drain waits.
+			s.closeOnce.Do(func() { close(s.closing) })
 			s.waiters.ReleaseAll()
 			shCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ReadHeaderTimeout)
 			defer cancel()

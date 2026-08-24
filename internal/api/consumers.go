@@ -115,14 +115,6 @@ func (r consumerPatchRequest) patch() store.ConsumerPatch {
 	}
 }
 
-// fetchRequest is the POST .../fetch wire shape. WaitMS is accepted and ignored: the
-// single-shot contract has no waiter; #14 adds long-poll.
-type fetchRequest struct {
-	Batch    int   `json:"batch"`
-	MaxBytes int64 `json:"max_bytes"`
-	WaitMS   int64 `json:"wait_ms"`
-}
-
 // createConsumerResponse wraps the created/updated consumer plus the warnings the
 // validation produced, so #24 can surface them before it grows its own path.
 type createConsumerResponse struct {
@@ -256,29 +248,4 @@ func (s *Server) handleDeleteConsumer(w http.ResponseWriter, r *http.Request) {
 // deleteConsumerResponse wraps the deletion receipt under a single "deleted" key.
 type deleteConsumerResponse struct {
 	Deleted store.ConsumerDeleteResult `json:"deleted"`
-}
-
-func (s *Server) handleFetchConsumer(w http.ResponseWriter, r *http.Request) {
-	stream, consumer := r.PathValue("stream"), r.PathValue("consumer")
-	if err := queue.ValidateExistingStreamName(stream); err != nil {
-		s.writeError(w, err)
-		return
-	}
-	if err := queue.ValidateConsumerName(consumer); err != nil {
-		s.writeError(w, err)
-		return
-	}
-	var req fetchRequest
-	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
-		s.writeError(w, err)
-		return
-	}
-	res, err := s.store.Fetch(r.Context(), store.FetchReq{
-		Stream: stream, Consumer: consumer, Batch: req.Batch, MaxBytes: req.MaxBytes,
-	})
-	if err != nil {
-		s.writeError(w, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, res)
 }
