@@ -23,6 +23,13 @@ import (
 // -parallel 8 load the process tests (SIGKILL re-exec, curl transcript, golden socket suite)
 // push a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
 // row, PR #55), so the bound is twenty.
+//
+// #49 E: the whole matrix at -parallel 8 measures ~97-112 s locally against the issue's ~60 s
+// aspiration. That gap is recorded here as the acceptance ruling (the same class of explicit
+// non-decision the #45 review gives `file(1)`: the runtime is measured and accepted, not
+// enforced). There is deliberately no wall-clock or stochastic guard on the matrix: a gate
+// that tests elapsed time is a gate nobody can trust, and the owner rule is that the saboteur
+// battery never carries one.
 const makeTimeout = 20 * time.Minute
 
 // modDownloadTimeout bounds the single module-cache warm-up in TestMain. Downloading the whole
@@ -371,6 +378,15 @@ func matrix() []gate {
 			want:    "internal/subject or its tests depends on",
 			prepare: install("leaf_test.go", "internal/subject/sabotage_leaf_test.go"),
 		},
+		// G41 pins the #49 C nuance: layers parses package clauses and imports but not function
+		// bodies, so a body-syntax error is a blind spot in a production file (make vet is the
+		// gate there). In the test binary the body is parsed as part of the dependency edge
+		// layers walks, so a body-syntax error inside a _test.go must still load-fail loudly.
+		{
+			id: "G41", name: "a body-syntax error in a test file", target: "layers",
+			want:    "the tree does not load",
+			prepare: install("syntax_error_test.go", "internal/queue/sabotage_syntax_test.go"),
+		},
 		// A green row: the seam has to be usable, or the ban on wall-clock access is a ban on
 		// having a clock at all. It is what keeps the two internal/clock exclusions honest.
 		{
@@ -385,6 +401,11 @@ func matrix() []gate {
 		// nothing into vulngate and `TEST_COUNT=0` runs no tests at all, both reported as success.
 		// The seam-defaults target asserts the runner's view of both; these rows are what keep that
 		// assertion honest.
+		//
+		// #49 D: these rows originally landed (b4e7efe) before the seam-defaults target they assert
+		// exists (which arrived separately in e996097), leaving the matrix red mid-series. That is
+		// now the standing rule for every future slice: a matrix row and the target it asserts must
+		// share the same commit, so each commit in the series bisects green.
 		{
 			id: "B4", name: "the seams hold their defaults", target: "seam-defaults",
 			want:   "hold their defaults",

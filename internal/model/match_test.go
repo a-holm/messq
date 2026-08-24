@@ -3,6 +3,7 @@
 package model_test
 
 import (
+	"flag"
 	"strings"
 	"testing"
 
@@ -10,6 +11,25 @@ import (
 	"github.com/a-holm/messq/internal/subject"
 	"pgregory.net/rapid"
 )
+
+// TestMain pins the differential's rapid budget to a deterministic seed and a raised check
+// count (#49). With rapid's library default (100 checks, a fresh random seed every run) the
+// model-vs-subject differential caught the matcher-prefix mutant only 14/15 runs — one run in
+// fifteen passed green with the mutant planted. A fixed seed makes the draw sequence
+// reproducible, and the raised count makes a divergence such as a prefix-tolerant literal
+// essentially certain to be drawn; the two together keep this conformance test from being
+// a probabilistic one.
+func TestMain(m *testing.M) {
+	mustFlagSet("rapid.seed", "0x49A11")
+	mustFlagSet("rapid.checks", "4096")
+	m.Run()
+}
+
+func mustFlagSet(name, value string) {
+	if err := flag.Set(name, value); err != nil {
+		panic("set " + name + "=" + value + ": " + err.Error())
+	}
+}
 
 // genToken draws a literal subject token, avoiding the wildcard characters so the generated
 // strings are always valid subjects and valid patterns.

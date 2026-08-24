@@ -157,7 +157,7 @@ vuln-strict: ## Same as vuln, and also fail on a suppression that no longer matc
 # the default.
 seam-defaults: ## Assert VULNSCAN and TEST_COUNT still carry their repository defaults.
 	@failed=false; \
-	scan_default='$(GOVULNCHECK) -format sarif ./...'; \
+	scan_default='go tool -modfile=tools/govulncheck.mod govulncheck -format sarif ./...'; \
 	if [[ '$(VULNSCAN)' != "$$scan_default" ]]; then \
 		echo "seam-defaults: VULNSCAN is '$(VULNSCAN)', want the repository default '$$scan_default'" >&2; \
 		failed=true; \

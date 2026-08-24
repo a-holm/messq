@@ -416,6 +416,26 @@ func TestRun_CheckIsGreenOnAPendingPackage(t *testing.T) {
 	}
 }
 
+// TestNamesFloor_WordBoundary pins the #49 A finding: namesFloor decides by whole-word
+// equality on the trailer reason, never by prefix. A reason that names internal/storey must
+// not be accepted as naming internal/store, and a reason that names internal/store itself
+// (with surrounding punctuation) must still be.
+func TestNamesFloor_WordBoundary(t *testing.T) {
+	// A floor-lowering trailer naming the floored package is accepted.
+	if !namesFloor("moved internal/store to its own parent", "internal/store") {
+		t.Errorf("namesFloor(reason naming internal/store) = false, want true: a genuine mention must be accepted")
+	}
+	// The sibling's name shares the floor's prefix; the prefix must not be treated as
+	// equality, or a move of internal/storey would silently explain a cut of internal/store.
+	if namesFloor("internal/storey moved to its own package", "internal/store") {
+		t.Errorf("namesFloor(reason naming internal/storey) = true, want false: a prefix must not cover internal/store")
+	}
+	// Trailing punctuation is stripped so genuine mentions still compare as the whole word.
+	if !namesFloor("internal/store, its sweeper moved out from under it", "internal/store") {
+		t.Errorf("namesFloor(trailing comma) = false, want true: punctuation must separate, not mangle, the name")
+	}
+}
+
 func TestRun_CompareRefusesALoweredFloor(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module "+module+"\n\ngo 1.25.0\n")
