@@ -94,7 +94,13 @@ func Registry() []Check {
 		{S1, "no expired inflight survives a sweep", false, "", checkS1},
 		{S2, "no stranded row above max_deliver", false, s2Query, nil},
 		{S3, "delivery generation matches consumer", false, s3Query, nil},
-		{I8, "DLQ conservation", true, i8Query, nil},
+		{I8, "DLQ conservation (per generation)", true, "", checkI8},
+		{PDLQ1, "P-DLQ1 written-copy conservation", true, "", checkP_DLQ1},
+		{PDLQ2, "P-DLQ2 DLQ rows carry provenance", true, "", checkP_DLQ2},
+		{PDLQ3, "P-DLQ3 no dlq policy on a .dlq consumer", false, pdlq3Query, nil},
+		{PDLQ4, "P-DLQ4 no origin_missing deaths", true, "", checkP_DLQ4},
+		{PDLQ5, "P-DLQ5 no double-death", true, "", checkP_DLQ5},
+		{PID1, "P-ID1 unique id outside a DLQ", true, pid1Query, nil},
 		{I10, "log = state", true, "", checkI10},
 	}
 }
