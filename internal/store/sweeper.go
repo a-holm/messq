@@ -189,7 +189,12 @@ func (s *Sweeper) wakeDue(ctx context.Context) {
 	}
 }
 
-// retire runs the RetireCmd pass (issue #11 §7); R etireCmd lives in sweep.go.
+// retire runs the RetireCmd pass (issue #11 §7): READY rows stranded above a lowered
+// max_deliver dead-letter with Trigger "policy_lowered". It is bounded per consumer and
+// skipped for max_deliver=0 (the command scans only consumers with max_deliver > 0).
 func (s *Sweeper) retire(ctx context.Context) {
-	_ = ctx
+	if _, err := s.st.Retire(ctx, RetireCmd{Limit: s.cfg.Batch}); err != nil {
+		s.log.Warn("sweeper.retire_error",
+			"node", s.st.nodeID, "error", err.Error())
+	}
 }
