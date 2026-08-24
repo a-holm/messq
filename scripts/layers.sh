@@ -160,6 +160,17 @@ forbid_deps test internal/auth "$auth_reason" \
 	"$module/internal/api" "$module/internal/store" "$module/internal/cli" "$module/internal/obs" \
 	"$module/internal/model" "$module/internal/queue" "$module/internal/subject" "$module/internal/id"
 
+# internal/lifecycle is the daemon/orchestration layer (issue #17): the state machine and
+# the component manager see only injected Component interfaces, so they must never name
+# internal/store or internal/queue in their own files. This is a direct-import rule on
+# purpose, unlike the transitive rules above: lifecycle takes api.HealthState as an
+# interface type (issue #15's seam), and internal/api itself sits above the store — a
+# transitive ban would forbid that sanctioned import, while a one-hop ban still keeps
+# lifecycle from touching storage or the queue grammar concretely.
+lifecycle_reason="Issue #17 design: internal/lifecycle orchestrates injected components and must not import internal/store or internal/queue directly."
+forbid_imports test internal/lifecycle "$lifecycle_reason" \
+	"$module/internal/store" "$module/internal/queue"
+
 client_reason="Issue #1 design: pkg/client is public and must not depend on internal packages."
 # Two steps, for the reason dep-budget.sh gives: grep exits 1 when nothing leaked, which is the
 # expected state, so its status must be tolerated. Tolerating deps_of's status in the same
