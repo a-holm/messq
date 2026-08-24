@@ -62,6 +62,9 @@ type Options struct {
 	// MaxReasonBytes caps a nak/term reason before UTF-8-boundary truncation
 	// (--max-reason-bytes). <= 0 means 4096.
 	MaxReasonBytes int
+	// MaxSweepBatch caps one SweepCmd (issue #11 §11, --sweep-max-batch); above it the
+	// whole sweep is refused with ErrBadRequest (I11). <= 0 means 1024.
+	MaxSweepBatch int
 	// EventRepeatInterval is the repeat-rate window that bounds rejection event rows
 	// per (consumer, event) (issue #10 §8, --event-repeat-interval). <= 0 means 10s.
 	EventRepeatInterval time.Duration
@@ -88,6 +91,7 @@ const (
 	defaultMaxBatch      = 1_000
 	defaultDedupSweep    = 60 * time.Second
 	defaultSettleBatch   = 1_024
+	defaultSweepBatch    = 1_024
 	defaultReasonBytes   = 4_096
 	defaultEventInterval = 10 * time.Second
 )
@@ -128,6 +132,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.MaxSettleBatch <= 0 {
 		o.MaxSettleBatch = defaultSettleBatch
+	}
+	if o.MaxSweepBatch <= 0 {
+		o.MaxSweepBatch = defaultSweepBatch
 	}
 	if o.MaxReasonBytes <= 0 {
 		o.MaxReasonBytes = defaultReasonBytes
