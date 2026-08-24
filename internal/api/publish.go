@@ -231,12 +231,12 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	sc := info.Config()
 
-	if r.ContentLength > s.maxBatchBytes {
+	if r.ContentLength > s.cfg.MaxBatchBytes {
 		s.writeError(w, errs.E(errs.ErrTooLarge, "api.publishBatch",
-			"batch body is %d bytes, limit is %d", r.ContentLength, s.maxBatchBytes))
+			"batch body is %d bytes, limit is %d", r.ContentLength, s.cfg.MaxBatchBytes))
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBatchBytes+1)
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBatchBytes+1)
 
 	var reqs []queue.PublishReq
 	dec := json.NewDecoder(r.Body)
@@ -249,7 +249,7 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 			var maxErr *http.MaxBytesError
 			if errors.As(decErr, &maxErr) {
 				s.writeError(w, errs.E(errs.ErrTooLarge, "api.publishBatch",
-					"batch body exceeds the %d-byte limit", s.maxBatchBytes))
+					"batch body exceeds the %d-byte limit", s.cfg.MaxBatchBytes))
 				return
 			}
 			s.writeError(w, errs.E(errs.ErrBadRequest, "api.publishBatch",

@@ -24,18 +24,30 @@ import (
 )
 
 // serveFlagNames is the closed §8 flag set for `messq serve`. Every flag takes a value;
-// there is no config file and no viper (D8).
+// there is no config file and no viper (D8). The transport bounds (--max-waiters et al)
+// are issue #14's §9 table; --max-header-bytes stays #7's message-user-header cap — the
+// http.Server header cap is spelled --max-request-header-bytes so the two do not collide.
 var serveFlagNames = map[string]struct{}{
-	"--data-dir":             {},
-	"--listen":               {},
-	"--durability":           {},
-	"--max-msg-size-ceiling": {},
-	"--max-header-bytes":     {},
-	"--max-batch-messages":   {},
-	"--max-batch-bytes":      {},
-	"--peek-scan-limit":      {},
-	"--peek-max-limit":       {},
-	"--dedup-sweep-interval": {},
+	"--data-dir":                 {},
+	"--listen":                   {},
+	"--durability":               {},
+	"--max-msg-size-ceiling":     {},
+	"--max-header-bytes":         {},
+	"--max-batch-messages":       {},
+	"--max-batch-bytes":          {},
+	"--peek-scan-limit":          {},
+	"--peek-max-limit":           {},
+	"--dedup-sweep-interval":     {},
+	"--max-waiters":              {},
+	"--max-waiters-per-consumer": {},
+	"--max-fetch-wait":           {},
+	"--fetch-empty-damper":       {},
+	"--max-request-bytes":        {},
+	"--read-header-timeout":      {},
+	"--idle-timeout":             {},
+	"--max-request-header-bytes": {},
+	"--max-conns":                {},
+	"--writer-submit-timeout":    {},
 }
 
 // serveConfig is the fully resolved serve configuration, one field per §8 flag. It is
@@ -52,6 +64,17 @@ type serveConfig struct {
 	peekScanLimit      int
 	peekMaxLimit       int
 	dedupSweepInterval time.Duration
+
+	maxWaiters            int
+	maxWaitersPerConsumer int
+	maxFetchWait          time.Duration
+	fetchEmptyDamper      time.Duration
+	maxRequestBytes       int64
+	readHeaderTimeout     time.Duration
+	idleTimeout           time.Duration
+	maxRequestHeaderBytes int64
+	maxConns              int
+	writerSubmitTimeout   time.Duration
 }
 
 // storeOptions maps the serve configuration onto the store's Options. The process-wide
@@ -147,6 +170,38 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	}
 	if cfg.dedupSweepInterval, err = time.ParseDuration(resolve("--dedup-sweep-interval", "MESSQ_DEDUP_SWEEP_INTERVAL", "60s")); err != nil {
 		return serveConfig{}, fmt.Errorf("--dedup-sweep-interval: %w", err)
+	}
+
+	// Issue #14 §9 transport bounds: flag → MESSQ_* env → default.
+	if cfg.maxWaiters, err = parsePositiveInt(resolve("--max-waiters", "MESSQ_MAX_WAITERS", "4096"), "--max-waiters"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.maxWaitersPerConsumer, err = parsePositiveInt(resolve("--max-waiters-per-consumer", "MESSQ_MAX_WAITERS_PER_CONSUMER", "256"), "--max-waiters-per-consumer"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.maxFetchWait, err = time.ParseDuration(resolve("--max-fetch-wait", "MESSQ_MAX_FETCH_WAIT", "5m")); err != nil {
+		return serveConfig{}, fmt.Errorf("--max-fetch-wait: %w", err)
+	}
+	if cfg.fetchEmptyDamper, err = time.ParseDuration(resolve("--fetch-empty-damper", "MESSQ_FETCH_EMPTY_DAMPER", "5ms")); err != nil {
+		return serveConfig{}, fmt.Errorf("--fetch-empty-damper: %w", err)
+	}
+	if cfg.maxRequestBytes, err = parseByteSize(resolve("--max-request-bytes", "MESSQ_MAX_REQUEST_BYTES", "1MiB")); err != nil {
+		return serveConfig{}, fmt.Errorf("--max-request-bytes: %w", err)
+	}
+	if cfg.readHeaderTimeout, err = time.ParseDuration(resolve("--read-header-timeout", "MESSQ_READ_HEADER_TIMEOUT", "10s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--read-header-timeout: %w", err)
+	}
+	if cfg.idleTimeout, err = time.ParseDuration(resolve("--idle-timeout", "MESSQ_IDLE_TIMEOUT", "120s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--idle-timeout: %w", err)
+	}
+	if cfg.maxRequestHeaderBytes, err = parseByteSize(resolve("--max-request-header-bytes", "MESSQ_MAX_REQUEST_HEADER_BYTES", "16KiB")); err != nil {
+		return serveConfig{}, fmt.Errorf("--max-request-header-bytes: %w", err)
+	}
+	if cfg.maxConns, err = parsePositiveInt(resolve("--max-conns", "MESSQ_MAX_CONNS", "1024"), "--max-conns"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.writerSubmitTimeout, err = time.ParseDuration(resolve("--writer-submit-timeout", "MESSQ_WRITER_SUBMIT_TIMEOUT", "5s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--writer-submit-timeout: %w", err)
 	}
 
 	if cfg.maxMsgSizeCeiling <= 0 {
@@ -392,13 +447,33 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		"peek_scan_limit", cfg.peekScanLimit,
 		"peek_max_limit", cfg.peekMaxLimit,
 		"dedup_sweep_interval", cfg.dedupSweepInterval,
-	)
-	logger.Warn("api.incomplete",
-		"routes", "streams,publish,peek",
-		"note", "delivery, auth and drain land in #9/#14/#16/#17",
+		"max_waiters", cfg.maxWaiters,
+		"max_waiters_per_consumer", cfg.maxWaitersPerConsumer,
+		"max_fetch_wait", cfg.maxFetchWait.String(),
+		"fetch_empty_damper", cfg.fetchEmptyDamper.String(),
+		"max_request_bytes", cfg.maxRequestBytes,
+		"max_conns", cfg.maxConns,
+		"writer_submit_timeout", cfg.writerSubmitTimeout.String(),
 	)
 
-	srv := api.New(st, clk, logger, cfg.dedupSweepInterval, opt.Limits, cfg.maxBatchBytes)
+	srv := api.New(api.Config{
+		Store:                 st,
+		Clock:                 clk,
+		Logger:                logger,
+		SweepEvery:            cfg.dedupSweepInterval,
+		Limits:                opt.Limits,
+		MaxBatchBytes:         cfg.maxBatchBytes,
+		MaxWaiters:            cfg.maxWaiters,
+		MaxWaitersPerConsumer: cfg.maxWaitersPerConsumer,
+		MaxFetchWait:          cfg.maxFetchWait,
+		FetchEmptyDamper:      cfg.fetchEmptyDamper,
+		MaxRequestBytes:       cfg.maxRequestBytes,
+		ReadHeaderTimeout:     cfg.readHeaderTimeout,
+		IdleTimeout:           cfg.idleTimeout,
+		MaxRequestHeaderBytes: int(cfg.maxRequestHeaderBytes),
+		WriterSubmitTimeout:   cfg.writerSubmitTimeout,
+		MaxConns:              cfg.maxConns,
+	})
 	if err := srv.Serve(ctx, ln); err != nil {
 		fmt.Fprintf(stderr, "messq: serve: %v\n", err)
 		return exitError

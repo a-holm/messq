@@ -457,7 +457,12 @@ func TestPublishBatchTooLarge(t *testing.T) {
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
 	createStreamWith(t, st, ordersSubjectCfg())
-	srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), 16)
+	srv := New(Config{
+		Store:         st,
+		Clock:         clk,
+		Logger:        discardLogger(),
+		MaxBatchBytes: 16,
+	})
 
 	var reads int
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,

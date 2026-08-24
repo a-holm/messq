@@ -308,7 +308,11 @@ func TestGoldenRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 			st := openTestStore(t, clk, store.DurabilityFull)
-			srv := New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
+			srv := New(Config{
+				Store:  st,
+				Clock:  clk,
+				Logger: discardLogger(),
+			})
 			client := newUnixClient(t, srv.Handler())
 			if tc.setup != nil {
 				tc.setup(t, st)

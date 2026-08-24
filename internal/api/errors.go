@@ -232,10 +232,13 @@ func refineTyped(err error) (Code, bool) {
 		reservedHdrr *queue.ReservedHeaderError
 		tooLargeErr  *queue.TooLargeError
 		routerErr    routerError
+		busyErr      busyError
 	)
 	switch {
 	case errors.As(err, &routerErr):
 		return Code(routerErr), true
+	case errors.As(err, &busyErr):
+		return CodeBusy, true
 	case errors.As(err, &existsErr):
 		return CodeStreamExists, true
 	case errors.Is(err, queue.ErrReservedName):

@@ -4,102 +4,158 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/id"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
-
-// readHeaderTimeout bounds how long a client may take to send request headers. A Unix
-// socket broker is still reachable by a client that connects and stalls, so the header
-// read is the one unconditional bound this provisional server sets; #14 makes the full
-// timeout policy.
-const readHeaderTimeout = 10 * time.Second
-
-// defaultMaxBatchBytes is the NDJSON batch-body ceiling when the serve command does not
-// pass one (tests and embedders). It matches the --max-batch-bytes default (8 MiB).
-const defaultMaxBatchBytes = int64(8 << 20)
 
 // Server is the HTTP surface of the daemon: the ServeMux route table plus the
 // dedup-sweep ticker. It owns the net/http server and the sweep loop; the store's
 // open/close lifecycle belongs to the caller (the serve command), so Serve never closes
 // the store.
 type Server struct {
-	store      *store.Store
-	clk        clock.Clock
-	logger     *slog.Logger
-	startedAt  time.Time
-	sweepEvery time.Duration
+	store     *store.Store
+	clk       clock.Clock
+	logger    *slog.Logger
+	startedAt time.Time
+	reqGen    *id.Gen
+	conns     connLimiter
+	// compiled is the wildcard matcher index over routes(); routesOnce builds it.
+	compiled   []*compiledRoute
+	routesOnce sync.Once
+	// cfg carries every §9 knob with its default already applied; handlers read the
+	// effective values from here so clamps echo what the server actually enforces.
+	cfg Config
 	// limits are the process-wide validation ceilings the handlers use for fast-path
 	// rejection; the store re-validates the same numbers inside the transaction.
-	limits queue.Limits
-	// maxBatchBytes is the NDJSON body ceiling for messages:batch (§7, --max-batch-bytes),
-	// enforced here in the HTTP layer with http.MaxBytesReader.
-	maxBatchBytes int64
+	limits  queue.Limits
+	httpSrv atomic.Pointer[http.Server]
 }
 
-// New builds a Server around a live, already-recovered store. A nil clock or logger falls
-// back to the production implementations. sweepEvery must be positive: it is the period
-// the dedup sweep ticks at (--dedup-sweep-interval). A zero limits value means
-// queue.DefaultLimits(); the serve command passes its flag-derived limits so the handler
-// fast-path and the store's authoritative check agree. maxBatchBytes <= 0 means
-// defaultMaxBatchBytes.
-func New(st *store.Store, clk clock.Clock, logger *slog.Logger, sweepEvery time.Duration, limits queue.Limits, maxBatchBytes int64) *Server {
-	if clk == nil {
-		clk = clock.System{}
+// Config is the full §9 server configuration. Every numeric/duration field may arrive
+// zero, meaning "use the documented default"; New fills them in so handlers always see
+// effective values. The defaults are the issue's flag table, with --max-waiters at the
+// A1 register's 4096 (orchestrator ruling 2026-08-24, §8 Q2), not 10000.
+type Config struct {
+	Store  *store.Store
+	Clock  clock.Clock
+	Logger *slog.Logger
+	// SweepEvery is the dedup sweep period (--dedup-sweep-interval); must be positive.
+	SweepEvery time.Duration
+	// Limits seeds the process-wide publish-validation ceilings; zero means
+	// queue.DefaultLimits().
+	Limits queue.Limits
+	// MaxBatchBytes is the NDJSON body ceiling for messages:batch (--max-batch-bytes).
+	MaxBatchBytes int64
+
+	MaxWaiters            int           // --max-waiters; parked long polls process-wide (4096)
+	MaxWaitersPerConsumer int           // --max-waiters-per-consumer (256)
+	MaxFetchWait          time.Duration // --max-fetch-wait; ceiling on wait_ms (5m)
+	FetchEmptyDamper      time.Duration // --fetch-empty-damper; empty-wake coalesce window (5ms)
+	MaxRequestBytes       int64         // --max-request-bytes; JSON control bodies (1 MiB)
+	ReadHeaderTimeout     time.Duration // --read-header-timeout; slowloris bound (10s)
+	IdleTimeout           time.Duration // --idle-timeout; keep-alive idle (120s)
+	MaxRequestHeaderBytes int           // --max-request-header-bytes; http.Server cap (16 KiB)
+	WriterSubmitTimeout   time.Duration // --writer-submit-timeout; full cmdCh → busy (5s)
+	MaxConns              int           // --max-conns; accept-side semaphore (1024)
+}
+
+// The §9 defaults for zero Config fields.
+const (
+	defaultMaxWaiters            = 4096
+	defaultMaxWaitersPerConsumer = 256
+	defaultMaxFetchWait          = 5 * time.Minute
+	defaultFetchEmptyDamper      = 5 * time.Millisecond
+	defaultMaxRequestBytes       = int64(1) << 20
+	defaultReadHeaderTimeout     = 10 * time.Second
+	defaultIdleTimeout           = 120 * time.Second
+	defaultMaxRequestHeaderBytes = 16 << 10
+	defaultWriterSubmitTimeout   = 5 * time.Second
+	defaultMaxConns              = 1024
+
+	// defaultMaxBatchBytes is the NDJSON batch-body ceiling when the serve command does
+	// not pass one (tests and embedders). It matches the --max-batch-bytes default (8 MiB).
+	defaultMaxBatchBytes = int64(8 << 20)
+)
+
+// New builds a Server around a live, already-recovered store. Zero Config fields take
+// their documented defaults; see Config.
+func New(cfg Config) *Server {
+	if cfg.Clock == nil {
+		cfg.Clock = clock.System{}
 	}
-	if logger == nil {
-		logger = slog.Default()
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
-	if limits == (queue.Limits{}) {
-		limits = queue.DefaultLimits()
+	if cfg.Limits == (queue.Limits{}) {
+		cfg.Limits = queue.DefaultLimits()
 	}
-	if maxBatchBytes <= 0 {
-		maxBatchBytes = defaultMaxBatchBytes
+	if cfg.MaxBatchBytes <= 0 {
+		cfg.MaxBatchBytes = defaultMaxBatchBytes
+	}
+	if cfg.SweepEvery <= 0 {
+		cfg.SweepEvery = time.Minute
+	}
+	if cfg.MaxWaiters <= 0 {
+		cfg.MaxWaiters = defaultMaxWaiters
+	}
+	if cfg.MaxWaitersPerConsumer <= 0 {
+		cfg.MaxWaitersPerConsumer = defaultMaxWaitersPerConsumer
+	}
+	if cfg.MaxFetchWait <= 0 {
+		cfg.MaxFetchWait = defaultMaxFetchWait
+	}
+	if cfg.FetchEmptyDamper <= 0 {
+		cfg.FetchEmptyDamper = defaultFetchEmptyDamper
+	}
+	if cfg.MaxRequestBytes <= 0 {
+		cfg.MaxRequestBytes = defaultMaxRequestBytes
+	}
+	if cfg.ReadHeaderTimeout <= 0 {
+		cfg.ReadHeaderTimeout = defaultReadHeaderTimeout
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
+	}
+	if cfg.MaxRequestHeaderBytes <= 0 {
+		cfg.MaxRequestHeaderBytes = defaultMaxRequestHeaderBytes
+	}
+	if cfg.WriterSubmitTimeout <= 0 {
+		cfg.WriterSubmitTimeout = defaultWriterSubmitTimeout
+	}
+	if cfg.MaxConns <= 0 {
+		cfg.MaxConns = defaultMaxConns
 	}
 	return &Server{
-		store:         st,
-		clk:           clk,
-		logger:        logger,
-		startedAt:     clk.Now(),
-		sweepEvery:    sweepEvery,
-		limits:        limits,
-		maxBatchBytes: maxBatchBytes,
+		store:     cfg.Store,
+		clk:       cfg.Clock,
+		logger:    cfg.Logger,
+		startedAt: cfg.Clock.Now(),
+		reqGen:    id.NewGen(cfg.Clock, id.WithEntropy(rand.Reader)),
+		conns:     newConnLimiter(cfg.MaxConns),
+		cfg:       cfg,
+		limits:    cfg.Limits,
 	}
 }
 
-// Handler assembles the route table. Slice A owns /healthz and /v1/info; slice B the
-// stream CRUD routes; slice C the publish, batch and peek routes.
+// Handler assembles the middleware chain over the mux built from routes(): recover →
+// request id → conn limit → body limit → authz (#16 slots in here) → envelope-
+// intercepting wrapper → router.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /v1/info", s.handleInfo)
-	mux.HandleFunc("POST /v1/streams", s.handleCreateStream)
-	mux.HandleFunc("GET /v1/streams", s.handleListStreams)
-	mux.HandleFunc("GET /v1/streams/{stream}", s.handleGetStream)
-	mux.HandleFunc("PATCH /v1/streams/{stream}", s.handleUpdateStream)
-	mux.HandleFunc("DELETE /v1/streams/{stream}", s.handleDeleteStream)
-	mux.HandleFunc("POST /v1/streams/{stream}/messages", s.handlePublishMessage)
-	mux.HandleFunc("POST /v1/streams/{stream}/messages:batch", s.handlePublishBatch)
-	mux.HandleFunc("GET /v1/streams/{stream}/messages", s.handleListMessages)
-	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}", s.handlePeekMessage)
-	mux.HandleFunc("GET /v1/streams/{stream}/messages/{seq}/data", s.handlePeekMessageData)
-	mux.HandleFunc("GET /v1/messages/{id}", s.handlePeekMessageByID)
-	mux.HandleFunc("POST /v1/streams/{stream}/consumers", s.handleCreateConsumer)
-	mux.HandleFunc("GET /v1/streams/{stream}/consumers", s.handleListConsumers)
-	mux.HandleFunc("GET /v1/streams/{stream}/consumers/{consumer}", s.handleGetConsumer)
-	mux.HandleFunc("PATCH /v1/streams/{stream}/consumers/{consumer}", s.handleUpdateConsumer)
-	mux.HandleFunc("DELETE /v1/streams/{stream}/consumers/{consumer}", s.handleDeleteConsumer)
-	mux.HandleFunc("POST /v1/streams/{stream}/consumers/{consumer}/fetch", s.handleFetchConsumer)
-	return mux
+	return s.chained(s.newRouter())
 }
 
 // Serve runs the HTTP server on ln and the dedup sweep loop until ctx is done, then
@@ -107,11 +163,20 @@ func (s *Server) Handler() http.Handler {
 // fails for any other reason. The store is not closed here.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	hs := &http.Server{
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: readHeaderTimeout,
+		Handler: s.Handler(),
+		// ReadTimeout and WriteTimeout stay ZERO: a server-wide WriteTimeout kills
+		// every long poll and a ReadTimeout expires under a parked handler. Bounds are
+		// per-request via ResponseController in the fetch path instead.
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
+		IdleTimeout:       s.cfg.IdleTimeout,
+		MaxHeaderBytes:    s.cfg.MaxRequestHeaderBytes,
+		ErrorLog:          slog.NewLogLogger(s.logger.Handler(), slog.LevelWarn),
 	}
+	s.httpSrv.Store(hs)
 
-	ticker := s.clk.NewTicker(s.sweepEvery)
+	ticker := s.clk.NewTicker(s.cfg.SweepEvery)
 	defer ticker.Stop()
 
 	serveErr := make(chan error, 1)
@@ -125,7 +190,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			return err
 		case <-ctx.Done():
-			shCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readHeaderTimeout)
+			shCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ReadHeaderTimeout)
 			defer cancel()
 			if err := hs.Shutdown(shCtx); err != nil {
 				return err
@@ -135,6 +200,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			s.sweepOnce(ctx)
 		}
 	}
+}
+
+// Shutdown stops the listener and drains active requests (issue #14's exposure for
+// #17's graceful drain). It is safe to call when Serve never ran.
+func (s *Server) Shutdown(ctx context.Context) error {
+	hs := s.httpSrv.Load()
+	if hs == nil {
+		return nil
+	}
+	return hs.Shutdown(ctx)
 }
 
 // handleHealthz reports 200 once the store is open. Recovery runs inside store.Open, so
