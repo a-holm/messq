@@ -272,13 +272,6 @@ WHERE d.seq >= c.cursor_seq`, 100)
 	return append(v1, v2...), nil
 }
 
-// i8Query is the "enters DEAD at most once" half of I8, expressible over the events table
-// today: no (stream, seq) may carry more than one msg.dead. It is vacuous until #12 writes
-// the first msg.dead; the "exactly one DLQ message" half needs #12's header vocabulary and
-// arrives with it.
-const i8Query = `SELECT stream, seq, COUNT(*) AS n FROM events
-WHERE event = 'msg.dead' GROUP BY stream, seq HAVING n > 1 LIMIT 100`
-
 // checkI7 is the settle-fence invariant (issue #10 §5.2, S15): no stale-fenced
 // ack/nak/term/extend ever mutates a live row. Every settle write repeats the
 // generation/attempts fence, so a violation cannot be produced by the settle path —

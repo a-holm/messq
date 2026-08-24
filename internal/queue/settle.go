@@ -81,8 +81,11 @@ const (
 )
 
 // DeadCtx is everything a DeadSink copy needs to re-route the message (#12). #10
-// defines the type and hands the store's DropSink a fully populated value once per DEAD
-// transition (I8's settle-side arm).
+// defines the type and hands the store's DeadSink a fully populated value once per DEAD
+// transition (I8's settle-side arm). Generation/MaxDeliver/Trigger are populated by the
+// calling command so the provenance headers can name them even if the consumer config
+// is deleted later; Policy is filled by the store's DLQ sink from the authoritative
+// consumers row (and used by the pure PlanDead).
 type DeadCtx struct {
 	Stream     string
 	Consumer   string
@@ -91,7 +94,11 @@ type DeadCtx struct {
 	MsgID      string
 	TraceID    string
 	Attempts   int32
+	Generation int32
+	MaxDeliver int32
 	Cause      DeadCause
+	Trigger    DeadTrigger
+	Policy     DeadPolicy
 	LastReason string
 }
 

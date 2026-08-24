@@ -302,8 +302,17 @@ func (c SettleCmd) applyAction(ctx context.Context, tx *sql.Tx, now time.Time, n
 			Stream: it.Token.Stream, Consumer: it.Token.Consumer, Subject: row.subject,
 			Seq: uint64(it.Token.Seq), MsgID: row.msgID, TraceID: row.traceID,
 			Attempts: it.Token.Attempt, Cause: plan.Cause, LastReason: reason,
+			Generation: it.Token.Generation, MaxDeliver: cons.cfg.MaxDeliver,
+			Trigger: settleTriggerFor(plan.Cause),
 		}
 		evDead, sinkErr := c.DeadSink.Dead(ctx, tx, dc, now)
+		if errors.Is(sinkErr, queue.ErrDeadBudget) {
+			// Copy budget exhausted mid-batch: stop routing dead transitions (the verb
+			// events and any copies already written this batch roll back with the abort —
+			// nothing commits, the row stays INFLIGHT/READY, and the client retries,
+			// I4-safe). Never abort just for a non-dead sibling already applied.
+			return nil, fmt.Errorf("%w (batch aborted; dead rows stay for a later batch)", queue.ErrDeadBudget)
+		}
 		if sinkErr != nil {
 			return nil, fmt.Errorf("dead sink %q/%q seq %d: %w", it.Token.Stream, it.Token.Consumer, it.Token.Seq, sinkErr)
 		}
@@ -331,6 +340,16 @@ func deadVerbName(cause queue.DeadCause) string {
 		return "msg.term"
 	}
 	return "msg.nak"
+}
+
+// settleTriggerFor maps a deadline's cause to the trigger the dead path exposes: a term
+// is an explicit terminal error; a max_deliver death from a verb is a nak (the sweeper's
+// ack_wait / policy_lowered triggers come from #11's own planner).
+func settleTriggerFor(cause queue.DeadCause) queue.DeadTrigger {
+	if cause == queue.DeadCauseTerminated {
+		return queue.DeadTriggerTerm
+	}
+	return queue.DeadTriggerNak
 }
 
 // rejectionEvent writes a rejection audit row (msg.ack_stale / msg.ack_dup), bounded

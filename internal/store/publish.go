@@ -52,11 +52,20 @@ func (c PublishCmd) Bytes() int {
 }
 
 // publishOpts carries what internal callers (#12/#28/#29) override: a preserved
-// original ULID and the audit event name. Callers never invent event names outside
-// PLAN §9.2's closed set.
+// original ULID, a non-default audit event name, and the broker-migration bypasses —
+// dead-lettering and redrive are broker migrations, not client publishes, and may never
+// be refused by a stream limit (PLAN §4.5). Callers never invent event names outside
+// PLAN §9.2's closed set, and SuppressEvent suppresses the audit row entirely.
 type publishOpts struct {
 	IDOverride string
 	Event      string // "" = msg.publish
+	// BypassLimits skips every publish admission check (subject match, body cap, header
+	// caps, dedup): used by the DLQ copy / #28 replay / #29 redrive so a migration is
+	// never refused by a stream limit the operator narrowed after creation.
+	BypassLimits bool
+	// SuppressEvent omits the audit row (e.g. a broker-internal write that is already
+	// narrated by its owning event). The message row is still written.
+	SuppressEvent bool
 }
 
 // Publish stores one message durably and returns its receipt only after the commit
@@ -109,8 +118,10 @@ func publishTxWithConfig(ctx context.Context, tx *sql.Tx, now int64,
 	r queue.PublishReq, o publishOpts,
 ) (Ack, obs.Event, error) {
 	stream := lc.cfg.Name
-	if err := queue.ValidatePublish(lc.cfg, r, limits); err != nil {
-		return Ack{}, obs.Event{}, err
+	if !o.BypassLimits {
+		if err := queue.ValidatePublish(lc.cfg, r, limits); err != nil {
+			return Ack{}, obs.Event{}, err
+		}
 	}
 
 	dedupKey := nullStr(r.MsgID)
@@ -122,7 +133,9 @@ func publishTxWithConfig(ctx context.Context, tx *sql.Tx, now int64,
 		eventName = "msg.publish"
 	}
 
-	if r.MsgID != "" && lc.window > 0 {
+	// A broker migration (BypassLimits) also bypasses dedup: the DLQ copy / redrive
+	// never collide with an existing idempotency key.
+	if !o.BypassLimits && r.MsgID != "" && lc.window > 0 {
 		orig, found, dErr := findDedupHit(ctx, tx, stream, r.MsgID)
 		if dErr != nil {
 			return Ack{}, obs.Event{}, dErr
@@ -212,18 +225,22 @@ func publishTxWithConfig(ctx context.Context, tx *sql.Tx, now int64,
 	if jErr != nil { // unreachable struct
 		detail = []byte(`{}`)
 	}
-	ev, eErr := commitEvent(ctx, tx, event{
-		ts:      now,
-		name:    eventName,
-		stream:  nullStr(stream),
-		subject: nullStr(r.Subject),
-		msgID:   nullStr(msgID),
-		seq:     nullI64(seq),
-		traceID: nullStr(traceID),
-		detail:  nullStr(string(detail)),
-	})
-	if eErr != nil {
-		return Ack{}, obs.Event{}, eErr
+	var ev obs.Event
+	if !o.SuppressEvent {
+		var evErr error
+		ev, evErr = commitEvent(ctx, tx, event{
+			ts:      now,
+			name:    eventName,
+			stream:  nullStr(stream),
+			subject: nullStr(r.Subject),
+			msgID:   nullStr(msgID),
+			seq:     nullI64(seq),
+			traceID: nullStr(traceID),
+			detail:  nullStr(string(detail)),
+		})
+		if evErr != nil {
+			return Ack{}, obs.Event{}, evErr
+		}
 	}
 
 	return Ack{

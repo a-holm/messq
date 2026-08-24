@@ -65,6 +65,9 @@ type Options struct {
 	// MaxSweepBatch caps one SweepCmd (issue #11 §11, --sweep-max-batch); above it the
 	// whole sweep is refused with ErrBadRequest (I11). <= 0 means 1024.
 	MaxSweepBatch int
+	// DLQ configures the auto-created <stream>.dlq template and the per-transaction copy
+	// budget (issue #12 §12). Zero value means DefaultDLQConfig(Limits).
+	DLQ queue.DLQConfig
 	// EventRepeatInterval is the repeat-rate window that bounds rejection event rows
 	// per (consumer, event) (issue #10 §8, --event-repeat-interval). <= 0 means 10s.
 	EventRepeatInterval time.Duration
@@ -114,6 +117,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.Limits == (queue.Limits{}) {
 		o.Limits = queue.DefaultLimits()
+	}
+	if o.DLQ == (queue.DLQConfig{}) {
+		o.DLQ = queue.DefaultDLQConfig(o.Limits)
 	}
 	if o.ConsumerLimits == (queue.ConsumerLimits{}) {
 		o.ConsumerLimits = queue.DefaultConsumerLimits()
