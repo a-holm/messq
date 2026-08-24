@@ -158,9 +158,12 @@ func TestSweeperRunShutsDownOnCancel(t *testing.T) {
 		close(done)
 	}()
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("sweeper Run did not return on ctx.Done")
-	}
+	waitSweep(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, "sweeper Run to return after ctx.Done")
 }

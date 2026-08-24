@@ -91,6 +91,9 @@ func Registry() []Check {
 		{I5, "flow control", false, i5Query, nil},
 		{I6, "cursor bounds", false, "", checkI6},
 		{I7, "settle fence", false, "", checkI7},
+		{S1, "no expired inflight survives a sweep", false, "", checkS1},
+		{S2, "no stranded row above max_deliver", false, s2Query, nil},
+		{S3, "delivery generation matches consumer", false, s3Query, nil},
 		{I8, "DLQ conservation", true, i8Query, nil},
 		{I10, "log = state", true, "", checkI10},
 	}
