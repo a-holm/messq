@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/a-holm/messq/internal/queue"
 )
 
 // Route is one entry of the route registry: the ONE place patterns are declared.
@@ -42,6 +44,10 @@ func (*Server) routes() []Route {
 		{http.MethodPatch, "/v1/streams/{stream}/consumers/{consumer}", "update_consumer", true},
 		{http.MethodDelete, "/v1/streams/{stream}/consumers/{consumer}", "delete_consumer", true},
 		{http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true},
+		{http.MethodPost, "/v1/ack", "ack", true},
+		{http.MethodPost, "/v1/nak", "nak", true},
+		{http.MethodPost, "/v1/term", "term", true},
+		{http.MethodPost, "/v1/extend", "extend", true},
 		{"", "/", "catch_all", false},
 	}
 }
@@ -156,6 +162,14 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 		return s.handleDeleteConsumer
 	case "fetch_consumer":
 		return s.handleFetchConsumer
+	case "ack":
+		return s.handleSettle(queue.VerbAck)
+	case "nak":
+		return s.handleSettle(queue.VerbNak)
+	case "term":
+		return s.handleSettle(queue.VerbTerm)
+	case "extend":
+		return s.handleSettle(queue.VerbExtend)
 	case "catch_all":
 		return s.handleNotFound
 	default:

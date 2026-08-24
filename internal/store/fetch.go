@@ -164,6 +164,10 @@ func (s *Store) Fetch(ctx context.Context, req FetchReq) (FetchResult, error) {
 // values against. Read-only copy.
 func (s *Store) ConsumerLimits() queue.ConsumerLimits { return s.consumerLimits }
 
+// MaxSettleBatch exposes --max-settle-batch so the HTTP layer can refuse an over-cap
+// batch with 413 BEFORE submitting anything.
+func (s *Store) MaxSettleBatch() int { return s.maxSettleBatch }
+
 // fetchCmd is the single writer command behind Fetch.
 type fetchCmd struct {
 	stream   string

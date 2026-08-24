@@ -17,4 +17,8 @@ GET /v1/streams/{stream}/consumers/{consumer} get_consumer readonly
 PATCH /v1/streams/{stream}/consumers/{consumer} update_consumer mutating
 DELETE /v1/streams/{stream}/consumers/{consumer} delete_consumer mutating
 POST /v1/streams/{stream}/consumers/{consumer}/fetch fetch_consumer mutating
+POST /v1/ack ack mutating
+POST /v1/nak nak mutating
+POST /v1/term term mutating
+POST /v1/extend extend mutating
  / catch_all readonly
