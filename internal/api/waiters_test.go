@@ -202,22 +202,35 @@ func TestSinkPublishNeverBlocksTheWriter(t *testing.T) {
 		defer sub.Close()
 	}
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		evs := make([]obs.Event, 0, 10_000)
-		for i := range 10_000 {
-			evs = append(evs, obs.Event{
-				Event: "msg.publish", Stream: "orders",
-				Subject: "orders.tick." + string(rune('a'+i%26)),
-			})
+	evs := make([]obs.Event, 0, 10_000)
+	for i := range 10_000 {
+		e := obs.Event{
+			Event: "msg.publish", Stream: "orders",
+			Subject: "orders.tick." + string(rune('a'+i%26)),
 		}
-		reg.Publish(evs)
-	}()
-	select {
-	case <-done:
-	case <-clock.System{}.NewTimer(2 * time.Second).C():
-		t.Fatal("Publish blocked on the writer goroutine's clock: sink is not non-blocking")
+		evs = append(evs, e)
+	}
+
+	// The proof is by construction, not by clock: Publish runs SYNCHRONOUSLY on this
+	// goroutine against waiters whose cap-1 channels are all full — the worst case for
+	// any blocking send. If the sink blocked on the writer, this very call would
+	// deadlock; that it returns proves all ten thousand fan-out sends took the
+	// non-blocking path (G8). No wall-clock budget exists to flake under load.
+	reg.Publish(evs)
+
+	// Each full channel still holds exactly its one pre-filled wake token: Publish
+	// dropped its sends rather than waiting on a waiter or double-delivering.
+	for i, sub := range subs {
+		select {
+		case <-sub.C():
+		default:
+			t.Fatalf("waiter %d lost its pre-filled wake token", i)
+		}
+		select {
+		case <-sub.C():
+			t.Fatalf("waiter %d ended up with more than one token", i)
+		default:
+		}
 	}
 }
 
