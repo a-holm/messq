@@ -412,6 +412,61 @@ func TestDLQBudgetDefers(t *testing.T) {
 	}
 }
 
+// TestDLQDerivedStreamInfo pins the derived DLQ-direction fields on StreamInfo: a .dlq
+// stream reports DLQ=true + its Origin; a plain stream reports neither.
+func TestDLQDerivedStreamInfo(t *testing.T) {
+	st, fk, _ := openSweepStore(t)
+	seedSweep(t, st, func(c *queue.ConsumerConfig) { c.MaxDeliver = 1 }, 1, 1)
+	fk.Advance(30 * time.Second)
+	if _, err := st.Sweep(context.Background(), SweepCmd{Limit: 10}); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	dlqInfo, err := st.GetStream(context.Background(), "orders.dlq")
+	if err != nil {
+		t.Fatalf("get orders.dlq: %v", err)
+	}
+	if !dlqInfo.DLQ || dlqInfo.Origin != "orders" {
+		t.Fatalf("orders.dlq derived fields = DLQ:%v Origin:%q, want true/orders", dlqInfo.DLQ, dlqInfo.Origin)
+	}
+	plain, err := st.GetStream(context.Background(), "orders")
+	if err != nil {
+		t.Fatalf("get orders: %v", err)
+	}
+	if plain.DLQ || plain.Origin != "" {
+		t.Fatalf("orders derived fields = DLQ:%v Origin:%q, want false/\"\"", plain.DLQ, plain.Origin)
+	}
+}
+
+// TestDLQDeadEventDetailGolden pins the msg.dead detail field set for a written copy
+// (issue §10): cause, policy, attempts, generation, trigger, dlq=written, dlq_stream,
+// dlq_seq and bytes all present; the copy mints no msg.publish.
+func TestDLQDeadEventDetailGolden(t *testing.T) {
+	st, fk, _ := openSweepStore(t)
+	seedSweep(t, st, func(c *queue.ConsumerConfig) { c.MaxDeliver = 1 }, 1, 1)
+	fk.Advance(30 * time.Second)
+	if _, err := st.Sweep(context.Background(), SweepCmd{Limit: 10}); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	var detail string
+	if err := st.RO().QueryRowContext(context.Background(),
+		`SELECT detail FROM events WHERE event = 'msg.dead'`).Scan(&detail); err != nil {
+		t.Fatalf("read msg.dead detail: %v", err)
+	}
+	for _, want := range []string{
+		`"cause":"max_deliver"`, `"policy":"dlq"`, `"attempts":1`,
+		`"generation":1`, `"trigger":"ack_wait"`, `"dlq":"written"`,
+		`"dlq_stream":"orders.dlq"`, `"dlq_seq":1`, `"bytes":1`,
+	} {
+		if !containsStr(detail, want) {
+			t.Fatalf("msg.dead detail %q missing %s", detail, want)
+		}
+	}
+	// Exactly one msg.dead; the DLQ copy is narrated by the death, never a second publish.
+	if n := countEvent(t, st, "msg.dead"); n != 1 {
+		t.Fatalf("msg.dead events = %d, want 1", n)
+	}
+}
+
 // originMsgID returns the id of the origin message (stream, seq).
 func originMsgID(t *testing.T, st *Store, stream string, seq int64) string {
 	t.Helper()

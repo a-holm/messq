@@ -40,6 +40,13 @@ type StreamInfo struct {
 	LastSeq       int64    `json:"last_seq"`
 	Msgs          int64    `json:"msgs"`
 	Bytes         int64    `json:"bytes"`
+	// DLQ direction (derived, not stored): DLQ is true for a ".dlq"-suffixed stream;
+	// Origin is the base stream (the origin a DLQ back-references, or the stream a
+	// non-DLQ's dead-letter stream would be). Derived from the D3 naming contract so
+	// #21/#24/#29 do not re-derive the suffix rule. DLQ==false and no Origin => not a
+	// dead-letter pair.
+	DLQ    bool   `json:"dlq,omitempty"`
+	Origin string `json:"origin,omitempty"`
 }
 
 // Config renders the stored configuration as the pure layer's value type.
@@ -206,7 +213,8 @@ func (s *Store) ListStreams(ctx context.Context) ([]StreamInfo, error) {
 const streamCols = `name, subjects, retention, max_msgs, max_bytes, max_age_ms,` +
 	` max_msg_size, discard, dedup_window_ms, created_at`
 
-// scanStreamInfo scans one streams row from any row source.
+// scanStreamInfo scans one streams row from any row source, deriving the DLQ-direction
+// fields from the D3 naming contract.
 func scanStreamInfo(row interface{ Scan(dest ...any) error }) (StreamInfo, error) {
 	var info StreamInfo
 	var subjects, retention, discard string
@@ -217,6 +225,10 @@ func scanStreamInfo(row interface{ Scan(dest ...any) error }) (StreamInfo, error
 	info.Subjects = unmarshalSubjects(subjects)
 	info.Retention = retention
 	info.Discard = discard
+	info.DLQ = queue.IsDLQ(info.Name)
+	if origin, ok := queue.OriginOf(info.Name); ok {
+		info.Origin = origin
+	}
 	return info, nil
 }
 

@@ -293,6 +293,7 @@ func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ Resul
 				return nil, nil, fmt.Errorf("sweep dead sink %q/%q seq %d: %w", r.key.Stream, r.key.Consumer, r.seq, sinkErr)
 			}
 			events = append(events, evDead)
+			faultHook("dlq.before_delete")
 			d, dErr := tx.ExecContext(ctx, `
 				DELETE FROM deliveries
 				 WHERE stream = ? AND consumer = ? AND seq = ? AND state = 1

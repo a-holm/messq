@@ -118,6 +118,7 @@ func (s DLQSink) Dead(ctx context.Context, tx *sql.Tx, d queue.DeadCtx, now time
 	if eErr := s.ensureDLQStream(ctx, tx, dlq, d.Stream, nowMS); eErr != nil {
 		return obs.Event{}, eErr
 	}
+	faultHook("dlq.before_copy")
 	seq, err := allocSeq(ctx, tx, dlq)
 	if err != nil {
 		return obs.Event{}, err
@@ -138,6 +139,7 @@ func (s DLQSink) Dead(ctx context.Context, tx *sql.Tx, d queue.DeadCtx, now time
 	}
 
 	newMsgID := s.newID().String()
+	faultHook("dlq.after_copy")
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
 			(stream, seq, id, subject, hdr, body, size, published_at, trace_id, dedup_key)
@@ -160,6 +162,7 @@ func (s DLQSink) Dead(ctx context.Context, tx *sql.Tx, d queue.DeadCtx, now time
 	if s.budget != nil {
 		s.budget.Take(size)
 	}
+	faultHook("dlq.before_commit")
 	return s.deadEvent(ctx, tx, d, nowMS, DeadOutcomeWritten, dlq, seq, size, trimmed, reasonTrunc)
 }
 

@@ -262,7 +262,10 @@ func (c createStreamCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (
 		Retention: string(c.cfg.Retention), MaxMsgs: c.cfg.MaxMsgs, MaxBytes: c.cfg.MaxBytes,
 		MaxAgeMS: c.cfg.MaxAge.Milliseconds(), MaxMsgSize: c.cfg.MaxMsgSize,
 		Discard: string(c.cfg.Discard), DedupWindowMS: c.cfg.DedupWindow.Milliseconds(),
-		CreatedAt: ts,
+		CreatedAt: ts, DLQ: queue.IsDLQ(c.cfg.Name),
+	}
+	if origin, ok := queue.OriginOf(c.cfg.Name); ok {
+		res.info.Origin = origin
 	}
 	return res, []obs.Event{ev}, nil
 }
