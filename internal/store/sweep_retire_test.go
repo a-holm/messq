@@ -35,17 +35,14 @@ func TestRetireStrandedReadyRows(t *testing.T) {
 	}
 
 	// All three rows are now READY at attempts=1.
-	var ready int
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE state = 0 AND attempts = 1`).Scan(&ready)
-	if ready != 3 {
+	if ready := countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0 AND attempts = 1`); ready != 3 {
 		t.Fatalf("READY rows after nak = %d, want 3", ready)
 	}
 
 	// Lower max_deliver to 1: every READY row at attempts=1 is now stranded.
-	if _, err := st.UpdateConsumer(context.Background(), "orders", "worker",
-		ConsumerPatch{MaxDeliver: int32ptr(1)}, "test"); err != nil {
-		t.Fatalf("lower max_deliver: %v", err)
+	if _, upErr := st.UpdateConsumer(context.Background(), "orders", "worker",
+		ConsumerPatch{MaxDeliver: int32ptr(1)}, "test"); upErr != nil {
+		t.Fatalf("lower max_deliver: %v", upErr)
 	}
 
 	rr, err := st.Retire(context.Background(), RetireCmd{Limit: 10})
@@ -57,15 +54,10 @@ func TestRetireStrandedReadyRows(t *testing.T) {
 	}
 
 	// The stranded rows are gone; a msg.dead row exists for each.
-	var remaining, dead int
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE stream='orders' AND consumer='worker'`).Scan(&remaining)
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM events WHERE event = 'msg.dead'`).Scan(&dead)
-	if remaining != 0 {
+	if remaining := countRows(t, st, `SELECT count(*) FROM deliveries WHERE stream='orders' AND consumer='worker'`); remaining != 0 {
 		t.Fatalf("deliveries after retire = %d, want 0", remaining)
 	}
-	if dead != 3 {
+	if dead := countRows(t, st, `SELECT count(*) FROM events WHERE event = 'msg.dead'`); dead != 3 {
 		t.Fatalf("msg.dead rows = %d, want 3", dead)
 	}
 }
@@ -86,10 +78,7 @@ func TestRetireSkippedForMaxDeliver0(t *testing.T) {
 		t.Fatalf("retired = %d, want 0 for max_deliver=0", rr.Retired)
 	}
 	// Both rows still present (INFLIGHT, untouched — never mid-flight).
-	var inflight int
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE state = 1`).Scan(&inflight)
-	if inflight != 2 {
+	if inflight := countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 1`); inflight != 2 {
 		t.Fatalf("INFLIGHT rows = %d, want 2 (retire skipped for max_deliver=0)", inflight)
 	}
 }
@@ -114,10 +103,7 @@ func TestRetireNeverTouchesInflightRows(t *testing.T) {
 	if rr.Retired != 0 {
 		t.Fatalf("retired = %d, want 0 (INFLIGHT rows never mid-flight)", rr.Retired)
 	}
-	var inflight int
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE state = 1`).Scan(&inflight)
-	if inflight != 2 {
+	if inflight := countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 1`); inflight != 2 {
 		t.Fatalf("INFLIGHT rows after retire = %d, want 2 (in-progress work untouched)", inflight)
 	}
 }

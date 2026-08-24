@@ -93,6 +93,9 @@ func TestSweepEmitsFullTimeoutEvent(t *testing.T) {
 	if err := rows.Scan(&attempt, &msgID, &traceID, &detail); err != nil {
 		t.Fatalf("scan msg.timeout: %v", err)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate msg.timeout: %v", err)
+	}
 	if attempt != 1 {
 		t.Fatalf("attempt = %d, want 1", attempt)
 	}

@@ -28,7 +28,8 @@ const kindSweep CmdKind = "consumer.sweep"
 // Sweeper metric-name constants (issue #11 §9.4). #21 registers collectors against these
 // names; this issue counts every outcome through the SweepMetrics seam.
 const (
-	metricTimeoutsTotal     = "messq_timeouts_total"
+	metricTimeoutsTotal = "messq_timeouts_total"
+	//nolint:gosec // G101: the wire metric name is a handover constant handed to #21, not a credential.
 	metricRedeliveredTotal  = "messq_redelivered_total"
 	metricDeadTotal         = "messq_dead_total"
 	metricSweepLatenessSecs = "messq_sweep_lateness_seconds"
@@ -155,7 +156,7 @@ func loadSweepPolicy(ctx context.Context, tx *sql.Tx, key queue.ConsumerKey) (sw
 	return sp, nil
 }
 
-func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result, []obs.Event, error) {
+func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ Result, _ []obs.Event, err error) {
 	nowMS := now.UnixMilli()
 	var res SweepResult
 	var events []obs.Event
@@ -174,23 +175,23 @@ func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result,
 	if err != nil {
 		return nil, nil, fmt.Errorf("sweep expired scan: %w", err)
 	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close sweep rows: %w", cerr)
+		}
+	}()
 	var loaded []sweepRow
 	for rows.Next() {
 		var r sweepRow
 		if sErr := rows.Scan(&r.key.Stream, &r.key.Consumer, &r.seq, &r.subject,
 			&r.attempts, &r.generation, &r.visibleAt, &r.deliveredAt, &r.lastReason,
 			&r.msgID, &r.traceID); sErr != nil {
-			rows.Close()
 			return nil, nil, fmt.Errorf("scan sweep row: %w", sErr)
 		}
 		loaded = append(loaded, r)
 	}
 	if rErr := rows.Err(); rErr != nil {
-		rows.Close()
 		return nil, nil, fmt.Errorf("iterate sweep rows: %w", rErr)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, nil, fmt.Errorf("close sweep rows: %w", err)
 	}
 	res.Expired = len(loaded)
 	res.More = len(loaded) == c.Limit
@@ -239,7 +240,6 @@ func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result,
 				return nil, nil, eErr
 			}
 			events = append(events, ev)
-			//nolint:gosec // G202: constant fence clause.
 			u, uErr := tx.ExecContext(ctx, `
 				UPDATE deliveries SET state = 0, visible_at = ?, last_reason = 'ack_wait'
 				 WHERE stream = ? AND consumer = ? AND seq = ? AND state = 1
@@ -283,7 +283,6 @@ func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result,
 				return nil, nil, fmt.Errorf("sweep dead sink %q/%q seq %d: %w", r.key.Stream, r.key.Consumer, r.seq, sinkErr)
 			}
 			events = append(events, evDead)
-			//nolint:gosec // G202: constant fence clause.
 			d, dErr := tx.ExecContext(ctx, `
 				DELETE FROM deliveries
 				 WHERE stream = ? AND consumer = ? AND seq = ? AND state = 1

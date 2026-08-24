@@ -38,8 +38,10 @@ type SweepRow struct {
 }
 
 // SweepPolicy is the consumer-side facts DecideSweep fences against, loaded once per
-// (stream, consumer) per command.
+// (stream, consumer) per command. AckWait is not needed for the decision but rides along
+// so the store can stamp the msg.timeout event's ack_wait_ms without a second query.
 type SweepPolicy struct {
+	AckWait    time.Duration
 	MaxDeliver int32           // 0 = unlimited
 	Backoff    []time.Duration // 1..16 entries; last repeats
 	Generation int32           // the consumer's live generation — the fence

@@ -59,7 +59,7 @@ func (s *Store) Retire(ctx context.Context, req RetireCmd) (RetireResult, error)
 }
 
 // Apply runs inside the writer's batch transaction.
-func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result, []obs.Event, error) {
+func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ Result, _ []obs.Event, rerr error) {
 	var res RetireResult
 	var events []obs.Event
 
@@ -69,33 +69,27 @@ func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 	if err != nil {
 		return nil, nil, fmt.Errorf("retire scan consumers: %w", err)
 	}
+	defer func() {
+		if cerr := cons.Close(); cerr != nil && rerr == nil {
+			rerr = fmt.Errorf("close retire consumers: %w", cerr)
+		}
+	}()
 	type consRow struct {
 		stream, name string
-		maxDeliver   int32
-		generation   int32
+		maxDeliver   int64
+		generation   int64
 	}
 	var targets []consRow
 	for cons.Next() {
 		var cr consRow
-		var md int64
-		if sErr := cons.Scan(&cr.stream, &cr.name, &md, &cr.generation); sErr != nil {
-			cons.Close()
+		if sErr := cons.Scan(&cr.stream, &cr.name, &cr.maxDeliver, &cr.generation); sErr != nil {
 			return nil, nil, fmt.Errorf("scan retire consumer: %w", sErr)
 		}
-		//nolint:gosec // G115: max_deliver validated <= maxDeliverCap at create.
-		cr.maxDeliver = int32(md)
 		targets = append(targets, cr)
 	}
 	if rErr := cons.Err(); rErr != nil {
-		cons.Close()
 		return nil, nil, fmt.Errorf("iterate retire consumers: %w", rErr)
 	}
-	if err := cons.Close(); err != nil {
-		return nil, nil, fmt.Errorf("close retire consumers: %w", err)
-	}
-
-	//nolint:gosec // G115: max_deliver validated to fit int64.
-	maxDeliverArg := func(c consRow) int64 { return int64(c.maxDeliver) }
 
 	for _, t := range targets {
 		rows, err := tx.QueryContext(ctx, `
@@ -107,57 +101,44 @@ func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 			 WHERE d.stream = ? AND d.consumer = ? AND d.state = 0
 			   AND d.attempts >= ? AND d.generation = ?
 			 ORDER BY d.seq LIMIT ?`,
-			t.stream, t.name, maxDeliverArg(t), t.generation, c.Limit)
+			t.stream, t.name, t.maxDeliver, t.generation, c.Limit)
 		if err != nil {
 			return nil, nil, fmt.Errorf("retire scan %q/%q: %w", t.stream, t.name, err)
 		}
-		var rowsOut []struct {
+		defer func() {
+			if cerr := rows.Close(); cerr != nil && rerr == nil {
+				rerr = fmt.Errorf("close retire rows %q/%q: %w", t.stream, t.name, cerr)
+			}
+		}()
+		type retireRow struct {
 			seq         int64
 			subject     string
-			attempts    int32
-			generation  int32
+			attempts    int64
+			generation  int64
 			deliveredAt int64
 			lastReason  string
 			msgID       string
 			traceID     string
 		}
+		var rowsOut []retireRow
 		for rows.Next() {
-			var o struct {
-				seq         int64
-				subject     string
-				attempts    int32
-				generation  int32
-				deliveredAt int64
-				lastReason  string
-				msgID       string
-				traceID     string
-			}
-			var att int64
-			var gen int64
-			if sErr := rows.Scan(&o.seq, &o.subject, &att, &gen, &o.deliveredAt,
-				&o.lastReason, &o.msgID, &o.traceID); sErr != nil {
-				rows.Close()
+			var o retireRow
+			if sErr := rows.Scan(&o.seq, &o.subject, &o.attempts, &o.generation,
+				&o.deliveredAt, &o.lastReason, &o.msgID, &o.traceID); sErr != nil {
 				return nil, nil, fmt.Errorf("scan retire row %q/%q: %w", t.stream, t.name, sErr)
 			}
-			//nolint:gosec // G115: bounded by deliveries.attempts/generation (int64).
-			o.attempts = int32(att)
-			o.generation = int32(gen)
 			rowsOut = append(rowsOut, o)
 		}
 		if rErr := rows.Err(); rErr != nil {
-			rows.Close()
 			return nil, nil, fmt.Errorf("iterate retire rows %q/%q: %w", t.stream, t.name, rErr)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, nil, fmt.Errorf("close retire rows %q/%q: %w", t.stream, t.name, err)
 		}
 
 		for _, o := range rowsOut {
-			//nolint:gosec // G115: seq is bounded by the message sequence space.
+			//nolint:gosec // G115: bounded by deliveries.attempts/generation and the message seq space.
 			dc := queue.DeadCtx{
 				Stream: t.stream, Consumer: t.name, Subject: o.subject,
 				Seq: uint64(o.seq), MsgID: o.msgID, TraceID: o.traceID,
-				Attempts: o.attempts, Cause: queue.DeadCauseMaxDeliver,
+				Attempts: int32(o.attempts), Cause: queue.DeadCauseMaxDeliver,
 				LastReason: o.lastReason,
 			}
 			evDead, sinkErr := c.DeadSink.Dead(ctx, tx, dc, now)
@@ -165,7 +146,6 @@ func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result
 				return nil, nil, fmt.Errorf("retire dead sink %q/%q seq %d: %w", t.stream, t.name, o.seq, sinkErr)
 			}
 			events = append(events, evDead)
-			//nolint:gosec // G202: constant fence clause.
 			d, dErr := tx.ExecContext(ctx, `
 				DELETE FROM deliveries
 				 WHERE stream = ? AND consumer = ? AND seq = ? AND state = 0

@@ -82,10 +82,7 @@ func TestSweeperStepRedeliversExpiredRows(t *testing.T) {
 	sw.step(context.Background())
 
 	waitSweep(t, func() bool {
-		var ready int
-		_ = st.RO().QueryRowContext(context.Background(),
-			`SELECT count(*) FROM deliveries WHERE state = 0 AND visible_at > 0`).Scan(&ready)
-		return ready == 3
+		return countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0 AND visible_at > 0`) == 3
 	}, "three rows released to READY")
 	for seq := int64(1); seq <= 3; seq++ {
 		if got := attemptsFor(t, st, seq); got != 1 {
@@ -133,11 +130,8 @@ func TestSweeperIdleSubmitsNoCommand(t *testing.T) {
 	fk.Advance(500 * time.Millisecond) // well before the +30s deadlines
 	sw.step(context.Background())
 
-	var inflight, ready int
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE state = 1`).Scan(&inflight)
-	_ = st.RO().QueryRowContext(context.Background(),
-		`SELECT count(*) FROM deliveries WHERE state = 0`).Scan(&ready)
+	inflight := countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 1`)
+	ready := countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0`)
 	if inflight != 3 || ready != 0 {
 		t.Fatalf("after idle step: %d INFLIGHT / %d READY, want 3 / 0 (no sweep ran)", inflight, ready)
 	}
@@ -152,9 +146,11 @@ func TestSweeperRunShutsDownOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		_ = NewSweeper(st, SweepConfig{
+		if rErr := NewSweeper(st, SweepConfig{
 			Interval: 100 * time.Millisecond, Batch: 10, Catchup: 2,
-		}, NopWaker{}, nil).Run(ctx)
+		}, NopWaker{}, nil).Run(ctx); rErr != nil {
+			t.Errorf("sweeper Run returned error: %v", rErr)
+		}
 		close(done)
 	}()
 	cancel()
