@@ -599,7 +599,20 @@ func baseWithoutFloors(t *testing.T, root string) {
 
 func git(t *testing.T, root string, args ...string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
+	// Disable background maintenance on the scratch repo so no .git writer survives
+	// the synchronous command. Modern git (>=2.36) starts an auto-maintenance /
+	// fsmonitor background process on git init that can still be writing to .git when
+	// the subtest ends and t.TempDir() runs os.RemoveAll, racing its cleanup with
+	// "unlinkat ... .git: directory not empty". These configs make the scratch repo
+	// statically quiet so teardown cannot race a live writer.
+	gitArgs := []string{
+		"-c", "maintenance.auto=false",
+		"-c", "gc.auto=0",
+		"-c", "feature.manyFiles=false",
+		"-c", "core.fsmonitor=false",
+	}
+	gitArgs = append(gitArgs, args...)
+	cmd := exec.CommandContext(t.Context(), "git", gitArgs...)
 	cmd.Dir = root
 	cmd.Env = append(childEnv(),
 		"GIT_AUTHOR_NAME=gates", "GIT_AUTHOR_EMAIL=gates@example.invalid",
