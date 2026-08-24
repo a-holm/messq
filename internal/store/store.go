@@ -86,6 +86,9 @@ type Store struct {
 	// handed over; the counter itself lives behind this seam so #21's collectors can
 	// observe without a registry here).
 	settleMetrics SettleMetrics
+	// sweepMetrics counts every sweep outcome exactly (the #21 constant names are
+	// handed over; the counter itself lives behind this seam). Same contract.
+	sweepMetrics SweepMetrics
 	// deadSink is the #12 seam; until then it is DropSink (dead_policy=drop).
 	deadSink DeadSink
 	// jitter is the settle scheduling seam (issue #10 §4); a shared per-process PCG.
@@ -94,6 +97,8 @@ type Store struct {
 	maxSettleBatch      int
 	maxReasonBytes      int
 	eventRepeatInterval time.Duration
+	// maxSweepBatch caps one SweepCmd (issue #11 §11, --sweep-max-batch).
+	maxSweepBatch int
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
@@ -257,9 +262,11 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		flowBlocked:    make(map[string]int64),
 		settleBlocked:  make(map[string]*rejectionLimiter),
 		settleMetrics:  nopSettleMetrics{},
+		sweepMetrics:   nopSweepMetrics{},
 		deadSink:       DropSink{},
 		jitter:         defaultSettleJitter(opt.Jitter),
 		maxSettleBatch: opt.MaxSettleBatch, maxReasonBytes: opt.MaxReasonBytes,
+		maxSweepBatch:       opt.MaxSweepBatch,
 		eventRepeatInterval: opt.EventRepeatInterval,
 		peekMaxLimit:        opt.PeekMaxLimit,
 		peekScanLimit:       opt.PeekScanLimit,

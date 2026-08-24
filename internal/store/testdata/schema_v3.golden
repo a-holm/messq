@@ -27,6 +27,9 @@ table|deliveries|CREATE TABLE deliveries (                          -- the pendi
   last_reason  TEXT,                               -- last nak/timeout reason
   PRIMARY KEY (stream, consumer, seq)
 ) STRICT
+index|deliveries_expiry|CREATE INDEX deliveries_expiry
+    ON deliveries(visible_at, stream, consumer, seq)
+ WHERE state = 1
 index|deliveries_ready|CREATE INDEX deliveries_ready ON deliveries(stream, consumer, state, visible_at, seq)
 index|deliveries_seq|CREATE INDEX deliveries_seq   ON deliveries(stream, seq)
 table|events|CREATE TABLE events (                              -- THE audit trail; same tx as the change

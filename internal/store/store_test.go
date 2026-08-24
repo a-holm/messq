@@ -78,8 +78,8 @@ func TestOpenFreshDirectoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	if got := st.SchemaVersion(); got != 2 {
-		t.Errorf("SchemaVersion() = %d, want 2", got)
+	if got := st.SchemaVersion(); got != 3 {
+		t.Errorf("SchemaVersion() = %d, want 3", got)
 	}
 	if st.Durability() != DurabilityFull {
 		t.Errorf("Durability() = %v, want full", st.Durability())
@@ -90,7 +90,7 @@ func TestOpenFreshDirectoryLifecycle(t *testing.T) {
 	if report.CheckKind != "skipped" {
 		t.Errorf("CheckKind = %q, want \"skipped\" on a clean fresh open", report.CheckKind)
 	}
-	if report.SchemaFrom != 0 || report.SchemaTo != 2 {
+	if report.SchemaFrom != 0 || report.SchemaTo != 3 {
 		t.Errorf("report schema pair = (%d, %d), want (0, 2)", report.SchemaFrom, report.SchemaTo)
 	}
 	if !isULID(st.NodeID()) {
@@ -142,8 +142,8 @@ func TestOpenFreshDirectoryLifecycle(t *testing.T) {
 	if report2.Unclean {
 		t.Error("reopen after clean close reported Unclean")
 	}
-	if got := st2.SchemaVersion(); got != 2 {
-		t.Errorf("reopen SchemaVersion() = %d, want 2", got)
+	if got := st2.SchemaVersion(); got != 3 {
+		t.Errorf("reopen SchemaVersion() = %d, want 3", got)
 	}
 	if st2.NodeID() != st.NodeID() {
 		t.Errorf("node_id changed across reopen: %q -> %q", st.NodeID(), st2.NodeID())
@@ -320,8 +320,8 @@ func TestReadOnlyMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read-only open: %v", err)
 	}
-	if got := ro.SchemaVersion(); got != 2 {
-		t.Errorf("ReadOnly SchemaVersion() = %d, want 2", got)
+	if got := ro.SchemaVersion(); got != 3 {
+		t.Errorf("ReadOnly SchemaVersion() = %d, want 3", got)
 	}
 	if report.CheckKind != "skipped" || report.Unclean {
 		t.Errorf("ReadOnly report = %+v, want skipped check and clean state", report)

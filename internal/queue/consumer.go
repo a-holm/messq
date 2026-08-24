@@ -291,6 +291,19 @@ func RetryHorizon(c ConsumerConfig) time.Duration {
 	return sum
 }
 
+// TimeToDead is the wall-clock worst case from first delivery to DEAD for a consumer
+// whose worker never responds at all: every one of the max_deliver attempts burns a full
+// ack_wait, plus the whole retry horizon spent waiting between them (issue #11 §5,
+// S8.4). max_deliver = 0 (unlimited) returns HorizonInfinite; the default config and
+// max_deliver = 5 therefore yield 5*30s + 156s = 306s. The fifth backoff entry (10m) is
+// provably unused at max_deliver = 5 — there are only four waits.
+func TimeToDead(c ConsumerConfig) time.Duration {
+	if c.MaxDeliver == 0 {
+		return HorizonInfinite
+	}
+	return time.Duration(c.MaxDeliver)*c.AckWait + RetryHorizon(c)
+}
+
 func backoffMonotonic(backoff []time.Duration) bool {
 	for i := 1; i < len(backoff); i++ {
 		if backoff[i] < backoff[i-1] {

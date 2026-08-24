@@ -208,6 +208,34 @@ func TestRetryHorizon(t *testing.T) {
 	}
 }
 
+// TestTimeToDead pins issue #11 §5 S8.4's worked table: the default config's worst-case
+// first-delivery-to-DEAD is 306 s (MaxDeliver*ack_wait + RetryHorizon), infinite when
+// unlimited, and finite-ish for tight configs so the "fifth backoff entry unused at
+// max_deliver=5" invariant is asserted by construction (4 waits, not 5).
+func TestTimeToDead(t *testing.T) {
+	cfg := DefaultConsumerConfig("worker") // ack_wait 30s, max_deliver 5, backoff 5 entries
+	if got := TimeToDead(cfg); got != 306*time.Second {
+		t.Fatalf("TimeToDead(default,5) = %v, want 306s", got)
+	}
+	cfg.MaxDeliver = 0
+	if got := TimeToDead(cfg); got != HorizonInfinite {
+		t.Fatalf("TimeToDead(max_deliver=0) = %v, want infinite", got)
+	}
+	cfg = DefaultConsumerConfig("worker")
+	cfg.MaxDeliver = 1
+	if got := TimeToDead(cfg); got != 30*time.Second {
+		t.Fatalf("TimeToDead(max_deliver=1) = %v, want 30s (one attempt, no wait)", got)
+	}
+	// ack_wait = 10s, max_deliver = 3, backoff [1s,5s]: 3*10 + (1+5) = 36s.
+	cfg = DefaultConsumerConfig("worker")
+	cfg.AckWait = 10 * time.Second
+	cfg.MaxDeliver = 3
+	cfg.Backoff = []time.Duration{1 * time.Second, 5 * time.Second}
+	if got := TimeToDead(cfg); got != 36*time.Second {
+		t.Fatalf("TimeToDead(10s,3,[1s,5s]) = %v, want 36s", got)
+	}
+}
+
 func TestParseStartPosition(t *testing.T) {
 	tests := []struct {
 		in   string

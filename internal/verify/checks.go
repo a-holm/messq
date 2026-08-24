@@ -37,7 +37,7 @@ const (
 // currentSchemaVersion is the schema version this binary ships (the migration ladder's
 // length). It must be bumped alongside every new migrations/*.sql file; V1 refuses anything
 // newer so a downgraded binary never misinterprets a future schema.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // checkV1 verifies the schema version matches the binary: a newer schema is refused, never
 // interpreted (S12 step 2), and an absent or unreadable version is a violation.
