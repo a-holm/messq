@@ -71,7 +71,6 @@ func (r Report) Failed() bool { return len(r.Violations) > 0 }
 var checkedElsewhere = map[string]string{
 	"I1":  "the crash harness's three-valued ledger reconciliation (issue #8)",
 	"I3":  "the rapid reference model and golden log tests (issue #13)",
-	"I7":  "unit tests of the settle path (issue #10)",
 	"I9":  "the rapid reference model and golden log tests (issue #13)",
 	"I11": "appendix A1 completeness tests (issue #6)",
 }
@@ -91,6 +90,7 @@ func Registry() []Check {
 		{I4, "attempts <= max_deliver", false, i4Query, nil},
 		{I5, "flow control", false, i5Query, nil},
 		{I6, "cursor bounds", false, "", checkI6},
+		{I7, "settle fence", false, "", checkI7},
 		{I8, "DLQ conservation", true, i8Query, nil},
 		{I10, "log = state", true, "", checkI10},
 	}

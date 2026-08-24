@@ -79,6 +79,21 @@ type Store struct {
 	// mutated only on the writer goroutine, so it needs no lock; entries are pruned on
 	// consumer delete (bounded by consumer count, I11).
 	flowBlocked map[string]int64
+	// settleBlocked is the per-(consumer,event) rejection-event rate-limiter (issue #10
+	// §8): it bounds msg.ack_stale/msg.ack_dup rows. Same single-writer contract.
+	settleBlocked map[string]*rejectionLimiter
+	// settleMetrics counts every settle outcome exactly (the #21 constant names are
+	// handed over; the counter itself lives behind this seam so #21's collectors can
+	// observe without a registry here).
+	settleMetrics SettleMetrics
+	// deadSink is the #12 seam; until then it is DropSink (dead_policy=drop).
+	deadSink DeadSink
+	// jitter is the settle scheduling seam (issue #10 §4); a shared per-process PCG.
+	jitter queue.Jitter
+	// maxSettleBatch / maxReasonBytes / eventRepeatInterval are the issue #10 §8 limits.
+	maxSettleBatch      int
+	maxReasonBytes      int
+	eventRepeatInterval time.Duration
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
@@ -240,13 +255,19 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		limits:         opt.Limits,
 		consumerLimits: opt.ConsumerLimits,
 		flowBlocked:    make(map[string]int64),
-		peekMaxLimit:   opt.PeekMaxLimit,
-		peekScanLimit:  opt.PeekScanLimit,
-		maxBatchMsgs:   opt.MaxBatchMessages,
-		dedupSweep:     opt.DedupSweepInterval,
-		clk:            opt.Clock,
-		logger:         opt.Logger,
-		newID:          opt.NewID,
+		settleBlocked:  make(map[string]*rejectionLimiter),
+		settleMetrics:  nopSettleMetrics{},
+		deadSink:       DropSink{},
+		jitter:         defaultSettleJitter(opt.Jitter),
+		maxSettleBatch: opt.MaxSettleBatch, maxReasonBytes: opt.MaxReasonBytes,
+		eventRepeatInterval: opt.EventRepeatInterval,
+		peekMaxLimit:        opt.PeekMaxLimit,
+		peekScanLimit:       opt.PeekScanLimit,
+		maxBatchMsgs:        opt.MaxBatchMessages,
+		dedupSweep:          opt.DedupSweepInterval,
+		clk:                 opt.Clock,
+		logger:              opt.Logger,
+		newID:               opt.NewID,
 	}
 	fail := func(err error) (*Store, *RecoveryReport, error) {
 		st.cleanup(context.WithoutCancel(ctx))
