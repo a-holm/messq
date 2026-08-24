@@ -51,6 +51,12 @@ func TestParseServeFlagsDefaults(t *testing.T) {
 	if cfg.dedupSweepInterval != 60*time.Second {
 		t.Errorf("dedupSweepInterval = %v, want 60s", cfg.dedupSweepInterval)
 	}
+	// A1's register value is the flag's default: the SEMANTICS bounds row is the source
+	// of truth and --drain-timeout only overrides it at runtime (orchestrator ruling on
+	// brief-17 §8 Q1).
+	if cfg.drainTimeout != 10*time.Second {
+		t.Errorf("drainTimeout = %v, want the A1 default 10s", cfg.drainTimeout)
+	}
 	// #14 §9 transport bounds, one assertion per flag: a resolve() default can drift
 	// (4096 → 10000 survived a whole review suite) without any other test noticing.
 	// --max-waiters is pinned to SEMANTICS §A1's 4096 by name.
@@ -98,6 +104,7 @@ func TestParseServeFlagsEnvFallback(t *testing.T) {
 		"MESSQ_PEEK_SCAN_LIMIT":      "2000",
 		"MESSQ_PEEK_MAX_LIMIT":       "200",
 		"MESSQ_DEDUP_SWEEP_INTERVAL": "30s",
+		"MESSQ_DRAIN_TIMEOUT":        "25s",
 	}
 	cfg, err := parseServeFlags(nil, func(k string) string { return env[k] })
 	if err != nil {
@@ -133,6 +140,9 @@ func TestParseServeFlagsEnvFallback(t *testing.T) {
 	if cfg.dedupSweepInterval != 30*time.Second {
 		t.Errorf("dedupSweepInterval = %v", cfg.dedupSweepInterval)
 	}
+	if cfg.drainTimeout != 25*time.Second {
+		t.Errorf("drainTimeout = %v, want 25s from MESSQ_DRAIN_TIMEOUT", cfg.drainTimeout)
+	}
 }
 
 func TestParseServeFlagsFlagOverridesEnv(t *testing.T) {
@@ -150,6 +160,7 @@ func TestParseServeFlagsFlagOverridesEnv(t *testing.T) {
 		"--data-dir", "/d",
 		"--listen", "unix:///x.sock",
 		"--durability", "full",
+		"--drain-timeout", "3s",
 	}, env)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -159,6 +170,9 @@ func TestParseServeFlagsFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.durability != store.DurabilityFull {
 		t.Errorf("durability = %v, want the flag to win over MESSQ_DURABILITY", cfg.durability)
+	}
+	if cfg.drainTimeout != 3*time.Second {
+		t.Errorf("drainTimeout = %v, want the flag to win over MESSQ_DRAIN_TIMEOUT", cfg.drainTimeout)
 	}
 }
 
@@ -177,6 +191,9 @@ func TestParseServeFlagsErrors(t *testing.T) {
 		{"bad int", []string{"--data-dir", "/d", "--max-batch-messages", "abc"}, nil, "max-batch-messages"},
 		{"bad duration", []string{"--data-dir", "/d", "--dedup-sweep-interval", "soon"}, nil, "dedup-sweep-interval"},
 		{"zero sweep", []string{"--data-dir", "/d", "--dedup-sweep-interval", "0s"}, nil, "dedup-sweep-interval"},
+		{"bad drain timeout", []string{"--data-dir", "/d", "--drain-timeout", "ten"}, nil, "drain-timeout"},
+		{"zero drain timeout", []string{"--data-dir", "/d", "--drain-timeout", "0s"}, nil, "drain-timeout"},
+		{"negative drain timeout", []string{"--data-dir", "/d", "--drain-timeout", "-5s"}, nil, "drain-timeout"},
 		{"negative ceiling", []string{"--data-dir", "/d", "--max-msg-size-ceiling", "-1MiB"}, nil, "max-msg-size-ceiling"},
 		{"positional", []string{"--data-dir", "/d", "extra"}, nil, "unexpected argument"},
 	}

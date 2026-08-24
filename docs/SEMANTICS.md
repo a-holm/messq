@@ -597,7 +597,7 @@ The concrete form of invariant I11. Every bounded resource in the design appears
 | events table | `--event-retention`, `--event-max-rows` | 72h | #27 |
 | WAL size before a truncating checkpoint | `--wal-max-bytes` | 256 MiB | #27 |
 | free disk floor | `--min-free-bytes` | 256 MiB | #27 |
-| graceful drain | fixed | 10 s | #17 |
+| graceful drain | `--drain-timeout` | 10 s | #17 |
 | redrive count without `--force` | fixed | 3 | #29 |
 
 ## A2. Traceability

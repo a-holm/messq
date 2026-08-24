@@ -40,6 +40,7 @@ Flags for version:
 Flags for serve:
   --data-dir DIR        Data directory (required; or MESSQ_DATA_DIR).
   --listen ADDR         unix://PATH or tcp://HOST:PORT. Default unix:///run/messq/messq.sock.
+  --drain-timeout D     Budget for in-flight handlers on SIGTERM (PLAN §4.4). Default 10s.
 
 Flags for verify:
   --data-dir DIR        Data directory (or MESSQ_DATA_DIR, else /var/lib/messq).
