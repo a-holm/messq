@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build rapid
+
 package store
 
 import (
@@ -33,6 +35,11 @@ import (
 // fresh machines run. The former hardcoded 200 made -rapid.steps a dead knob for this,
 // one of the package's heaviest property machines, and helped pin the suite against
 // TEST_TIMEOUT.
+//
+// The whole file lives behind //go:build rapid: real-store, real-fsync property actions
+// are nightly-depth work, so the default go test of the PR lane excludes it entirely —
+// keeping the store suite inside TEST_TIMEOUT with margin — while -tags rapid compiles
+// it back in at whatever depth -rapid.checks/-rapid.steps name.
 func TestConsumerRapidDeliverySeed(t *testing.T) {
 	stepsRaw := flag.Lookup("rapid.steps")
 	if stepsRaw == nil {
