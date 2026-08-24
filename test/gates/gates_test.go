@@ -371,6 +371,15 @@ func matrix() []gate {
 			want:    "internal/subject or its tests depends on",
 			prepare: install("leaf_test.go", "internal/subject/sabotage_leaf_test.go"),
 		},
+		// G41 pins the #49 C nuance: layers parses package clauses and imports but not function
+		// bodies, so a body-syntax error is a blind spot in a production file (make vet is the
+		// gate there). In the test binary the body is parsed as part of the dependency edge
+		// layers walks, so a body-syntax error inside a _test.go must still load-fail loudly.
+		{
+			id: "G41", name: "a body-syntax error in a test file", target: "layers",
+			want:    "the tree does not load",
+			prepare: install("syntax_error_test.go", "internal/queue/sabotage_syntax_test.go"),
+		},
 		// A green row: the seam has to be usable, or the ban on wall-clock access is a ban on
 		// having a clock at all. It is what keeps the two internal/clock exclusions honest.
 		{
