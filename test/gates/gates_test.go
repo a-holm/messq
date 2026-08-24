@@ -23,6 +23,13 @@ import (
 // -parallel 8 load the process tests (SIGKILL re-exec, curl transcript, golden socket suite)
 // push a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
 // row, PR #55), so the bound is twenty.
+//
+// #49 E: the whole matrix at -parallel 8 measures ~97-112 s locally against the issue's ~60 s
+// aspiration. That gap is recorded here as the acceptance ruling (the same class of explicit
+// non-decision the #45 review gives `file(1)`: the runtime is measured and accepted, not
+// enforced). There is deliberately no wall-clock or stochastic guard on the matrix: a gate
+// that tests elapsed time is a gate nobody can trust, and the owner rule is that the saboteur
+// battery never carries one.
 const makeTimeout = 20 * time.Minute
 
 // modDownloadTimeout bounds the single module-cache warm-up in TestMain. Downloading the whole
