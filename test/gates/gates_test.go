@@ -773,7 +773,7 @@ func TestGatesSelftestParallelismWiring(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("make -n gates-selftest exit=%d, want 0\n%s", code, out)
 	}
-	for _, want := range []string{"row parallelism=1", "-parallel 1 -timeout 20m"} {
+	for _, want := range []string{"row parallelism=1", "-parallel 1 -timeout 6h"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("make -n gates-selftest output does not contain %q\n%s", want, out)
 		}
@@ -784,7 +784,7 @@ func TestGatesSelftestParallelismWiring(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 exit=%d, want 0\n%s", code, out)
 	}
-	for _, want := range []string{"row parallelism=3", "-parallel 3 -timeout 20m"} {
+	for _, want := range []string{"row parallelism=3", "-parallel 3 -timeout 6h"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 output does not contain %q\n%s", want, out)
 		}
