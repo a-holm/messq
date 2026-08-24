@@ -175,17 +175,21 @@ func joinPath(prefix, name string) string {
 func DigestOf(v any) (Digest, error) {
 	t := reflect.TypeOf(v)
 	d := Digest{Type: t.Name()}
-	if err := walkType(t, "", Always, &d, map[reflect.Type]bool{}); err != nil {
+	if err := walkType(t, "", Always, &d, 0); err != nil {
 		return Digest{}, err
 	}
 	sort.Slice(d.Fields, func(i, j int) bool { return d.Fields[i].Path < d.Fields[j].Path })
 	return d, nil
 }
 
+// maxWalkDepth bounds struct nesting expansion. It is what terminates a genuinely
+// recursive type deterministically; real wire types nest two or three deep.
+const maxWalkDepth = 8
+
 // walkType appends the JSON-visible leaves of t to d. path is the full JSON path of
 // the container itself ("" at the root); named fields extend it with joinPath,
 // arrays with "[]", maps with "<key>".
-func walkType(t reflect.Type, path string, presence Presence, d *Digest, seen map[reflect.Type]bool) error {
+func walkType(t reflect.Type, path string, presence Presence, d *Digest, depth int) error {
 	for t.Kind() == reflect.Pointer {
 		presence = Optional // nil is representable: the field can vanish or be null
 		t = t.Elem()
@@ -196,11 +200,9 @@ func walkType(t reflect.Type, path string, presence Presence, d *Digest, seen ma
 	kind := t.Kind()
 	switch { //nolint:staticcheck // QF1002: a tagged switch here trips exhaustive, whose default-signifies-exhaustive is false by policy
 	case kind == reflect.Struct:
-		if seen[t] {
-			return nil // recursive type: stop at the first cycle
+		if depth >= maxWalkDepth {
+			return nil // recursive type: stop expanding at a bounded depth
 		}
-		seen[t] = true
-		defer delete(seen, t)
 		for i := range t.NumField() {
 			f := t.Field(i)
 			// An embedded field of unexported type is itself "unexported" by name,
@@ -224,7 +226,7 @@ func walkType(t reflect.Type, path string, presence Presence, d *Digest, seen ma
 			}
 			if f.Anonymous && name == "" {
 				// Embedded struct: its fields inline into the parent's paths.
-				if err := walkType(f.Type, path, fpres, d, seen); err != nil {
+				if err := walkType(f.Type, path, fpres, d, depth+1); err != nil {
 					return err
 				}
 				continue
@@ -233,7 +235,7 @@ func walkType(t reflect.Type, path string, presence Presence, d *Digest, seen ma
 			if wireName == "" {
 				wireName = f.Name
 			}
-			if err := walkType(f.Type, joinPath(path, wireName), fpres, d, seen); err != nil {
+			if err := walkType(f.Type, joinPath(path, wireName), fpres, d, depth+1); err != nil {
 				return err
 			}
 		}
@@ -242,9 +244,9 @@ func walkType(t reflect.Type, path string, presence Presence, d *Digest, seen ma
 		if elem.Kind() == reflect.Uint8 {
 			return appendField(d, path, kindString, presence, "base64")
 		}
-		return walkType(elem, path+"[]", presence, d, seen)
+		return walkType(elem, path+"[]", presence, d, depth)
 	case kind == reflect.Array:
-		return walkType(t.Elem(), path+"[]", presence, d, seen)
+		return walkType(t.Elem(), path+"[]", presence, d, depth)
 	case kind == reflect.Map:
 		val := t.Elem()
 		note := "map[" + t.Key().Name() + "]" + val.Name()
