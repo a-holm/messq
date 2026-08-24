@@ -4,8 +4,10 @@ package store
 
 import (
 	"context"
+	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,7 +25,25 @@ import (
 //  2. no matching message is ever skipped: every published sequence is either present
 //     in the deliveries table (pending or inflight) or was returned by a fetch exactly
 //     once — flow control must delay, never drop.
+//
+// The per-check action budget follows the central preset's nightly-depth contract
+// (recovery_crash_test.go TestMain): the EFFECTIVE -rapid.steps value scales this
+// machine ×10 — the preset's steps=6 yields 60 local actions per check — so an explicit
+// nightly -rapid.steps deepens every check exactly as -rapid.checks multiplies how many
+// fresh machines run. The former hardcoded 200 made -rapid.steps a dead knob for this,
+// one of the package's heaviest property machines, and helped pin the suite against
+// TEST_TIMEOUT.
 func TestConsumerRapidDeliverySeed(t *testing.T) {
+	stepsRaw := flag.Lookup("rapid.steps")
+	if stepsRaw == nil {
+		t.Fatal("rapid.steps flag is not registered")
+	}
+	steps, stepsErr := strconv.Atoi(stepsRaw.Value.String())
+	if stepsErr != nil || steps <= 0 {
+		t.Fatalf("rapid.steps = %q, want a positive integer", stepsRaw.Value.String())
+	}
+	actionsPerCheck := steps * 10
+
 	rapid.Check(t, func(t *rapid.T) {
 		ctx := context.Background()
 		//nolint:usetesting // rapid.T predates testing.TB's TempDir and has no equivalent
@@ -71,7 +91,7 @@ func TestConsumerRapidDeliverySeed(t *testing.T) {
 			t.Fatalf("store clock is not *clock.Fake")
 		}
 
-		for i := 0; i < 200; i++ {
+		for i := 0; i < actionsPerCheck; i++ {
 			switch rapid.IntRange(0, 5).Draw(t, "action") {
 			case 0, 1: // publish
 				nextSeq++

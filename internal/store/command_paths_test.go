@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -369,31 +370,59 @@ func TestReapMarkerGarbageRefused(t *testing.T) {
 // TestDeleteStreamMultiChunkReap walks the chunk loop past one full chunk: with more
 // than deleteChunkRows messages the first chunk comes back full (marker stays), the
 // short final chunk clears it, and the name is immediately recreatable.
+//
+// The total seed rows are planted directly in one transaction — TestReapMultiChunkLoop's
+// idiom — instead of driven through the wired publisher: ten thousand durability=full
+// publish commits measured ~138 s of the package's wall time on a slow disk and dragged
+// the suite against TEST_TIMEOUT. What this test exists to prove — the live DeleteStream
+// chunk loop's marker lifecycle across a FULL first chunk and a short final one — still
+// runs fully wired; stream_stats is updated to match the planted rows so deleteStreamCmd
+// reports the totals the publisher would have maintained.
 func TestDeleteStreamMultiChunkReap(t *testing.T) {
 	st, _ := openWiredCommandPathStore(t, fakeClock(), Config{}, hooks{})
 	ctx := context.Background()
 
-	const total = deleteChunkRows + 5
 	if _, _, err := st.CreateStream(ctx, queue.DefaultConfig("bulk"), "tester"); err != nil {
 		t.Fatalf("create bulk stream: %v", err)
 	}
-	const perBatch = 500
-	for off := 0; off < total; off += perBatch {
-		n := perBatch
-		if off+n > total {
-			n = total - off
+	const total = deleteChunkRows + 5
+
+	// Plant total messages plus matching stats in one transaction; multi-row INSERTs
+	// of perStmt rows keep statements and bind lists bounded. The body goes in as the
+	// BLOB literal x'78' — messages.body is STRICT BLOB.
+	tx, tErr := st.rw.BeginTx(ctx, nil)
+	if tErr != nil {
+		t.Fatalf("begin plant: %v", tErr)
+	}
+	const perStmt = 50
+	for start := 0; start < total; start += perStmt {
+		end := min(start+perStmt, total)
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO messages (stream, seq, id, subject, body, size, published_at, trace_id) VALUES `)
+		args := make([]any, 0, (end-start)*7)
+		for i := start; i < end; i++ {
+			if i > start {
+				sb.WriteString(",")
+			}
+			fmt.Fprintf(&sb, "('bulk', ?, 'id-%06d',", i)
+			sb.WriteString("'bulk.hit',x'78',1,1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1')")
+			args = append(args, i+1)
 		}
-		reqs := make([]queue.PublishReq, n)
-		for i := range reqs {
-			reqs[i] = queue.PublishReq{Subject: "bulk.hit", Body: []byte("payload")}
+		if _, eErr := tx.ExecContext(ctx, sb.String(), args...); eErr != nil {
+			_ = tx.Rollback() // release the pooled conn: Close would otherwise block
+			t.Fatalf("plant messages at %d: %v", start, eErr)
 		}
-		ack, err := st.PublishBatch(ctx, BatchCmd{Stream: "bulk", Reqs: reqs})
-		if err != nil {
-			t.Fatalf("seed batch at %d: %v", off, err)
-		}
-		if len(ack.Results) != n {
-			t.Fatalf("seed batch at %d: %d results, want %d", off, len(ack.Results), n)
-		}
+	}
+	// Mirror what the wired publisher maintains: deleteStreamCmd reads Messages/Bytes
+	// from stream_stats, and the reap marker's Remaining count comes from the same row.
+	if _, sErr := tx.ExecContext(ctx,
+		`UPDATE stream_stats SET msgs = ?, bytes = ? WHERE stream = 'bulk'`,
+		int64(total), int64(total)); sErr != nil {
+		_ = tx.Rollback()
+		t.Fatalf("plant stream_stats: %v", sErr)
+	}
+	if cErr := tx.Commit(); cErr != nil {
+		t.Fatalf("commit plant: %v", cErr)
 	}
 
 	deleted, err := st.DeleteStream(ctx, "bulk", "bulk", "tester")
