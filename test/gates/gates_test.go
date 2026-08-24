@@ -32,7 +32,11 @@ import (
 // enforced). There is deliberately no wall-clock or stochastic guard on the matrix: a gate
 // that tests elapsed time is a gate nobody can trust, and the owner rule is that the saboteur
 // battery never carries one.
-const makeTimeout = 20 * time.Minute
+// const makeTimeout bounds one sabotage run's child `make` process. Owner rule (2026-08-24):
+// every timeout is at least 6 hours, so a slow-but-progressing row is never killed (only a true
+// hang would exhaust it). The matrix still has no timing assertion; this is purely an external
+// process bound.
+const makeTimeout = 6 * time.Hour
 
 // modDownloadTimeout bounds the single module-cache warm-up in TestMain. Downloading the whole
 // universe of transitive dependencies on a cold GitHub runner can take a while, so the bound
@@ -599,7 +603,20 @@ func baseWithoutFloors(t *testing.T, root string) {
 
 func git(t *testing.T, root string, args ...string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
+	// Disable background maintenance on the scratch repo so no .git writer survives
+	// the synchronous command. Modern git (>=2.36) starts an auto-maintenance /
+	// fsmonitor background process on git init that can still be writing to .git when
+	// the subtest ends and t.TempDir() runs os.RemoveAll, racing its cleanup with
+	// "unlinkat ... .git: directory not empty". These configs make the scratch repo
+	// statically quiet so teardown cannot race a live writer.
+	gitArgs := []string{
+		"-c", "maintenance.auto=false",
+		"-c", "gc.auto=0",
+		"-c", "feature.manyFiles=false",
+		"-c", "core.fsmonitor=false",
+	}
+	gitArgs = append(gitArgs, args...)
+	cmd := exec.CommandContext(t.Context(), "git", gitArgs...)
 	cmd.Dir = root
 	cmd.Env = append(childEnv(),
 		"GIT_AUTHOR_NAME=gates", "GIT_AUTHOR_EMAIL=gates@example.invalid",
@@ -756,7 +773,7 @@ func TestGatesSelftestParallelismWiring(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("make -n gates-selftest exit=%d, want 0\n%s", code, out)
 	}
-	for _, want := range []string{"row parallelism=1", "-parallel 1 -timeout 20m"} {
+	for _, want := range []string{"row parallelism=1", "-parallel 1 -timeout 6h"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("make -n gates-selftest output does not contain %q\n%s", want, out)
 		}
@@ -767,7 +784,7 @@ func TestGatesSelftestParallelismWiring(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 exit=%d, want 0\n%s", code, out)
 	}
-	for _, want := range []string{"row parallelism=3", "-parallel 3 -timeout 20m"} {
+	for _, want := range []string{"row parallelism=3", "-parallel 3 -timeout 6h"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 output does not contain %q\n%s", want, out)
 		}
