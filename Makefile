@@ -76,6 +76,14 @@ TEST_TIMEOUT ?= 6h
 test: ## Run the test suite under the race detector.
 	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
 
+# Issue #18's wire-contract machinery: internal/wirecheck (canonical JSON, normaliser,
+# shape digests, the ADDITIVE/BREAKING classifier) and internal/wirecode (the closed
+# machine-code enum source the API mapping, PROTOCOL.md and #14's envelope all bind to).
+# Its own make target so the daemon-coupled contract and docs suites grow into the same
+# entry point instead of stretching the ten-minute `ci` budget.
+wirecheck: ## Run the wire-contract checks (issue #18).
+	CGO_ENABLED=1 go test -race -count=1 -shuffle=on ./internal/wirecheck/... ./internal/wirecode/...
+
 # -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
 # internal/queue is exercised by the reference model in internal/model and internal/store
 # through the API and the crash harness; a per-package profile would undercount both and push
