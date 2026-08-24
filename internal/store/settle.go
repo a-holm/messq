@@ -129,7 +129,7 @@ func (s *Store) Settle(ctx context.Context, req SettleCmd) (SettleResult, error)
 	}
 	r := SettleCmd{Items: req.Items, DeadSink: req.DeadSink}
 	if r.DeadSink == nil {
-		r.DeadSink = s.deadSink
+		r.DeadSink = s.newDeadSink()
 	}
 	r.metrics = s.settleMetrics
 	r.limiter = s.settleBlocked

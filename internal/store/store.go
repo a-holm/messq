@@ -89,8 +89,8 @@ type Store struct {
 	// sweepMetrics counts every sweep outcome exactly (the #21 constant names are
 	// handed over; the counter itself lives behind this seam). Same contract.
 	sweepMetrics SweepMetrics
-	// deadSink is the #12 seam; until then it is DropSink (dead_policy=drop).
-	deadSink DeadSink
+	// dlq is the DLQ template + copy-budget config (issue #12 §12).
+	dlq queue.DLQConfig
 	// jitter is the settle scheduling seam (issue #10 §4); a shared per-process PCG.
 	jitter queue.Jitter
 	// maxSettleBatch / maxReasonBytes / eventRepeatInterval are the issue #10 §8 limits.
@@ -263,7 +263,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		settleBlocked:  make(map[string]*rejectionLimiter),
 		settleMetrics:  nopSettleMetrics{},
 		sweepMetrics:   nopSweepMetrics{},
-		deadSink:       DropSink{},
+		dlq:            opt.DLQ,
 		jitter:         defaultSettleJitter(opt.Jitter),
 		maxSettleBatch: opt.MaxSettleBatch, maxReasonBytes: opt.MaxReasonBytes,
 		maxSweepBatch:       opt.MaxSweepBatch,

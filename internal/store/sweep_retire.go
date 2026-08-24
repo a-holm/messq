@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,7 +45,7 @@ func (s *Store) Retire(ctx context.Context, req RetireCmd) (RetireResult, error)
 	}
 	r := RetireCmd{Limit: req.Limit, DeadSink: req.DeadSink}
 	if r.DeadSink == nil {
-		r.DeadSink = s.deadSink
+		r.DeadSink = s.newDeadSink()
 	}
 	r.metrics = s.sweepMetrics
 	res, err := s.enqueue(ctx, "store.Retire", r)
@@ -139,9 +140,14 @@ func (c RetireCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ Resu
 				Stream: t.stream, Consumer: t.name, Subject: o.subject,
 				Seq: uint64(o.seq), MsgID: o.msgID, TraceID: o.traceID,
 				Attempts: int32(o.attempts), Cause: queue.DeadCauseMaxDeliver,
-				LastReason: o.lastReason,
+				LastReason: o.lastReason, Generation: int32(o.generation),
+				MaxDeliver: int32(t.maxDeliver), Trigger: queue.DeadTriggerPolicyLowered,
 			}
 			evDead, sinkErr := c.DeadSink.Dead(ctx, tx, dc, now)
+			if errors.Is(sinkErr, queue.ErrDeadBudget) {
+				// Budget bound: leave the READY row; the next retire pass retries it.
+				return res, events, nil
+			}
 			if sinkErr != nil {
 				return nil, nil, fmt.Errorf("retire dead sink %q/%q seq %d: %w", t.stream, t.name, o.seq, sinkErr)
 			}

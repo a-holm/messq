@@ -58,6 +58,7 @@ type SweepResult struct {
 	Redelivered   int
 	Dead          int
 	Skipped       int
+	Deferred      int // DEAD rows left for a later tick because the copy budget bound this tx
 	Woke          []queue.ConsumerKey
 	More          bool
 	NextDueMS     int64 // MIN(visible_at) over remaining INFLIGHT rows; 0 = none
@@ -87,7 +88,7 @@ func (s *Store) Sweep(ctx context.Context, req SweepCmd) (SweepResult, error) {
 	}
 	r := SweepCmd{Limit: req.Limit, DeadSink: req.DeadSink}
 	if r.DeadSink == nil {
-		r.DeadSink = s.deadSink
+		r.DeadSink = s.newDeadSink()
 	}
 	r.metrics = s.sweepMetrics
 	r.jitter = s.jitter
@@ -277,8 +278,17 @@ func (c SweepCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ Resul
 				Stream: r.key.Stream, Consumer: r.key.Consumer, Subject: r.subject,
 				Seq: uint64(r.seq), MsgID: r.msgID, TraceID: r.traceID,
 				Attempts: r.attempts, Cause: dec.Cause, LastReason: r.lastReason,
+				Generation: r.generation, MaxDeliver: sp.cfg.MaxDeliver,
+				Trigger: queue.DeadTrigger(dec.Trigger),
 			}
 			evDead, sinkErr := c.DeadSink.Dead(ctx, tx, dc, now)
+			if errors.Is(sinkErr, queue.ErrDeadBudget) {
+				// The copy budget bound this transaction: leave the row INFLIGHT (it is
+				// still expired; the next tick retries the death, I4-bounded). No delete,
+				// no msg.dead — a deferred death is not a death yet.
+				res.Deferred++
+				continue
+			}
 			if sinkErr != nil {
 				return nil, nil, fmt.Errorf("sweep dead sink %q/%q seq %d: %w", r.key.Stream, r.key.Consumer, r.seq, sinkErr)
 			}

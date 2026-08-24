@@ -87,12 +87,16 @@ func TestDLQNameHelpers(t *testing.T) {
 // refuses first.
 func TestDeadBudgetContract(t *testing.T) {
 	b := &DeadBudget{Copies: 2, Bytes: 100}
-	if !b.CanCopy(50) || !b.CanCopy(50) {
-		t.Fatal("CanCopy(50) must be true twice (no mutation on can)")
+	for i := 0; i < 2; i++ {
+		if !b.CanCopy(50) {
+			t.Fatalf("CanCopy(50) must be true on ask %d (no mutation on can)", i+1)
+		}
 	}
 	b.Take(50)
-	if !b.CanCopy(50) || !b.CanCopy(50) {
-		t.Fatal("after take 50, CanCopy(50) must still be true")
+	for i := 0; i < 2; i++ {
+		if !b.CanCopy(50) {
+			t.Fatalf("after take 50, CanCopy(50) must still be true on ask %d", i+1)
+		}
 	}
 	b.Take(50)
 	if b.CanCopy(50) {
