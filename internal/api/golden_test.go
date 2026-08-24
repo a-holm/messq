@@ -520,10 +520,10 @@ func TestWireCodeEnum(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := wireCode(tc.err); got != tc.code {
+			if got := string(mapCode(tc.err)); got != tc.code {
 				t.Errorf("wireCode(%v) = %q, want %q", tc.err, got, tc.code)
 			}
-			if got := statusFor(tc.code); got != tc.status {
+			if got := codeStatus[Code(tc.code)]; got != tc.status {
 				t.Errorf("statusFor(%q) = %d, want %d", tc.code, got, tc.status)
 			}
 		})

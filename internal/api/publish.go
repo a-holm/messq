@@ -208,9 +208,9 @@ func (e batchEntry) publishReq(line int) (queue.PublishReq, error) {
 }
 
 // batchLineError wraps a per-entry validation error with its 1-based line index while
-// preserving the error's type, so wireCode still maps it to the right code.
+// preserving the error's type, so the mapping still resolves it to the right code.
 func batchLineError(line int, err error) error {
-	return errs.E(err, "", "line %d: %s", line, errMessage(err))
+	return errs.E(err, "", "line %d: %s", line, errorMessage(err))
 }
 
 // handlePublishBatch is POST /v1/streams/{stream}/messages:batch: NDJSON in, one

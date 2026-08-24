@@ -3,14 +3,12 @@
 package api
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/a-holm/messq/internal/errs"
-	"github.com/a-holm/messq/internal/id"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
@@ -106,20 +104,6 @@ type streamUpdateResponse struct {
 // the issue pins for DELETE.
 type deleteStreamResponse struct {
 	Deleted store.DeleteResult `json:"deleted"`
-}
-
-// errorEnvelope is the one wire shape every error shares (issue §7 / PLAN §7): a stable
-// machine code, one human sentence, the suggested next commands, and the request's
-// trace id.
-type errorEnvelope struct {
-	Error errorBody `json:"error"`
-}
-
-type errorBody struct {
-	Code    string   `json:"code"`
-	Message string   `json:"message"`
-	Next    []string `json:"next"`
-	TraceID string   `json:"trace_id"`
 }
 
 func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
@@ -220,121 +204,4 @@ func (s *Server) handleDeleteStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, deleteStreamResponse{Deleted: res})
-}
-
-// writeJSON writes v as a JSON response with the given status. Encoding a response can
-// only fail after the header is already sent, so the error is logged, not surfaced.
-func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		s.logger.Warn("api: write response", "err", err)
-	}
-}
-
-// writeError renders err as the issue's error envelope. The wire code and status are
-// derived from the sentinel; any extra next commands the caller knows about are appended
-// after the ones the error already carries.
-func (s *Server) writeError(w http.ResponseWriter, err error, next ...string) {
-	body := errorBody{
-		Code:    wireCode(err),
-		Message: errMessage(err),
-		Next:    append(errs.NextOf(err), next...),
-		TraceID: id.NewTraceID(rand.Reader).String(),
-	}
-	if body.Next == nil {
-		body.Next = []string{}
-	}
-	s.writeJSON(w, statusFor(body.Code), errorEnvelope{Error: body})
-}
-
-// wireCode maps an error to its wire code. The order matters: stream_exists, reserved_name
-// and would_lose_data each wrap a broader sentinel (conflict / bad_request), and the
-// publish-layer typed errors (subject_mismatch, reserved_header, too_large vs
-// header_too_large) wrap ErrBadSubject / ErrBadRequest / ErrTooLarge, so their typed
-// checks run before the generic ones.
-func wireCode(err error) string {
-	var existsErr *store.StreamExistsError
-	if errors.As(err, &existsErr) {
-		return "stream_exists"
-	}
-	if errors.Is(err, queue.ErrReservedName) {
-		return "reserved_name"
-	}
-	var immErr *store.ImmutableFieldError
-	if errors.As(err, &immErr) {
-		return "immutable_field"
-	}
-	var unsupErr *unsupportedError
-	if errors.As(err, &unsupErr) {
-		return "unsupported"
-	}
-	var loseErr *queue.WouldLoseDataError
-	if errors.As(err, &loseErr) {
-		return "would_lose_data"
-	}
-	var mismatchErr *queue.MismatchError
-	if errors.As(err, &mismatchErr) {
-		return "subject_mismatch"
-	}
-	var reservedHdrErr *queue.ReservedHeaderError
-	if errors.As(err, &reservedHdrErr) {
-		return "reserved_header"
-	}
-	var tooLargeErr *queue.TooLargeError
-	if errors.As(err, &tooLargeErr) {
-		if tooLargeErr.What == "body" {
-			return "too_large"
-		}
-		return "header_too_large"
-	}
-	switch {
-	case errors.Is(err, errs.ErrNotFound):
-		return "not_found"
-	case errors.Is(err, errs.ErrConflict):
-		return "conflict"
-	case errors.Is(err, errs.ErrBadSubject):
-		return "bad_subject"
-	case errors.Is(err, errs.ErrTooLarge):
-		return "too_large"
-	case errors.Is(err, errs.ErrBadRequest):
-		return "bad_request"
-	case errors.Is(err, errs.ErrReadOnly):
-		return "read_only"
-	case errors.Is(err, errs.ErrShuttingDown):
-		return "shutting_down"
-	default:
-		return "internal"
-	}
-}
-
-// statusFor turns a wire code into its HTTP status.
-func statusFor(code string) int {
-	switch code {
-	case "not_found":
-		return http.StatusNotFound
-	case "stream_exists", "would_lose_data", "conflict", "immutable_field":
-		return http.StatusConflict
-	case "reserved_name", "bad_request", "bad_subject", "subject_mismatch", "header_too_large", "reserved_header", "unsupported":
-		return http.StatusBadRequest
-	case "too_large":
-		return http.StatusRequestEntityTooLarge
-	case "read_only", "shutting_down":
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
-	}
-}
-
-// errMessage extracts the human sentence to carry in the envelope: the teaching error's
-// own message when the error is an errs.Error, otherwise the error's rendered text. The
-// typed store/queue errors (StreamExistsError, WouldLoseDataError) are not errs.Errors, so
-// their full rendered text — which names the differing fields or the at-risk counts — is
-// what the envelope carries.
-func errMessage(err error) string {
-	var te *errs.Error
-	if errors.As(err, &te) {
-		return te.Msg
-	}
-	return err.Error()
 }
