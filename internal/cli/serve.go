@@ -474,6 +474,44 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		WriterSubmitTimeout:   cfg.writerSubmitTimeout,
 		MaxConns:              cfg.maxConns,
 	})
+
+	// Attach the group-commit engine with the registry as its committed-event sink, so
+	// a publish wakes the parked long polls whose filter snapshot matches (issue #14
+	// §7 wake source A). Without the engine the store still serves via runSolo, but no
+	// fan-out exists — the engine IS the production path.
+	wr, err := st.NewWriter(store.Config{
+		Durability: cfg.durability,
+		// QueueDepth <= 0 means the engine's 2048 default (A1's --cmd-queue row);
+		// the flag itself stays unwired until the cobra tree (#23) owns it.
+	}, store.WithEventSink(srv.WaiterRegistry()))
+	if err != nil {
+		fmt.Fprintf(stderr, "messq: attach writer engine: %v\n", err)
+		return exitError
+	}
+	defer func() {
+		if closeErr := wr.Close(context.Background()); closeErr != nil {
+			fmt.Fprintf(stderr, "messq: close writer: %v\n", closeErr)
+		}
+	}()
+
+	// The expiry sweeper wakes parked fetches when a redelivery becomes due (#11 §7
+	// wake source B): the registry is its store.Waker.
+	sweeper := store.NewSweeper(st, store.SweepConfig{}, srv.WaiterRegistry(), logger)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		if sweepErr := sweeper.Run(ctx); sweepErr != nil {
+			logger.Warn("sweeper exited", "err", sweepErr)
+		}
+	}()
+	defer func() {
+		select {
+		case <-sweepDone:
+		case <-clk.NewTimer(2 * time.Second).C():
+			logger.Warn("sweeper did not stop within 2s")
+		}
+	}()
+
 	if err := srv.Serve(ctx, ln); err != nil {
 		fmt.Fprintf(stderr, "messq: serve: %v\n", err)
 		return exitError

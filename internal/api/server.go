@@ -36,6 +36,9 @@ type Server struct {
 	// compiled is the wildcard matcher index over routes(); routesOnce builds it.
 	compiled   []*compiledRoute
 	routesOnce sync.Once
+	// waiters is the bounded long-poll park/wake fabric: store.Waker for the sweeper
+	// and obs.Sink for committed publishes.
+	waiters *Registry
 	// cfg carries every §9 knob with its default already applied; handlers read the
 	// effective values from here so clamps echo what the server actually enforces.
 	cfg Config
@@ -146,10 +149,16 @@ func New(cfg Config) *Server {
 		startedAt: cfg.Clock.Now(),
 		reqGen:    id.NewGen(cfg.Clock, id.WithEntropy(rand.Reader)),
 		conns:     newConnLimiter(cfg.MaxConns),
+		waiters:   NewRegistry(cfg.MaxWaiters, cfg.MaxWaitersPerConsumer),
 		cfg:       cfg,
 		limits:    cfg.Limits,
 	}
 }
+
+// WaiterRegistry exposes the long-poll park/wake fabric for daemon wiring: the serve
+// command passes it to the store as the committed-event sink (store.WithEventSink) and
+// to the sweeper as its store.Waker.
+func (s *Server) WaiterRegistry() *Registry { return s.waiters }
 
 // Handler assembles the middleware chain over the mux built from routes(): recover →
 // request id → conn limit → body limit → authz (#16 slots in here) → envelope-
@@ -190,6 +199,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			return err
 		case <-ctx.Done():
+			// Release parked long polls FIRST so their handlers finish writing
+			// (200 empty, hold_reason shutting_down) while the HTTP drain waits.
+			s.waiters.ReleaseAll()
 			shCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ReadHeaderTimeout)
 			defer cancel()
 			if err := hs.Shutdown(shCtx); err != nil {
