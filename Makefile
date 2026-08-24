@@ -169,11 +169,21 @@ seam-defaults: ## Assert VULNSCAN and TEST_COUNT still carry their repository de
 	if [[ "$$failed" == true ]]; then exit 1; fi; \
 	echo "seam-defaults: VULNSCAN and TEST_COUNT hold their defaults"
 
-# One scratch copy of the tree per gate, one mutation applied, one make target run: a gate
-# nobody has seen fail is a gate nobody knows works. -parallel bounds the fan-out, because each
-# row runs a full lint or test of its own copy.
+# A row is already a whole make target with its own Go/build/lint parallelism. Running two
+# rows at once creates nested process-tree fan-out, so serial is the hardware-agnostic default.
+# The override is for deliberate local diagnostics; required CI pins the same value explicitly.
+GATES_PARALLEL ?= 1
 gates-selftest: ## Prove every gate bites, by breaking each one on a scratch copy of the tree.
-	go test -tags gatecheck -count=1 -v -parallel 8 -timeout 20m ./test/gates/...
+	@case '$(GATES_PARALLEL)' in \
+		''|*[!0-9]*|0) echo "gates-selftest: GATES_PARALLEL must be a positive integer, got '$(GATES_PARALLEL)'" >&2; exit 2 ;; \
+	esac
+	@echo "gates-selftest: row parallelism=$(GATES_PARALLEL)"
+	@if [[ -n "$${GITHUB_STEP_SUMMARY:-}" ]]; then \
+		printf '### gates-selftest\n\n- row parallelism: `%s`\n' '$(GATES_PARALLEL)' >>"$$GITHUB_STEP_SUMMARY"; \
+	fi
+	# -parallel here bounds the fan-out of sibling row process trees, not a CPU count: each row
+	# is already a full lint or test of its own scratch copy and parallelizes internally.
+	go test -tags gatecheck -count=1 -v -parallel $(GATES_PARALLEL) -timeout 20m ./test/gates/...
 
 # One target per invocation: `go test -fuzz` drives a single target at a time, so the lane is a
 # loop rather than a pattern. The committed seed corpus under each package's
