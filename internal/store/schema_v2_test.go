@@ -23,8 +23,8 @@ func TestSchemaV2HasStreamStats(t *testing.T) {
 			t.Logf("close store: %v", cerr)
 		}
 	}()
-	if got := st.SchemaVersion(); got != 2 {
-		t.Fatalf("SchemaVersion() = %d, want 2", got)
+	if got := st.SchemaVersion(); got != 3 {
+		t.Fatalf("SchemaVersion() = %d, want 3", got)
 	}
 	var n int
 	if err := st.ro.QueryRowContext(ctx,
