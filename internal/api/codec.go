@@ -31,7 +31,7 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request, max int64) (T, er
 // decodeJSONInto is decodeJSON with a caller-seeded destination: handlers whose wire
 // shape pre-seeds defaults (the consumer create form) pass their seeded struct.
 func decodeJSONInto[T any](w http.ResponseWriter, r *http.Request, max int64, v *T) error {
-	if ct := r.Header.Get("Content-Type"); ct != "" && !isJSONContentType(ct) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !isJSONContentType(ct) && !isCurlFormDefault(ct) {
 		return errs.WithCode(errs.E(errs.ErrBadRequest, "api.decode",
 			"content type %q is not JSON; send application/json", ct),
 			string(CodeUnsupportedMediaType))
@@ -52,6 +52,20 @@ func decodeJSONInto[T any](w http.ResponseWriter, r *http.Request, max int64, v 
 			"trailing data after the JSON value; send exactly one JSON document")
 	}
 	return nil
+}
+
+// isCurlFormDefault reports whether a Content-Type is the one curl -d sends when no -H
+// overrides it: application/x-www-form-urlencoded. PLAN §7's five-line shell worker —
+// `curl … -d '{"batch":1,"wait_ms":5000}'` — relies on that default, so it is treated
+// as "type unspecified" rather than as a typed non-JSON body. This is a deliberate,
+// documented exception to the 415 policy (issue #14 §10 vs PLAN §7 worker, resolved for
+// the executable transcript); any OTHER typed non-JSON media type is still refused.
+func isCurlFormDefault(ct string) bool {
+	media := ct
+	if i := strings.IndexByte(media, ';'); i >= 0 {
+		media = media[:i]
+	}
+	return strings.TrimSpace(strings.ToLower(media)) == "application/x-www-form-urlencoded"
 }
 
 // isJSONContentType reports whether a Content-Type value names JSON: application/json,
