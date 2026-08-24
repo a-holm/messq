@@ -171,6 +171,25 @@ lifecycle_reason="Issue #17 design: internal/lifecycle orchestrates injected com
 forbid_imports test internal/lifecycle "$lifecycle_reason" \
 	"$module/internal/store" "$module/internal/queue"
 
+# internal/wirecode is the single closed-code source (brief-issue-18 §8 Q3). It is a
+# const table at the bottom of the tree: api.statusFor, #14's envelope and the #18 gates
+# all consume it, so it must never grow an upward dependency.
+wirecode_reason="Issue #18 §8 Q3: internal/wirecode is the shared closed-code source and must stay a dependency-free bottom layer."
+forbid_deps prod internal/wirecode "$wirecode_reason" \
+	database/sql net/http os
+forbid_deps test internal/wirecode "$wirecode_reason" \
+	"$module/internal/api" "$module/internal/store" "$module/internal/queue" "$module/internal/cli" \
+	"$module/internal/obs" "$module/internal/verify"
+
+# internal/wirecheck reflects over the wire types other packages hand it (issue #18).
+# Dependency-light by design: encoding/json, reflect and stdlib — never the API or store
+# layers it will digest, so cross-version replay (#34/#36) can link it against old trees.
+wirecheck_reason="Issue #18: internal/wirecheck reflects over types passed in from above; it must never import the API, store, queue or CLI layers it digests."
+forbid_deps test internal/wirecheck "$wirecheck_reason" \
+	net/http database/sql \
+	"$module/internal/api" "$module/internal/store" "$module/internal/queue" "$module/internal/cli" \
+	"$module/internal/obs" "$module/internal/verify"
+
 client_reason="Issue #1 design: pkg/client is public and must not depend on internal packages."
 # Two steps, for the reason dep-budget.sh gives: grep exits 1 when nothing leaked, which is the
 # expected state, so its status must be tolerated. Tolerating deps_of's status in the same
