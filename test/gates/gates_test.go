@@ -19,10 +19,12 @@ import (
 )
 
 // makeTimeout bounds one sabotage run. A gate that hangs is a failed gate, not a stalled suite.
-// The cover and test rows run the full `go test -race` suite in a scratch copy; under the
+// The cover and test rows run the full `go test -race` suite in a scratch copy; under the former
 // -parallel 8 load the process tests (SIGKILL re-exec, curl transcript, golden socket suite)
-// push a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
-// row, PR #55), so the bound is twenty.
+// pushed a single run past ten minutes on a cold-cache GitHub runner (measured 765s for a cover
+// row, PR #55), so the bound is twenty. Rows now schedule one at a time by default
+// (GATES_PARALLEL ?= 1), which should shorten each row; the bound stays put until serial
+// measurements exist.
 //
 // #49 E: the whole matrix at -parallel 8 measures ~97-112 s locally against the issue's ~60 s
 // aspiration. That gap is recorded here as the acceptance ruling (the same class of explicit
@@ -44,8 +46,8 @@ const modDownloadTimeout = 5 * time.Minute
 // (scratchCopy) and runs its make target there. The scratch copies share THIS binary's process
 // environment, including GOMODCACHE (the per-user module cache under GOPATH/pkg/mod), so when
 // the GitHub actions/setup-go cache restore misses — as it does on a cold runner, which is the
-// rule right after a main merge — the first eight rows all race to download the same modules
-// at the same time, into the same cache, from the same network paths. What looks like robust
+// rule right after a main merge — any rows admitted to run concurrently all race to download
+// the same modules into the same cache, from the same network paths. What looks like robust
 // parallelism is actually a thundering herd of `go` processes each fetching on first use. That
 // is not a latent edge; it is exactly the failure the required gates job hit on main e41b480,
 // and it shows up in two symptoms:
@@ -59,13 +61,15 @@ const modDownloadTimeout = 5 * time.Minute
 //     cleanup: unlinkat ...") because the row's own `go` was still writing modules into its
 //     scratch tree when RemoveAll ran.
 //
-// The fix is a single warm-up HERE, in TestMain, BEFORE m.Run() fans the rows out in parallel.
-// One `go mod download` in the real repository root makes every module the rows will need land
-// in the shared cache while only one downloader is running. Because every scratch copy shares
-// that same cache, every subsequent row `go` invocation finds its modules already present: no
-// concurrent downloads, no stderr pollution, no TempDir-cleanup race. This must hold even when
-// the setup-go cache restore misses, so this deliberately does NOT depend on the cache being
-// warm — it warms the cache itself.
+// The fix is a single warm-up HERE, in TestMain, BEFORE m.Run() admits the rows. The default
+// schedules one row at a time (GATES_PARALLEL ?= 1), so the warm-up is cheap on that path, but
+// it must still hold for an explicit higher-parallel diagnostics override and for deterministic
+// cold-cache behavior. One `go mod download` in the real repository root makes every module the
+// rows will need land in the shared cache while only one downloader is running. Because every
+// scratch copy shares that same cache, every subsequent row `go` invocation finds its modules
+// already present: no concurrent downloads, no stderr pollution, no TempDir-cleanup race. This
+// must hold even when the setup-go cache restore misses, so this deliberately does NOT depend on
+// the cache being warm — it warms the cache itself.
 func TestMain(m *testing.M) {
 	start := clock.System{}.Now()
 	root := repoRoot()
@@ -695,7 +699,11 @@ func runMake(t *testing.T, root, target string, extra ...string) (int, string) {
 //
 // MAKE is the quiet one. Running the matrix from `make ci` hands the child a MAKEFLAGS it never
 // asked for, so a parallel outer build would silently make every sabotage run parallel too.
-var leakedPrefixes = []string{"GIT_", "MAKEFLAGS=", "MAKELEVEL=", "MFLAGS="}
+// GATES_PARALLEL controls only the already-running outer gatecheck binary. It must not leak
+// into scratch `make` commands or mask a mutated/default Makefile value: an inherited override
+// would hide a regressed default, and stripping it here keeps the default-wiring test independent
+// of CI's explicit environment setting.
+var leakedPrefixes = []string{"GIT_", "MAKEFLAGS=", "MAKELEVEL=", "MFLAGS=", "GATES_PARALLEL="}
 
 // childEnv is the environment a scratch copy runs in.
 func childEnv() []string {
@@ -714,4 +722,70 @@ func childEnv() []string {
 		}
 	}
 	return out
+}
+
+// TestGatesSelftestParallelismWiring pins the Makefile's GATES_PARALLEL wiring with a dry-run,
+// so no matrix row executes and the check is load-free. The default and an explicit override must
+// both flow into the rendered `go test -parallel` flag and the log line, and invalid values must
+// be rejected by the target's own validation before any `go test` starts.
+func TestGatesSelftestParallelismWiring(t *testing.T) {
+	root := repoRoot()
+
+	run := func(args ...string) (int, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), makeTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "make", args...)
+		cmd.Dir = root
+		cmd.Env = childEnv()
+		out, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, string(out)
+		case errors.As(err, &exitErr):
+			return exitErr.ExitCode(), string(out)
+		default:
+			t.Fatalf("make %v: %v\n%s", args, err, out)
+			return 0, ""
+		}
+	}
+
+	// Default leg: no override — the repository default must be serial.
+	code, out := run("--no-print-directory", "-n", "gates-selftest")
+	if code != 0 {
+		t.Fatalf("make -n gates-selftest exit=%d, want 0\n%s", code, out)
+	}
+	for _, want := range []string{"row parallelism=1", "-parallel 1 -timeout 20m"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("make -n gates-selftest output does not contain %q\n%s", want, out)
+		}
+	}
+
+	// Override leg: an explicit value flows through unchanged and never a stale 8.
+	code, out = run("--no-print-directory", "-n", "gates-selftest", "GATES_PARALLEL=3")
+	if code != 0 {
+		t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 exit=%d, want 0\n%s", code, out)
+	}
+	for _, want := range []string{"row parallelism=3", "-parallel 3 -timeout 20m"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 output does not contain %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "-parallel 8") {
+		t.Fatalf("make -n gates-selftest GATES_PARALLEL=3 contains a stale -parallel 8\n%s", out)
+	}
+
+	// Validation leg: the target's first recipe command rejects invalid values with exit 2 and a
+	// message naming the offending value, before any go test starts.
+	for _, bad := range []string{"0", "bogus"} {
+		code, out = run("--no-print-directory", "gates-selftest", "GATES_PARALLEL="+bad)
+		if code != 2 {
+			t.Fatalf("make gates-selftest GATES_PARALLEL=%s exit=%d, want 2\n%s", bad, code, out)
+		}
+		if !strings.Contains(out, "GATES_PARALLEL must be a positive integer") ||
+			!strings.Contains(out, bad) {
+			t.Fatalf("make gates-selftest GATES_PARALLEL=%s does not name the invalid value\n%s", bad, out)
+		}
+	}
 }

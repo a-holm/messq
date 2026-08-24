@@ -55,7 +55,10 @@ jobs:
   # works, and every row here is deterministic (no fuzz-style coordinator flake).
   gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Rows are intentionally serial: each row is already a full make target and may consume the
+    # runner's CPUs internally. Thirty minutes leaves the 20-minute per-row hang bound meaningful
+    # and gives the serial matrix room to finish without reintroducing nested fan-out.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +68,10 @@ jobs:
           go-version-file: go.mod
           check-latest: false
           cache-dependency-path: go.sum
-      - run: make gates-selftest
+      - name: Gates self-test (serial row scheduling)
+        env:
+          GATES_PARALLEL: "1"
+        run: make gates-selftest
 
   # The main-push crash lane: 100 kill/restart cycles in both durability modes against the
   # three-valued ledger oracle. It is deliberately NOT on the pull-request path — the 8-cycle
