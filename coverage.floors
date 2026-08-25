@@ -23,3 +23,4 @@ internal/docsguard                 95.0    issue #4: the gate that keeps the nor
 internal/testutil/ledger           85.0    issue #8: the three-valued reconciliation ledger oracle
 internal/wirecheck                 90.0    issue #18: canonical JSON, normaliser, digests, classifier
 internal/wirecode                  95.0    issue #18: the closed machine-code enum source
+internal/obs                       90.0    issue #19: the closed vocabulary is the three-surface contract
