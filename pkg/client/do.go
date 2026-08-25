@@ -36,10 +36,10 @@ type wireErrorBody struct {
 // do performs one JSON-in/JSON-out request with the control-plane timeout applied.
 func do[Res any](ctx context.Context, c *Client, method, path string, query url.Values, body any) (Res, error) {
 	return send[Res](ctx, c, request{
-		method: method,
-		path:   path,
-		query:  query,
-		body:   body,
+		method:   method,
+		path:     path,
+		query:    query,
+		jsonBody: body,
 	})
 }
 
@@ -49,7 +49,7 @@ func doUntimed[Res any](ctx context.Context, c *Client, method, path string, que
 		method:           method,
 		path:             path,
 		query:            query,
-		body:             body,
+		jsonBody:         body,
 		noControlTimeout: true,
 	})
 }
@@ -58,7 +58,11 @@ type request struct {
 	method           string
 	path             string
 	query            url.Values
-	body             any
+	jsonBody         any // JSON-marshalled when non-nil
+	rawBody          io.Reader
+	rawLen           int64 // >= 0 sets Content-Length; -1 streams chunked
+	rawContentType   string
+	extraHeaders     [][2]string
 	noControlTimeout bool
 }
 
@@ -83,22 +87,40 @@ func send[Res any](ctx context.Context, c *Client, r request) (Res, error) {
 	}
 
 	var rdr io.Reader
-	var payload []byte
-	if r.body != nil {
-		b, err := json.Marshal(r.body)
+	contentType := ""
+	switch {
+	case r.rawBody != nil:
+		rdr = r.rawBody
+		if r.rawLen >= 0 {
+			rdr = io.LimitReader(r.rawBody, r.rawLen) // keep Content-Length honest
+		}
+		contentType = r.rawContentType
+	case r.jsonBody == nil:
+		// nothing to encode
+	case isJSONRaw(r.jsonBody):
+		rdr = strings.NewReader(string(r.jsonBody.(jsonRaw)))
+		contentType = "application/json"
+	default:
+		b, err := json.Marshal(r.jsonBody)
 		if err != nil {
 			return zero, &Error{Code: "internal", Message: "encode request: " + err.Error(), err: err}
 		}
-		payload = b
 		rdr = bytes.NewReader(b)
+		contentType = "application/json"
 	}
 	req, err := http.NewRequestWithContext(ctx, r.method, u, rdr)
 	if err != nil {
 		return zero, &Error{Code: "internal", Message: "build request: " + err.Error(), err: err}
 	}
+	if r.rawLen >= 0 && r.rawBody != nil {
+		req.ContentLength = r.rawLen
+	}
 	req.Header.Set("User-Agent", c.userAgent)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for _, kv := range r.extraHeaders {
+		req.Header.Set(kv[0], kv[1])
 	}
 	if c.credential.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.credential.token)

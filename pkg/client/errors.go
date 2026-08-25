@@ -15,10 +15,12 @@ import (
 // for its machine code via errors.Is; an unknown code matches none, so a newer daemon
 // degrades to a rendered message instead of breaking older clients (Decision 2).
 var (
-	ErrBadRequest           = errors.New("bad_request")
-	ErrBadSubject           = errors.New("bad_subject")
-	ErrSubjectMismatch      = errors.New("subject_mismatch")
-	ErrReservedHeader       = errors.New("reserved_header")
+	ErrBadRequest      = errors.New("bad_request")
+	ErrBadSubject      = errors.New("bad_subject")
+	ErrSubjectMismatch = errors.New("subject_mismatch")
+	// Reserved-header refusals are a bad_request family member AND their own
+	// sentinel: the %w chain makes both errors.Is targets true.
+	ErrReservedHeader       = fmt.Errorf("reserved_header: %w", ErrBadRequest)
 	ErrReservedName         = errors.New("reserved_name")
 	ErrInvalidToken         = errors.New("invalid_token")
 	ErrUnauthorized         = errors.New("unauthorized")
