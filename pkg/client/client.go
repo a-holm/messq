@@ -75,7 +75,7 @@ func New(addr string, opts ...Option) (*Client, error) {
 
 	for _, opt := range opts {
 		if err := opt(c); err != nil {
-			return nil, &Error{Code: "config_error", Message: err.Error(), err: fmt.Errorf("%w: %v", ErrConfig, err)}
+			return nil, &Error{Code: "config_error", Message: err.Error(), err: fmt.Errorf("%w: %w", ErrConfig, err)}
 		}
 	}
 	if c.hc == nil {

@@ -192,7 +192,7 @@ type outcome struct {
 
 type workItem struct {
 	msg   Delivered
-	ctx   context.Context
+	ctx   context.Context //nolint:containedctx // the per-message cancellable context IS the item; the keeper cancels it by reference
 	start time.Time
 }
 
@@ -395,7 +395,7 @@ func (w *Worker) preflight(ctx context.Context) (ConsumerView, error) {
 			e := WorkerEvent{Kind: EventStarted}
 			if w.cfg.Concurrency > int(info.MaxAckPending) {
 				e.Err = fmt.Errorf(
-					"Concurrency %d exceeds max_ack_pending %d; raise it with `messq consumer edit` "+
+					"concurrency %d exceeds max_ack_pending %d; raise it with `messq consumer edit` "+
 						"or the worker will idle on flow_control", w.cfg.Concurrency, info.MaxAckPending)
 			}
 			w.emit(e)
@@ -452,7 +452,7 @@ func (w *Worker) fetcherLoop(ctx context.Context, info ConsumerView, st *workerS
 		res, err := w.client.Fetch(ctx, w.cfg.Stream, w.cfg.Consumer, FetchRequest{Batch: batch, Wait: w.cfg.Wait})
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return nil //nolint:nilerr // ctx ended mid-fetch: stopping cleanly IS the outcome
 			}
 			if w.cfg.FailFast && errors.Is(err, ErrNotFound) {
 				return err
@@ -619,7 +619,7 @@ func (w *Worker) runHandler(ctx context.Context, it *workItem, h Handler, _ *wor
 				herr = Permanent(fmt.Errorf("panic: %v", r))
 			case Repanic:
 				panic(r)
-			default: // NakAndContinue
+			case NakAndContinue:
 				herr = fmt.Errorf("panic: %v", r)
 			}
 		}()
@@ -648,6 +648,8 @@ func (w *Worker) runHandler(ctx context.Context, it *workItem, h Handler, _ *wor
 
 // causeText renders the INNERMOST error's message: wrappers are client machinery;
 // the reason budget is spent on the user's sentence.
+//
+//nolint:errorlint // this IS the generic unwrap walker: it must switch on the unwrap interfaces themselves
 func causeText(err error) string {
 	for {
 		switch x := err.(type) {

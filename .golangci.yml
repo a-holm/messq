@@ -156,6 +156,27 @@ linters:
         linters:
           - forbidigo
 
+      # pkg/client worker tests run inside testing/synctest bubbles, where
+      # time.Sleep/After are the VIRTUAL-TIME ADVANCE primitives (deterministic,
+      # wall-clock-free). The ban's rationale — hidden real blocking — does not apply.
+      - path: pkg/client/.*_test\.go
+        text: time.Sleep is banned
+        linters:
+          - forbidigo
+
+      # Same for the other wall-clock symbols inside a bubble: time is simulated.
+      - path: pkg/client/.*_test\.go
+        text: Wall-clock access outside internal/clock
+        linters:
+          - forbidigo
+
+      # Test doubles (fake brokers, relays) deliberately ignore drain/relay failures;
+      # production paths keep full errcheck discipline.
+      - path: pkg/client/.*_test\.go
+        text: Error return value
+        linters:
+          - errcheck
+
       # Metrics registration lives in exactly one package.
       - path: internal/obs/
         text: custom registry only|default registry

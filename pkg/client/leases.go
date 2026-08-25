@@ -37,7 +37,15 @@ type leaseHeap []*lease
 func (h leaseHeap) Len() int           { return len(h) }
 func (h leaseHeap) Less(i, j int) bool { return h[i].nextExtendAt.Before(h[j].nextExtendAt) }
 func (h leaseHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].index = i; h[j].index = j }
-func (h *leaseHeap) Push(x any)        { l := x.(*lease); l.index = len(*h); *h = append(*h, l) }
+func (h *leaseHeap) Push(x any) {
+	l, ok := x.(*lease)
+	if !ok {
+		return // unreachable by construction; heap.Interface hands back what we pushed
+	}
+	l.index = len(*h)
+	*h = append(*h, l)
+}
+
 func (h *leaseHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -97,7 +105,6 @@ func (w *Worker) keeperLoop(ctx context.Context, st *workerState) {
 			for _, l := range *h {
 				w.giveUp(ctx, st, l, "worker draining")
 			}
-			h = &leaseHeap{}
 			return
 		}
 
@@ -146,21 +153,23 @@ func (w *Worker) extendDue(ctx context.Context, st *workerState, h *leaseHeap) {
 
 	var due []*lease
 	for h.Len() > 0 && !h.peek().nextExtendAt.After(windowEnd) {
-		due = append(due, heap.Pop(h).(*lease))
+		popped, ok := heap.Pop(h).(*lease)
+		if !ok { // unreachable by construction (see Push)
+			continue
+		}
+		due = append(due, popped)
 	}
 	if len(due) == 0 {
 		return
 	}
 
 	// T7 give-up: totalHeld + ackWait > MaxLease ⇒ stop extending THIS window honestly.
-	tokens := make([]string, 0, len(due))
 	live := due[:0]
 	for _, l := range due {
 		if w.cfg.MaxLease > 0 && l.totalHeld+l.ackWait > w.cfg.MaxLease {
 			w.giveUp(ctx, st, l, "lease expired")
 			continue
 		}
-		tokens = append(tokens, l.token)
 		live = append(live, l)
 	}
 	if len(live) == 0 {

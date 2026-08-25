@@ -203,6 +203,13 @@ if [[ -n "$leaked" ]]; then
 	status=1
 fi
 
+# D14 (PLAN.md): the CLI consumes pkg/client and must not contain a SECOND HTTP client.
+# A direct-import ban, deliberately not transitive: pkg/client itself rides net/http, so
+# the moment internal/cli imports it this row would false-positive if it were transitive.
+# internal/cli's own _test files keep httptest; only production files are banned.
+cli_http_reason="D14/issue #22: the CLI renders pkg/client; its own files must never import net/http."
+forbid_imports prod internal/cli "$cli_http_reason" net/http
+
 if ((status == 0)); then
 	echo "layers: dependency directions hold"
 fi

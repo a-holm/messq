@@ -52,13 +52,19 @@ func (c Credential) String() string { return c.redacted() }
 // Format implements fmt.Formatter so EVERY verb (%q, %x, %d, …) renders redacted.
 func (c Credential) Format(f fmt.State, verb rune) {
 	s := c.redacted()
+	write := func(str string) {
+		//nolint:errcheck // fmt.State writers from Printf never fail mid-verb and Format reports nothing
+		_, _ = fmt.Fprint(f, str)
+	}
 	switch verb {
 	case 'q':
-		_, _ = fmt.Fprint(f, strconv.Quote(s))
-	case 'x', 'X':
-		_, _ = fmt.Fprint(f, fmt.Sprintf("%"+string(verb), []byte(s)))
+		write(strconv.Quote(s))
+	case 'x':
+		write(fmt.Sprintf("%x", []byte(s)))
+	case 'X':
+		write(strings.ToUpper(fmt.Sprintf("%x", []byte(s))))
 	default:
-		_, _ = fmt.Fprint(f, s)
+		write(s)
 	}
 }
 
@@ -82,9 +88,6 @@ func (c Credential) LogValue() slog.Value { return slog.StringValue(c.redacted()
 // greppable by name so audits stay trivial. Callers must never log or serialize it.
 func (c Credential) Reveal() string { return c.token }
 
-// empty reports whether the credential carries no token at all.
-func (c Credential) empty() bool { return c.token == "" }
-
 // CredentialFromFile loads #16's client credential: a 0600 file whose entire trimmed
 // content is one token. A file whose first non-comment line holds four whitespace-
 // separated fields is the SERVER's --auth-file; that confusion gets its own error
@@ -97,8 +100,8 @@ func CredentialFromFile(path string) (Credential, error) {
 	if err != nil {
 		return Credential{}, &Error{
 			Code:    "config_error",
-			Message: fmt.Sprintf("read credential file: %v", err),
-			err:     fmt.Errorf("%w: %v", ErrConfig, err),
+			Message: "read credential file: " + err.Error(),
+			err:     fmt.Errorf("%w: %w", ErrConfig, err),
 		}
 	}
 	for _, line := range strings.Split(string(raw), "\n") {

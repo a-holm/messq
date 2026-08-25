@@ -62,12 +62,17 @@ func TestWithProxyOptsIn(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.IsAbs() { // proxied form: the client asked us to act as its proxy
 			viaProxy = true
-			resp, err := http.Get(r.URL.String())
-			if err != nil {
+			req2, rerr := http.NewRequestWithContext(r.Context(), http.MethodGet, r.URL.String(), nil)
+			if rerr != nil {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			defer resp.Body.Close() //nolint:errcheck // test relay
+			resp, derr := http.DefaultClient.Do(req2)
+			if derr != nil {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return

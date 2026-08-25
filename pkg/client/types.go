@@ -214,6 +214,3 @@ func (r SettleResult) Item() SettleItem {
 	}
 	return r.Results[0]
 }
-
-// settleResponseWire mirrors internal/api's settleResponse exactly.
-type settleResponseWire = SettleResult

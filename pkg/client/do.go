@@ -98,7 +98,8 @@ func send[Res any](ctx context.Context, c *Client, r request) (Res, error) {
 	case r.jsonBody == nil:
 		// nothing to encode
 	case isJSONRaw(r.jsonBody):
-		rdr = strings.NewReader(string(r.jsonBody.(jsonRaw)))
+		raw := r.jsonBody.(jsonRaw) //nolint:errcheck // the case guard IS the type check
+		rdr = strings.NewReader(string(raw))
 		contentType = "application/json"
 	default:
 		b, err := json.Marshal(r.jsonBody)
@@ -233,7 +234,7 @@ func drain(body io.Reader, max int64) error {
 	_, err := io.Copy(io.Discard, io.LimitReader(body, max))
 	if err != nil {
 		// A truncated drain only costs keep-alive reuse, never correctness.
-		return nil
+		return nil //nolint:nilerr // deliberate: the request answer is already in hand
 	}
 	return nil
 }

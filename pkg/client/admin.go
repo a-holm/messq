@@ -213,8 +213,16 @@ func (c *Client) statusOK(ctx context.Context, method, path string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close() //nolint:errcheck // drain already handled the reuse story
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	defer func() {
+		// Drain whatever is left so the connection returns to the idle pool; a
+		// truncated healthz body only costs reuse, never correctness.
+		if _, cerr := io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)); cerr != nil {
+			return
+		}
+		if cerr := resp.Body.Close(); cerr != nil {
+			return
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return &Error{Code: "internal", Message: fmt.Sprintf("%s %s: unexpected status %d", method, path, resp.StatusCode), Status: resp.StatusCode}
 	}
@@ -385,7 +393,7 @@ func (c *Client) PeekMessageData(ctx context.Context, stream string, seq int64) 
 	case closeErr != nil:
 		return nil, unreachable("GET "+path, closeErr)
 	case drainErr != nil:
-		return data, nil
+		return data, nil //nolint:nilerr // a truncated drain costs keep-alive reuse, not correctness: the bytes are in hand
 	}
 	return data, nil
 }

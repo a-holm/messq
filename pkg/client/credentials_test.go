@@ -88,15 +88,15 @@ func TestCredentialFromFile(t *testing.T) {
 	// The predictable mistake: handing over the SERVER's --auth-file (whose lines
 	// are id/hash/roles/streams — four whitespace-separated fields).
 	serverFile := filepath.Join(dir, "auth-file")
-	if err := os.WriteFile(serverFile,
-		[]byte("# comment\nops	2bb80d537b1a3f0fa4b1c8a5e4e0f2a1	writer	orders.*\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if werr := os.WriteFile(serverFile,
+		[]byte("# comment\nops	2bb80d537b1a3f0fa4b1c8a5e4e0f2a1	writer	orders.*\n"), 0o600); werr != nil {
+		t.Fatal(werr)
 	}
-	_, err = CredentialFromFile(serverFile)
-	if err == nil {
+	_, confusionErr := CredentialFromFile(serverFile)
+	if confusionErr == nil {
 		t.Fatal("the server auth-file was accepted as a client credential")
 	}
-	msg := err.Error()
+	msg := confusionErr.Error()
 	for _, want := range []string{"--auth-file", serverFile} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("confusion error %q does not name %q", msg, want)

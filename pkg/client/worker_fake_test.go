@@ -84,7 +84,7 @@ func (b *fakeBroker) respond(req *http.Request) *http.Response {
 	case strings.HasSuffix(req.URL.Path, "/fetch"):
 		var fr fetchRequestWireShape
 		_ = json.NewDecoder(req.Body).Decode(&fr)
-		req.Body.Close() //nolint:errcheck // test double
+		req.Body.Close()
 		b.fetches = append(b.fetches, fr)
 		if len(b.msgs) > 0 {
 			next := b.msgs[0]
@@ -123,7 +123,7 @@ func (b *fakeBroker) respond(req *http.Request) *http.Response {
 			Tokens []string `json:"tokens"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&body)
-		req.Body.Close() //nolint:errcheck // test double
+		req.Body.Close()
 		b.acks = append(b.acks, body.Tokens)
 		results := make([]SettleItem, len(body.Tokens))
 		for i, tok := range body.Tokens {
@@ -134,14 +134,14 @@ func (b *fakeBroker) respond(req *http.Request) *http.Response {
 	case req.URL.Path == "/v1/nak":
 		var body settleItemWire
 		_ = json.NewDecoder(req.Body).Decode(&body)
-		req.Body.Close() //nolint:errcheck // test double
+		req.Body.Close()
 		b.naks = append(b.naks, body)
 		return brokerJSON(req, SettleResult{Results: []SettleItem{{Token: body.Token, Status: SettleOK}}, OK: 1})
 
 	case req.URL.Path == "/v1/term":
 		var body settleItemWire
 		_ = json.NewDecoder(req.Body).Decode(&body)
-		req.Body.Close() //nolint:errcheck // test double
+		req.Body.Close()
 		b.terms = append(b.terms, body)
 		return brokerJSON(req, SettleResult{Results: []SettleItem{{Token: body.Token, Status: SettleOK}}, OK: 1})
 
@@ -152,7 +152,7 @@ func (b *fakeBroker) respond(req *http.Request) *http.Response {
 			} `json:"items"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&body)
-		req.Body.Close() //nolint:errcheck // test double
+		req.Body.Close()
 		tokens := make([]string, len(body.Items))
 		results := make([]SettleItem, len(body.Items))
 		for i, it := range body.Items {
