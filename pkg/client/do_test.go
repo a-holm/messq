@@ -41,8 +41,9 @@ func (b countedBody) Close() error {
 	return err
 }
 
-// newTestClient builds a Client against ts with body counting wired through t.Cleanup,
-// so EVERY request in EVERY test must end with its body closed.
+// newTestClient builds a Client against ts with body counting wrapped around the
+// CLIENT'S OWN transport (never swapped out), so EVERY request in EVERY test must end
+// with its body closed while the transport policy under test stays intact.
 func newTestClient(t *testing.T, ts *httptest.Server, opts ...Option) *Client {
 	t.Helper()
 	c, err := New(ts.URL, opts...)
@@ -50,20 +51,20 @@ func newTestClient(t *testing.T, ts *httptest.Server, opts ...Option) *Client {
 		t.Fatalf("New: %v", err)
 	}
 	var opens, closes int
-	tr := &countingTransport{
-		inner: ts.Client().Transport,
+	inner := http.RoundTripper(c.hc.Transport)
+	if inner == nil {
+		inner = http.DefaultTransport
+	}
+	c.hc.Transport = &countingTransport{
+		inner: inner,
 		open:  func() { opens++ },
 		close: func() { closes++ },
-	}
-	if tr.inner == nil {
-		tr.inner = http.DefaultTransport
 	}
 	t.Cleanup(func() {
 		if opens != closes {
 			t.Errorf("response bodies: %d opened, %d closed — a body leaked", opens, closes)
 		}
 	})
-	c.hc.Transport = tr
 	return c
 }
 

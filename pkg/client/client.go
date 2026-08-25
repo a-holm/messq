@@ -142,14 +142,14 @@ func newHTTPClient(network, dialAddr string, proxy func(*http.Request) (*url.URL
 	if tr == nil {
 		var d net.Dialer
 		tr = &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				target := dialAddr
-				nw := network
-				if nw == "" {
-					nw = "tcp"
-					target = ""
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				// Unix targets ignore the URL authority entirely; tcp targets keep
+				// whatever host:port the transport resolved — including a proxy's,
+				// which is what WithProxy opt-in must not break.
+				if network == "unix" {
+					addr = dialAddr
 				}
-				return d.DialContext(ctx, nw, target)
+				return d.DialContext(ctx, network, addr)
 			},
 			Proxy:                 proxy, // nil ⇒ NEVER ProxyFromEnvironment
 			ForceAttemptHTTP2:     false,

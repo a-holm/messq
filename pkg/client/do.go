@@ -118,7 +118,7 @@ func send[Res any](ctx context.Context, c *Client, r request) (Res, error) {
 		return zero, unreachable(opName(r), err)
 	}
 
-	data, rerr := readAll(resp.Body)
+	data, rerr := readCapped(resp.Body, c.maxResponseBytes)
 	drainErr := drain(resp.Body, c.maxResponseBytes)
 	closeErr := resp.Body.Close()
 	if rerr == nil {
@@ -153,11 +153,20 @@ func send[Res any](ctx context.Context, c *Client, r request) (Res, error) {
 	return zero, decodeFailure(opName(r), resp, data)
 }
 
-// readAll reads the body without a cap in slice 2; slice 3 adds MaxResponseBytes.
-func readAll(_b io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(_b)
+// readCapped reads at most max bytes of a body; one byte more is a refusal wrapping
+// ErrTooLarge — a rogue proxy must not OOM a worker (issue §9).
+func readCapped(body io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, max+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, &Error{
+			Code:    "too_large",
+			Message: fmt.Sprintf("response body exceeds MaxResponseBytes (%d); raise WithMaxResponseBytes or fix what is answering", max),
+			Status:  0,
+			err:     ErrTooLarge,
+		}
 	}
 	return data, nil
 }
