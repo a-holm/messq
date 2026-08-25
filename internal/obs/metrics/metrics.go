@@ -44,6 +44,7 @@ type Options struct {
 	Runtime bool   // --metrics-runtime-collectors (default true)
 
 	Clock   clock.Clock
+	Stats   StatsReader  // read-only store seam; the collector degrades honestly while nil
 	Waiters func() int64 // api waiter registry; nil leaves messq_waiters unregistered
 	Log     *slog.Logger
 }
@@ -202,6 +203,7 @@ func New(o Options) (*Metrics, error) {
 			collectors.ProcessCollectorOpts{}))
 	}
 
+	newCollector(m) // scrape-time gauges; Decision 2: computed, never mirrored
 	return m, nil
 }
 
@@ -223,7 +225,8 @@ func descFed(name string) bool {
 	switch name {
 	case namePending, nameInflight, nameBacklog, nameOldestPendingAge,
 		nameConsumerPaused, nameDLQDepth, metricSweepBacklog,
-		nameDBBytes, nameWALBytes, nameEventsRows, nameDiskFreeBytes:
+		nameDBBytes, nameWALBytes, nameEventsRows, nameDiskFreeBytes,
+		nameScrapeErrorsTotal, nameSnapshotAgeSeconds, nameCollectDurationSecs:
 		return true
 	}
 	return false
