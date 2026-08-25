@@ -20,6 +20,14 @@ func (b *fakeBroker) armFailures(pathSuffix string, n int) {
 	b.failPath, b.failBudget = pathSuffix, n
 }
 
+// setExtendOverride installs the extend answer under the broker lock: the test swaps
+// it WHILE worker goroutines are live.
+func (b *fakeBroker) setExtendOverride(fn func(tokens []string) (any, int)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.extendOverride = fn
+}
+
 func (b *fakeBroker) takeFailure(path string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -64,13 +72,13 @@ func TestBrokerRestartFencesHeldTokens(t *testing.T) {
 
 		// THE RESTART (T9): recovery flipped our rows to READY; from now on the
 		// broker answers every extend with per-token unknown.
-		b.extendOverride = func(tokens []string) (any, int) {
+		b.setExtendOverride(func(tokens []string) (any, int) {
 			results := make([]SettleItem, len(tokens))
 			for i, tok := range tokens {
 				results[i] = SettleItem{Token: tok, Status: SettleUnknown, Reason: "no such delivery"}
 			}
 			return SettleResult{Results: results}, 200
-		}
+		})
 		time.Sleep(40 * time.Second) // second heartbeat (t≈45 s) hits the fence
 		synctest.Wait()
 
