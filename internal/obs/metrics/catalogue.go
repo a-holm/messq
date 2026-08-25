@@ -451,7 +451,8 @@ const (
 	metricAckLatencySeconds = "messq_ack_latency_seconds"
 
 	// Handover: #11 sweep.go metric-name constants (minus Table C rejections).
-	metricTimeoutsTotal     = "messq_timeouts_total"
+	metricTimeoutsTotal = "messq_timeouts_total"
+	//nolint:gosec // G101: the wire metric name is a handover constant handed over by #11, not a credential (same ruling as store/sweep.go).
 	metricRedeliveredTotal  = "messq_redelivered_total"
 	metricDeadTotal         = "messq_dead_total"
 	metricSweepLatenessSecs = "messq_sweep_lateness_seconds"

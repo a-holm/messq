@@ -198,6 +198,8 @@ func TestCatalogueRowsWellFormed(t *testing.T) {
 			if len(spec.Buckets) == 0 && spec.Source != srcAdopted {
 				t.Errorf("%s: histogram without buckets", name)
 			}
+		case kindGauge:
+			// gauges carry no structural requirements beyond the cardinality test
 		}
 		if spec.Source == srcAdopted && (name == "messq_commit_batch_size") {
 			continue // buckets owned by prommetrics, verified by its own tests

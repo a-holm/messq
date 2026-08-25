@@ -33,6 +33,8 @@ const (
 
 // noCounter records every non-projected event kind with the reason it earns no
 // counter — the explicit "no" the exhaustiveness test checks for.
+//
+//nolint:exhaustive // by definition it holds only NON-projected kinds; TestProjectionExhaustiveness enforces projections ∪ noCounter over obs.AllKinds()
 var noCounter = map[obs.Kind]string{
 	obs.ServerStart:       "process_start_time_seconds already encodes restarts",
 	obs.ServerStop:        "the process is exiting; process_start_time_seconds encodes its lifetime",
@@ -95,6 +97,8 @@ func byStream(_ *Metrics, e *obs.Event) []string { return []string{e.Stream} }
 func byPair(_ *Metrics, e *obs.Event) []string   { return []string{e.Stream, e.Consumer} }
 
 // projectionRows IS the table.
+//
+//nolint:exhaustive // the complement lives in noCounter; their union is proven total by TestProjectionExhaustiveness over obs.AllKinds()
 var projectionRows = map[obs.Kind]projectionRow{
 	obs.MsgPublish:  {vec: namePublishedTotal, labels: byStream},
 	obs.MsgDup:      {vec: nameDuplicatesTotal, labels: byStream},
@@ -133,14 +137,18 @@ func (m *Metrics) project(e *obs.Event) {
 		return // names outside the closed set cannot come from #19; ignore anyway
 	}
 
-	switch k {
-	case obs.StreamDelete:
+	// The three kinds with behaviour outside the table. An if-chain, not a switch:
+	// the exhaustive linter would demand all 35 members here, duplicating the two
+	// tables the exhaustiveness test already proves complete.
+	if k == obs.StreamDelete {
 		m.reapStream(e.Stream)
 		return
-	case obs.ConsumerDelete:
+	}
+	if k == obs.ConsumerDelete {
 		m.reapConsumer(e.Stream, e.Consumer)
 		return
-	case obs.RecoveryReclaimed:
+	}
+	if k == obs.RecoveryReclaimed {
 		m.armCause(e, causeBrokerRestart)
 		return
 	}
@@ -156,11 +164,11 @@ func (m *Metrics) project(e *obs.Event) {
 	}
 	switch v := m.vec(row.vec).(type) {
 	case *prometheus.CounterVec:
-		lvs, ok := m.admit(lvs)
-		if !ok {
+		bounded, admit := m.admit(lvs)
+		if !admit {
 			return // refused at --metrics-max-series; dropped_series_total says so
 		}
-		v.WithLabelValues(lvs...).Inc()
+		v.WithLabelValues(bounded...).Inc()
 	case prometheus.Counter:
 		v.Inc()
 	}
@@ -261,7 +269,7 @@ func (m *Metrics) projectAck(e *obs.Event) {
 				Observe(float64(ms) / 1000)
 		}
 	}
-	if late, _ := e.Detail["late"].(bool); late {
+	if late, ok := e.Detail["late"].(bool); ok && late {
 		if lvs, admit := m.admit(byPair(m, e)); admit {
 			m.counterVec(metricLateAcksTotal).WithLabelValues(lvs...).Inc()
 		}
@@ -271,7 +279,7 @@ func (m *Metrics) projectAck(e *obs.Event) {
 // projectDeadOutcome splits msg.dead into DLQ copies written vs origin-missing
 // orphans (#12: the orphan count is a bug signal; alert on any value).
 func (m *Metrics) projectDeadOutcome(e *obs.Event) {
-	outcome, _ := e.Detail["dlq"].(string)
+	outcome, _ := e.Detail["dlq"].(string) //nolint:errcheck // absence reads as the zero outcome, which falls through both cases
 	switch outcome {
 	case "written":
 		if lvs, ok := m.admit(byStream(m, e)); ok {
@@ -287,7 +295,7 @@ func (m *Metrics) projectDeadOutcome(e *obs.Event) {
 // apiErrorLabelValues extracts the closed code enum value; an undeclared code is
 // logged once a minute and dropped rather than allowed to widen cardinality.
 func (m *Metrics) apiErrorLabelValues(e *obs.Event) []string {
-	code, _ := e.Detail["code"].(string)
+	code, _ := e.Detail["code"].(string) //nolint:errcheck // an absent code fails the enum check below and is dropped loudly
 	if !m.codeEnum[code] {
 		m.logLimited("metrics: api.error carries an undeclared code; dropping the projection",
 			"code", code)
@@ -309,11 +317,19 @@ func detailMS(e *obs.Event, key string) (int64, bool) {
 }
 
 func (m *Metrics) histogram(name string) *prometheus.HistogramVec {
-	return m.instrs[name].(*prometheus.HistogramVec)
+	h, ok := m.instrs[name].(*prometheus.HistogramVec)
+	if !ok {
+		panic("metrics: catalogue row " + name + " is not a histogram vec")
+	}
+	return h
 }
 
 func (m *Metrics) counterVec(name string) *prometheus.CounterVec {
-	return m.instrs[name].(*prometheus.CounterVec)
+	c, ok := m.instrs[name].(*prometheus.CounterVec)
+	if !ok {
+		panic("metrics: catalogue row " + name + " is not a counter vec")
+	}
+	return c
 }
 
 // logLimited warns at most once a minute so a pathological rate cannot turn the log
