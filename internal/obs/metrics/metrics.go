@@ -96,6 +96,12 @@ type Metrics struct {
 	waiters   prometheus.Gauge   // nil unless Options.Waiters is set
 
 	commit *prommetrics.CommitMetrics
+
+	kinds    map[string]obs.Kind    // wire name → vocabulary kind, built once
+	pairs    map[seriesKey]struct{} // bounded (stream, consumer) label-value cache
+	causes   map[seriesKey]string   // armed redelivery causes (fan-out is single-goroutine)
+	codeEnum map[string]bool        // declared values of the code label
+	lastWarn time.Time              // WARN-once-a-minute throttle
 }
 
 // New builds the registry, constructs one instrument per catalogue row it owns,
@@ -105,9 +111,19 @@ type Metrics struct {
 func New(o Options) (*Metrics, error) {
 	o = o.withDefaults()
 	m := &Metrics{
-		o:      o,
-		reg:    prometheus.NewRegistry(), // never the default registry (G8)
-		instrs: make(map[string]prometheus.Collector, len(catalogue)),
+		o:        o,
+		reg:      prometheus.NewRegistry(), // never the default registry (G8)
+		instrs:   make(map[string]prometheus.Collector, len(catalogue)),
+		kinds:    make(map[string]obs.Kind, 40),
+		pairs:    make(map[seriesKey]struct{}, 64),
+		causes:   make(map[seriesKey]string),
+		codeEnum: make(map[string]bool, 32),
+	}
+	for _, k := range obs.AllKinds() {
+		m.kinds[k.String()] = k
+	}
+	for _, c := range enumValues["code"] {
+		m.codeEnum[c] = true
 	}
 
 	for _, spec := range catalogue {
