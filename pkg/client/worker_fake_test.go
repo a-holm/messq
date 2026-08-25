@@ -5,6 +5,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,11 @@ type fakeBroker struct {
 
 	// extendOverride replaces the extend answer (e.g. stale results, 409).
 	extendOverride func(tokens []string) (any, int)
+
+	// failPath/failBudget answer the next N requests to path with a transport
+	// error — the "daemon died mid-flight" class.
+	failPath   string
+	failBudget int
 }
 
 func newFakeBroker() *fakeBroker {
@@ -202,6 +208,9 @@ func (r *recResponse) response(req *http.Request) *http.Response {
 type roundTripperAdapter struct{ b *fakeBroker }
 
 func (a roundTripperAdapter) RoundTrip(req *http.Request) (*http.Response, error) {
+	if a.b.takeFailure(req.URL.Path) {
+		return nil, errors.New("connection refused by fake broker")
+	}
 	resp := a.b.respond(req)
 	if ms := resp.Header.Get(parkHeader); ms != "" {
 		resp.Header.Del(parkHeader)

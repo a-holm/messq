@@ -678,11 +678,15 @@ func (w *Worker) settlerLoop(ctx context.Context, st *workerState) {
 
 	handle := func(oc outcome) {
 		tok := oc.item.msg.AckToken
-		if oc.act.kind == 0 || st.isLost(tok) {
-			// Lease gone (or nothing to do): the outcome is dropped, never settled.
-			if oc.act.kind != 0 {
-				w.emit(WorkerEvent{Kind: EventOutcomeDiscarded, Msg: &oc.item.msg})
-			}
+		if st.isLost(tok) {
+			// §7.5: the lease died; whatever the handler produced is dropped, never
+			// settled, and the drop is observable.
+			w.emit(WorkerEvent{Kind: EventOutcomeDiscarded, Msg: &oc.item.msg})
+			st.finishItem(w.cfg.Prefetch, oc.item)
+			return
+		}
+		if oc.act.kind == 0 {
+			// Handler honoured its own cancellation pre-fence bookkeeping: nothing to settle.
 			st.finishItem(w.cfg.Prefetch, oc.item)
 			return
 		}
