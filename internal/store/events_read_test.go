@@ -453,6 +453,36 @@ func TestEventsScanBudgetStopsHonestly(t *testing.T) {
 	}
 }
 
+// TestEventsScanBudgetClampNeverRaises pins the ceiling half of the budget rule:
+// "a filter may lower the scan budget, never raise it" — the flag is the process-wide
+// I11 DoS ceiling. Unlike page 3 above (degenerate: raising changes nothing when only
+// one row remains), this case has remaining matches > ceiling, so clamped and raised
+// budgets are observably different: the page must stop honestly at the ceiling instead
+// of riding the filter's inflated ScanBudget to exhaustion.
+func TestEventsScanBudgetClampNeverRaises(t *testing.T) {
+	ctx := context.Background()
+	st := openEventStore(t, func(o *Options) { o.EventScanBudget = 4 })
+	seedEvents(t, st, sevenRowJournal())
+
+	// ScanBudget: 99 asks far above the ceiling of 4 and all 7 rows match, so a
+	// raised budget would drain the journal in one honest-looking page. The clamp
+	// holds the scan to 4 examined rows: 4 returned, Complete=false, resume at 4.
+	p, err := st.Events(ctx, EventFilter{Limit: 100, ScanBudget: 99})
+	if err != nil {
+		t.Fatalf("clamped page: %v", err)
+	}
+	if len(p.Events) != 4 {
+		t.Errorf("clamped page returned %d rows, want the 4-row ceiling", len(p.Events))
+	}
+	if p.Complete {
+		t.Errorf("clamped page: Complete = true, want false (3 matches remain past the ceiling)")
+	}
+	if p.ScannedToID != 4 || p.NextAfterID != 4 {
+		t.Errorf("clamped page: ScannedToID=%d NextAfterID=%d, want 4/4",
+			p.ScannedToID, p.NextAfterID)
+	}
+}
+
 // bindForPlan splices the query's own arguments in as literals: EXPLAIN QUERY PLAN
 // refuses unbound parameters, and plan choice does not depend on bound values, so the
 // audited SQL stays byte-for-byte what buildEventQuery ships.
