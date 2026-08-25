@@ -1,0 +1,7 @@
+SEQ     ID          SUBJECT            SIZE     AGE
+10496   01J8ZQ4P…   orders.eu.created  1.2 KiB  12s
+10495   01J8ZQ4M…   orders.us.created  0.9 KiB  1m41s
+10494   01J8ZQ4K…   orders.eu.created  1.2 KiB  2m14s
+
+  next  messq peek orders --seq 10496 --raw
+        messq trace 01J8ZQ4P0000000000000000

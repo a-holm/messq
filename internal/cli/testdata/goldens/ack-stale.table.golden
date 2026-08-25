@@ -1,0 +1,8 @@
+ack  orders/worker/10493/1/1  stale_ack
+
+stale ack: this token names attempt 1, but orders/worker/10493 is on attempt 2
+  likely cause: ack_wait (30s) is shorter than your handler
+  fix: messq consumer edit orders worker --ack-wait 2m
+
+  next  messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E  (see whether the work ran twice)
+        messq consumer edit orders worker --ack-wait 2m

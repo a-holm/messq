@@ -1,0 +1,19 @@
+{
+  "op": "publish",
+  "stream": "orders",
+  "subject": "orders.eu.created",
+  "seq": 10494,
+  "id": "01J8ZQ4K2M9V0X7Y3B5N6C8D1E",
+  "bytes": 14,
+  "duplicate": false,
+  "next": [
+    {
+      "Cmd": "messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E",
+      "Why": ""
+    },
+    {
+      "Cmd": "messq peek orders --seq 10494",
+      "Why": ""
+    }
+  ]
+}

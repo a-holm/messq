@@ -1,0 +1,22 @@
+{
+  "command": "ack",
+  "results": [
+    {
+      "token": "orders/worker/10493/1/1",
+      "status": "stale_ack"
+    }
+  ],
+  "ok": 0,
+  "stale": 0,
+  "stale_ack": 1,
+  "next": [
+    {
+      "Cmd": "messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E",
+      "Why": "see whether the work ran twice"
+    },
+    {
+      "Cmd": "messq consumer edit orders worker --ack-wait 2m",
+      "Why": ""
+    }
+  ]
+}
