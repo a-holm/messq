@@ -165,8 +165,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.m.o.QueryTimeout)
 	defer cancel()
 
-	cheapSnap := snapshot{}
-	heavySnap := snapshot{}
+	var cheapSnap snapshot
+	var heavySnap snapshot
 	if c.m.o.Stats == nil {
 		// No read seam wired yet (startup transient): there is nothing truthful to
 		// compute, so the collector says nothing rather than inventing zeroes.
