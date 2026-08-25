@@ -51,6 +51,39 @@ func TestParseServeFlagsDefaults(t *testing.T) {
 	if cfg.dedupSweepInterval != 60*time.Second {
 		t.Errorf("dedupSweepInterval = %v, want 60s", cfg.dedupSweepInterval)
 	}
+	// #14 §9 transport bounds, one assertion per flag: a resolve() default can drift
+	// (4096 → 10000 survived a whole review suite) without any other test noticing.
+	// --max-waiters is pinned to SEMANTICS §A1's 4096 by name.
+	if cfg.maxWaiters != 4096 {
+		t.Errorf("maxWaiters = %d, want 4096 (SEMANTICS A1)", cfg.maxWaiters)
+	}
+	if cfg.maxWaitersPerConsumer != 256 {
+		t.Errorf("maxWaitersPerConsumer = %d, want 256", cfg.maxWaitersPerConsumer)
+	}
+	if cfg.maxFetchWait != 5*time.Minute {
+		t.Errorf("maxFetchWait = %v, want 5m", cfg.maxFetchWait)
+	}
+	if cfg.fetchEmptyDamper != 5*time.Millisecond {
+		t.Errorf("fetchEmptyDamper = %v, want 5ms", cfg.fetchEmptyDamper)
+	}
+	if cfg.maxRequestBytes != 1<<20 {
+		t.Errorf("maxRequestBytes = %d, want 1 MiB", cfg.maxRequestBytes)
+	}
+	if cfg.readHeaderTimeout != 10*time.Second {
+		t.Errorf("readHeaderTimeout = %v, want 10s", cfg.readHeaderTimeout)
+	}
+	if cfg.idleTimeout != 120*time.Second {
+		t.Errorf("idleTimeout = %v, want 120s", cfg.idleTimeout)
+	}
+	if cfg.maxRequestHeaderBytes != 16<<10 {
+		t.Errorf("maxRequestHeaderBytes = %d, want 16 KiB", cfg.maxRequestHeaderBytes)
+	}
+	if cfg.maxConns != 1024 {
+		t.Errorf("maxConns = %d, want 1024", cfg.maxConns)
+	}
+	if cfg.writerSubmitTimeout != 5*time.Second {
+		t.Errorf("writerSubmitTimeout = %v, want 5s", cfg.writerSubmitTimeout)
+	}
 }
 
 func TestParseServeFlagsEnvFallback(t *testing.T) {

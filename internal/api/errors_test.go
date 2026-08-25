@@ -71,6 +71,90 @@ func TestEveryCodeHasATableStatus(t *testing.T) {
 	}
 }
 
+// pinnedCodeStatus is the literal (code,status) contract, one longhand row per enum
+// member. It exists because a review mutant moved commit_unknown from 503 to 500 in
+// codeStatus and the whole suite stayed green: TestEveryCodeIsProduced read its
+// expectation from the very map under mutation, and every other literal table still
+// held only the #7-era subset. Expectations here are independent of codeStatus —
+// flipping a status in the production map now turns both consumers of this table red.
+// §8-Q1 ruling pins commit_unknown at 503; the table freezes at #35.
+var pinnedCodeStatus = []struct {
+	code   Code
+	status int
+}{
+	{CodeBadRequest, http.StatusBadRequest},
+	{CodeBadSubject, http.StatusBadRequest},
+	{CodeSubjectMismatch, http.StatusBadRequest},
+	{CodeReservedHeader, http.StatusBadRequest},
+	{CodeReservedName, http.StatusBadRequest},
+	{CodeInvalidToken, http.StatusBadRequest},
+	{CodeUnauthorized, http.StatusUnauthorized},
+	{CodeForbidden, http.StatusForbidden},
+	{CodeNotFound, http.StatusNotFound},
+	{CodeMethodNotAllowed, http.StatusMethodNotAllowed},
+	{CodeConflict, http.StatusConflict},
+	{CodeStreamExists, http.StatusConflict},
+	{CodeImmutableField, http.StatusConflict},
+	{CodeWouldLoseData, http.StatusConflict},
+	{CodeStaleAck, http.StatusConflict},
+	{CodeExtendCapped, http.StatusConflict},
+	{CodePaused, http.StatusConflict},
+	{CodeTooLarge, http.StatusRequestEntityTooLarge},
+	{CodeHeaderTooLarge, http.StatusBadRequest},
+	{CodeUnsupportedMediaType, http.StatusUnsupportedMediaType},
+	{CodeUnsupported, http.StatusBadRequest},
+	{CodeFlowControl, http.StatusTooManyRequests},
+	{CodeRateLimited, http.StatusTooManyRequests},
+	{CodeInternal, http.StatusInternalServerError},
+	{CodeCommitUnknown, http.StatusServiceUnavailable},
+	{CodeBusy, http.StatusServiceUnavailable},
+	{CodeTooManyWaiters, http.StatusServiceUnavailable},
+	{CodeReadOnly, http.StatusServiceUnavailable},
+	{CodeShuttingDown, http.StatusServiceUnavailable},
+	{CodeDiskFull, http.StatusInsufficientStorage},
+	{CodeStreamFull, http.StatusInsufficientStorage},
+}
+
+// pinnedStatusByCode indexes pinnedCodeStatus for the producer test; built once so the
+// per-code subtests do not rescan the literal table.
+var pinnedStatusByCode = func() map[Code]int {
+	m := make(map[Code]int, len(pinnedCodeStatus))
+	for _, row := range pinnedCodeStatus {
+		m[row.code] = row.status
+	}
+	return m
+}()
+
+// TestEveryCodeStatusIsPinned asserts each member's HTTP status against the literal
+// table above — by name, independently of codeStatus — and closes the loop over
+// allCodes so a newly added member without a pinned row fails by name. Mutant
+// sensitivity: any single-row status edit in codeStatus turns this red with the code's
+// name and both statuses printed.
+func TestEveryCodeStatusIsPinned(t *testing.T) {
+	t.Parallel()
+
+	pinned := make(map[Code]int, len(pinnedCodeStatus))
+	for _, row := range pinnedCodeStatus {
+		pinned[row.code]++
+		if !isCodeMember(row.code) {
+			t.Errorf("pinnedCodeStatus lists %q which is not an enum member", row.code)
+			continue
+		}
+		if got := codeStatus[row.code]; got != row.status {
+			t.Errorf("statusFor(%q) = %d, want pinned %d", row.code, got, row.status)
+		}
+	}
+	for _, c := range allCodes {
+		switch n := pinned[c]; n {
+		case 0:
+			t.Errorf("code %q has no pinned-status row — add it to pinnedCodeStatus", c)
+		case 1:
+		default:
+			t.Errorf("code %q is pinned %d times in pinnedCodeStatus", c, n)
+		}
+	}
+}
+
 // TestEnumDeclaredOnce guards the declaration order list against duplicates and drift
 // from the const block (a member renamed in one place only changes the wire).
 func TestEnumDeclaredOnce(t *testing.T) {
@@ -200,9 +284,12 @@ func TestEveryCodeIsProduced(t *testing.T) {
 			rec := httptest.NewRecorder()
 			srv.writeError(rec, err)
 
-			wantStatus, ok := codeStatus[c]
+			// Expectation comes from the literal pinned table, NOT from codeStatus:
+			// reading the mutated map here is exactly how the commit_unknown 503→500
+			// mutant survived a full-suite run.
+			wantStatus, ok := pinnedStatusByCode[c]
 			if !ok {
-				t.Fatalf("code %q missing from codeStatus", c)
+				t.Fatalf("code %q missing from pinnedCodeStatus", c)
 			}
 			if rec.Code != wantStatus {
 				t.Fatalf("status = %d, want %d (body %s)", rec.Code, wantStatus, rec.Body.String())
