@@ -93,7 +93,6 @@ type Metrics struct {
 
 	buildInfo *prometheus.GaugeVec
 	dropped   prometheus.Counter // messq_metrics_dropped_series_total
-	truncated prometheus.Counter // messq_metrics_truncated_total
 
 	commit *prommetrics.CommitMetrics
 
@@ -176,10 +175,13 @@ func New(o Options) (*Metrics, error) {
 		}
 	}
 
-	// The two unlabelled self-counters the projection and collector feed directly
-	// (already registered by the catalogue loop above).
+	// The unlabelled self-counter the projection feeds directly (already registered
+	// by the catalogue loop above). messq_metrics_truncated_total is NOT an
+	// instrument: the scrape-time collector mutates it mid-Gather, and a sibling
+	// instrument's value would be read concurrently — landing one scrape late or
+	// early depending on goroutine interleaving. The collector owns it as
+	// per-scrape state instead (see collector.go).
 	m.dropped = m.counter(nameDroppedSeriesTotal)
-	m.truncated = m.counter(nameMetricsTruncatedTotl)
 
 	if m.buildInfo != nil {
 		m.buildInfo.WithLabelValues(o.Version, o.Commit, o.Durability).Set(1)
@@ -218,7 +220,7 @@ func descFed(name string) bool {
 		nameConsumerPaused, nameDLQDepth, metricSweepBacklog,
 		nameDBBytes, nameWALBytes, nameEventsRows, nameDiskFreeBytes,
 		nameScrapeErrorsTotal, nameSnapshotAgeSeconds, nameCollectDurationSecs,
-		metricWaitersGauge:
+		metricWaitersGauge, nameMetricsTruncatedTotl:
 		return true
 	}
 	return false

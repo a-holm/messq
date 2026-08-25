@@ -125,6 +125,7 @@ type collector struct {
 	heavySnap snapshot
 	errCount  map[string]uint64
 	duration  map[string]*histAccum
+	truncCnt  uint64 // cumulative messq_metrics_truncated_total; collector-owned so a scrape never reads a sibling instrument mid-gather
 }
 
 // newCollector builds the descs for every desc-fed catalogue row and registers the
@@ -232,6 +233,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			sendCounter(ch, c.descs[nameScrapeErrorsTotal], float64(n), nameScrapeErrorsTotal, tc.tier)
 		}
 	}
+	// Collector-owned cumulative counter: emitted as const so the value a scrape
+	// serves includes every truncation THIS scrape discovered (a sibling instrument
+	// would be read concurrently by its own gather worker — one scrape late or not
+	// at all, depending on interleaving).
+	sendCounter(ch, c.descs[nameMetricsTruncatedTotl], float64(c.truncCnt), nameMetricsTruncatedTotl)
 	c.duration[tierCheap].observe(now.Sub(start).Seconds())
 	d := c.duration[tierCheap]
 	sendHistogram(ch, c.descs[nameCollectDurationSecs], d.count, d.sum, d.buckets,
@@ -304,7 +310,7 @@ func (c *collector) oldestAgeSec(ctx context.Context, cs *ConsumerStat, now time
 			cands, scanErr := c.m.o.Stats.HeadCandidates(ctx, cs.Stream, cs.CursorSeq, c.m.o.FilterScan)
 			switch {
 			case scanErr != nil:
-				c.m.truncated.Inc() // cannot see unscanned work; say the estimate shrank
+				c.truncCnt++ // cannot see unscanned work; say the estimate shrank
 			default:
 				matched := false
 				scannedAny := false
@@ -319,7 +325,7 @@ func (c *collector) oldestAgeSec(ctx context.Context, cs *ConsumerStat, now time
 					}
 				}
 				if !matched && scannedAny {
-					c.m.truncated.Inc()
+					c.truncCnt++
 				}
 			}
 		} else {
