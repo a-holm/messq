@@ -175,6 +175,40 @@ func send[Res any](ctx context.Context, c *Client, r request) (Res, error) {
 	return zero, decodeFailure(opName(r), resp, data)
 }
 
+// plain performs a request whose response is NOT JSON (healthz text, peek data),
+// applying the same header/credential/timeout policy and transport-error mapping as
+// send. The caller owns draining and closing the returned body.
+func (c *Client) plain(ctx context.Context, method, path string) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.requestTimeout > 0 && method != "POST" || c.requestTimeout > 0 && method == "GET" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.url(path), nil)
+	if err != nil {
+		return nil, &Error{Code: "internal", Message: "build request: " + err.Error(), err: err}
+	}
+	req.Header.Set("User-Agent", c.userAgent)
+	if c.credential.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.credential.token)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			var ce *Error
+			if errors.As(ue.Err, &ce) {
+				return nil, ce
+			}
+		}
+		return nil, unreachable(method+" "+path, err)
+	}
+	return resp, nil
+}
+
 // readCapped reads at most max bytes of a body; one byte more is a refusal wrapping
 // ErrTooLarge — a rogue proxy must not OOM a worker (issue §9).
 func readCapped(body io.Reader, max int64) ([]byte, error) {
