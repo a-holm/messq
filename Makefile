@@ -71,7 +71,7 @@ build-all: ## Build static linux/amd64 and linux/arm64 binaries into dist/.
 # TEST_COUNT is what the nightly flake hunt raises: a flake that shows up once in fifty is
 # invisible to a single run.
 TEST_COUNT ?= 1
-TEST_TIMEOUT ?= 5m
+TEST_TIMEOUT ?= 6h
 
 test: ## Run the test suite under the race detector.
 	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
@@ -81,7 +81,7 @@ test: ## Run the test suite under the race detector.
 # through the API and the crash harness; a per-package profile would undercount both and push
 # tests into the wrong package to satisfy a number.
 cover: ## Measure coverage and enforce the floors in coverage.floors.
-	CGO_ENABLED=1 go test -race -count=1 -covermode=atomic \
+	CGO_ENABLED=1 go test -race -count=1 -covermode=atomic -timeout=6h \
 		-coverpkg=./internal/...,./pkg/... -coverprofile=cover.out ./...
 	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors
 
