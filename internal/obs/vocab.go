@@ -186,3 +186,16 @@ func ParseKind(name string) (Kind, error) {
 	}
 	return KindInvalid, fmt.Errorf("obs: %q is not a member of the closed event vocabulary", name)
 }
+
+// AllKinds returns every member of the closed vocabulary in declaration order,
+// excluding the zero value KindInvalid. It is the iterator projections consume so a
+// new vocabulary member automatically enters their exhaustiveness obligations (#21's
+// metrics decision table): nothing here can go stale, because the table above is the
+// only place members are declared.
+func AllKinds() []Kind {
+	out := make([]Kind, numKinds-1)
+	for i := range out {
+		out[i] = Kind(i + 1)
+	}
+	return out
+}
