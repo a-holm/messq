@@ -221,6 +221,7 @@ var kindByCode = map[string]Kind{
 	"shutting_down":          KindUnavailable,
 	"disk_full":              KindUnavailable,
 	"stream_full":            KindUnavailable,
+	"unavailable":            KindUnavailable,
 	"internal":               KindInternal,
 }
 
