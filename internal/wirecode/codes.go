@@ -38,14 +38,21 @@ const (
 	ShuttingDown    Code = "shutting_down"
 	Internal        Code = "internal"
 
-	// Planned: pinned by PLAN §7/§10 and issue #16/#18, produced once their routes
-	// land (#14 envelope, #16 auth). Statuses are already frozen.
-	Unauthorized Code = "unauthorized"
-	Forbidden    Code = "forbidden"
+	// Rebase completion (#18 × #14): these rows were seeded before #14 merged;
+	// its classifier maps them from S13 sentinels and live routes emit them
+	// (settle answers stale_ack, fetch enforces flow_control), so they are
+	// produced on the wire today.
+	Unauthorized Code = "unauthorized" // #14 bearer auth, shipped
+	Forbidden    Code = "forbidden"    // #14 roles, shipped
+	InvalidToken Code = "invalid_token"
+	StaleAck     Code = "stale_ack"
+	Paused       Code = "paused"
+	FlowControl  Code = "flow_control"
+	StreamFull   Code = "stream_full"
+	DiskFull     Code = "disk_full" // emittable today; #17 continues with degraded-writes semantics
 
 	// Reserved for named future issues; producing one before its owner ships fails
 	// the wire freeze.
-	DiskFull    Code = "disk_full"    // #17: degraded writes keep serving reads
 	RateLimited Code = "rate_limited" // #39: max in-flight / flow control
 
 	// NeverOverHTTP: these sentinels exist in internal/errs but can never appear in
@@ -82,8 +89,8 @@ type Entry struct {
 	Owner string
 }
 
-// Table is THE source. Edit it and every consumer moves together: api.statusFor, the
-// freeze gates, PROTOCOL.md's code table and #14's future envelope.
+// Table is THE source. Edit it and every consumer moves together: the API's
+// codeStatus map, the freeze gates, PROTOCOL.md's code table and #14's envelope.
 var Table = map[Code]Entry{
 	NotFound:        {Status: 404},
 	StreamExists:    {Status: 409},
@@ -102,10 +109,15 @@ var Table = map[Code]Entry{
 	ShuttingDown:    {Status: 503},
 	Internal:        {Status: 500},
 
-	Unauthorized: {Status: 401, Kind: Planned, Owner: "#14"},
-	Forbidden:    {Status: 403, Kind: Planned, Owner: "#14"},
+	Unauthorized: {Status: 401},
+	Forbidden:    {Status: 403},
+	InvalidToken: {Status: 400},
+	StaleAck:     {Status: 409},
+	Paused:       {Status: 409},
+	FlowControl:  {Status: 429},
+	StreamFull:   {Status: 507},
+	DiskFull:     {Status: 507},
 
-	DiskFull:    {Status: 507, Kind: Reserved, Owner: "#17"},
 	RateLimited: {Status: 429, Kind: Reserved, Owner: "#39"},
 
 	Locked:      {Kind: NeverOverHTTP},

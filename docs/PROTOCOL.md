@@ -64,15 +64,20 @@ Produced today:
 | `too_large` | 413 | body exceeds `--max-msg-size-ceiling` |
 | `read_only` | 503 | daemon started read-only; writes refused |
 | `shutting_down` | 503 | drain in progress; new work refused |
+| `unauthorized` | 401 | missing or malformed bearer token (#14 auth) |
+| `forbidden` | 403 | authenticated but not allowed (#14 roles) |
+| `invalid_token` | 400 | unknown or malformed ack token |
+| `stale_ack` | 409 | ack/settle against a redelivered or reset consumer |
+| `paused` | 409 | consumer is paused |
+| `flow_control` | 429 | max_ack_pending reached; slow down |
+| `stream_full` | 507 | stream at its limit and discard=new |
+| `disk_full` | 507 | insufficient free disk space (#17 adds degraded-writes semantics) |
 | `internal` | 500 | unclassified failure (the catch-all) |
 
 Frozen ahead of their milestones:
 
 | code | HTTP | status |
 |---|---|---|
-| `unauthorized` | 401 | planned for #14 (bearer auth) |
-| `forbidden` | 403 | planned for #14 (roles) |
-| `disk_full` | 507 | reserved for #17 (degraded writes keep serving reads) |
 | `rate_limited` | 429 | reserved for #39 (max in-flight / flow control) |
 
 Never over HTTP: `locked`, `schema_newer`, `unavailable`. These three exist as
