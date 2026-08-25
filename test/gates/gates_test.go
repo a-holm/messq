@@ -163,33 +163,24 @@ func TestGates(t *testing.T) {
 
 			code, output := runMake(t, root, g.target, g.makeArgs...)
 
-			// The verdict reads the transcript with benign module-downloader chatter stripped
-			// (stripDownloadNoise), so a cold-cache `go: downloading ...` line can never flip a
-			// row in either direction: the expected sentinel still governs, and a row that
+			// EVERY row's verdict — both the green (wantOK) and the gate-must-bite leg, on every
+			// target (lint, cover, cover-ratchet-check, tidy-check, fmt-check, seam-defaults,
+			// dep-budget, layers, vuln, test, spdx, vet, static-check) — flows through this ONE
+			// comparator. decide reads the transcript with benign module-downloader chatter
+			// stripped (stripDownloadNoise), so a cold-cache `go: downloading ...` line can never
+			// flip a row in either direction: the expected sentinel still governs, and a row that
 			// fails without its sentinel — or exits when it should not — stays red for its own
 			// reason. The failure dumps below deliberately keep the RAW output, so nothing is
 			// hidden from whoever debugs the run.
-			verdict := stripDownloadNoise(output)
-
-			if g.wantOK {
-				if code != 0 {
-					t.Fatalf("gates: %s %-40s %-20s exit=%d, want 0\n%s", g.id, g.name, "make "+g.target, code, output)
-				}
-				if !strings.Contains(verdict, g.want) {
-					t.Fatalf("gates: %s %-40s output does not contain %q\n%s", g.id, g.name, g.want, output)
-				}
-				t.Logf("gates: %-3s %-42s make %-20s exit=0  ok\n       %s", g.id, g.name, g.target, matched(verdict, g.want))
-				return
+			//
+			// #gates-fix-r2: the chatter-tolerance contract is pinned for the WHOLE matrix by
+			// TestDecideChatterNeverDecidesARow, so a future row cannot quietly reintroduce a
+			// module-cache-temperature-dependent verdict.
+			if ok, why := decide(g, code, output); !ok {
+				t.Fatalf("%s\n%s", why, output)
 			}
-
-			if code == 0 {
-				t.Fatalf("gates: %s %-40s make %s exited 0; the gate does not bite\n%s", g.id, g.name, g.target, output)
-			}
-			if !strings.Contains(verdict, g.want) {
-				t.Fatalf("gates: %s %-40s make %s failed with exit=%d but without %q; it failed for the wrong reason\n%s",
-					g.id, g.name, g.target, code, g.want, output)
-			}
-			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s", g.id, g.name, g.target, code, matched(verdict, g.want))
+			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s",
+				g.id, g.name, g.target, code, matched(stripDownloadNoise(output), g.want))
 		})
 	}
 }
@@ -494,16 +485,53 @@ func matched(output, want string) string {
 // A true wrong-reason failure keeps failing: if the expected fragment is absent after the strip,
 // the row is red exactly as before. The TestMain warm-up remains the primary fix; this only
 // covers the residue no warm-up can know about (the first run that meets a brand-new module).
+//
+// #gates-fix-r2: this function is called from exactly ONE place — decide, the comparator every
+// matrix row shares — so the tolerance above is global by construction; TestStripDownloadNoise
+// pins the exact line grammar (including a bare `go: downloading` and CRLF endings).
 func stripDownloadNoise(output string) string {
 	var kept strings.Builder
 	kept.Grow(len(output))
 	for line := range strings.Lines(output) {
-		if strings.HasPrefix(strings.TrimRight(line, "\n"), "go: downloading ") {
+		if strings.HasPrefix(strings.TrimRight(line, "\r\n"), "go: downloading") {
 			continue
 		}
 		kept.WriteString(line)
 	}
 	return kept.String()
+}
+
+// decide is THE shared row-output comparator: every matrix row's verdict — both legs of every
+// target, green (wantOK) and gate-must-bite alike — is decided here and nowhere else. Before
+// #gates-fix-r2 the decision lived inline in TestGates' loop body, which made "every row
+// tolerates downloader chatter" a convention rather than a mechanism; routing all rows through
+// one function makes it structural, and TestDecideChatterNeverDecidesARow walks the whole
+// matrix() to keep it that way.
+//
+// It returns whether the row passes and, when it does not, the failure reason (without the raw
+// transcript, which the caller dumps in full). The reason texts are byte-for-byte the ones the
+// inline legs used before, so CI log greps do not change meaning. The honest guard is intact by
+// construction: chatter is stripped before the sentinel comparison only, never from the dumped
+// evidence, and an absent sentinel or a wrong exit code still fails the row for its own reason.
+func decide(g gate, code int, output string) (bool, string) {
+	verdict := stripDownloadNoise(output)
+	if g.wantOK {
+		if code != 0 {
+			return false, fmt.Sprintf("gates: %s %-40s %-20s exit=%d, want 0", g.id, g.name, "make "+g.target, code)
+		}
+		if !strings.Contains(verdict, g.want) {
+			return false, fmt.Sprintf("gates: %s %-40s output does not contain %q", g.id, g.name, g.want)
+		}
+		return true, ""
+	}
+	if code == 0 {
+		return false, fmt.Sprintf("gates: %s %-40s make %s exited 0; the gate does not bite", g.id, g.name, g.target)
+	}
+	if !strings.Contains(verdict, g.want) {
+		return false, fmt.Sprintf("gates: %s %-40s make %s failed with exit=%d but without %q; it failed for the wrong reason",
+			g.id, g.name, g.target, code, g.want)
+	}
+	return true, ""
 }
 
 // install copies fixture files from testdata into the scratch tree. Arguments are
