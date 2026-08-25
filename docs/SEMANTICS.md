@@ -572,7 +572,13 @@ The concrete form of invariant I11. Every bounded resource in the design appears
 | writer command channel | `--cmd-queue` | 1024 | #6 |
 | group-commit batch | `--commit-max-batch` | 256 | #7 |
 | group-commit window | `--commit-window` | 2ms | #7 |
-| parked long-poll waiters | `--max-waiters` | 4096 | #9 |
+| parked long-poll waiters | `--max-waiters` | 4096 | #9 (flag wired by #14) |
+| parked waiters per consumer | `--max-waiters-per-consumer` | 256 | #14 |
+| concurrent connections | `--max-conns` | 1024 | #14 |
+| JSON control-body size | `--max-request-bytes` | 1 MiB | #14 |
+| long-poll wait ceiling | `--max-fetch-wait` | 5m | #14 |
+| empty-wake damper window | `--fetch-empty-damper` | 5ms | #14 |
+| writer submit wait | `--writer-submit-timeout` | 5s | #14 |
 | per-follower event ring | `--event-follow-buffer` | 1024 | #19 |
 | sweeper expiries per tick | `--sweep-max-batch` | 1024 | #11 |
 | total extension per delivery | `--max-ack-wait` | 1h | #10 |

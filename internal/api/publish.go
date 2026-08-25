@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +18,36 @@ import (
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
+
+// submitCtx bounds a writer-command submission with --writer-submit-timeout so a
+// saturated cmdCh becomes a typed 503 instead of an unbounded park. The caller picks
+// the base: publish passes context.Background() (disconnect-immune, S14.4 — a
+// publisher that hangs up after queueing still gets its commit, because at-least-once
+// plus dedup on Messq-Msg-Id makes the retry safe), while fetch/settle pass r.Context().
+func (s *Server) submitCtx(base context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(base, s.cfg.WriterSubmitTimeout)
+}
+
+// classifySubmit maps a failed writer submit onto its wire classification. The
+// commit-unknown case passes through untouched (refineTyped maps store.ErrCommitUnknown
+// directly); a submit-window timeout is busy; anything else keeps its own identity.
+func (*Server) classifySubmit(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, store.ErrCommitUnknown), errors.Is(err, errs.ErrReadOnly),
+		errors.Is(err, errs.ErrShuttingDown):
+		return err // already carries its wire class
+	case errors.Is(err, context.DeadlineExceeded):
+		return errs.WithCode(errs.E(errs.ErrShuttingDown, op,
+			"writer did not accept the command within --writer-submit-timeout"), string(CodeBusy))
+	case errors.Is(err, context.Canceled):
+		return errs.WithCode(errs.E(errs.ErrShuttingDown, op, "submit cancelled"), string(CodeBusy))
+	default:
+		return err
+	}
+}
 
 // handlePublishMessage is POST /v1/streams/{stream}/messages: a raw-body publish. The
 // subject comes from ?subject= or the Messq-Subject header; the body is the request
@@ -78,8 +109,19 @@ func (s *Server) handlePublishMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ack, err := s.store.Publish(r.Context(), store.PublishCmd{Stream: stream, Req: req})
+	// Disconnect-immune submit (G4): background-derived and bounded by the writer
+	// submit timeout. A commit failure is UNKNOWN, never "it failed" (#6 §10.2), so
+	// the envelope teaches the Messq-Msg-Id retry.
+	submitCtx, cancel := s.submitCtx(context.Background())
+	defer cancel()
+	ack, err := s.store.Publish(submitCtx, store.PublishCmd{Stream: stream, Req: req})
 	if err != nil {
+		err = s.classifySubmit("api.publishMessage", err)
+		if errors.Is(err, store.ErrCommitUnknown) && msgID != "" {
+			err = errs.WithNext(err,
+				"the commit may or may not have succeeded; retry with the same Messq-Msg-Id "+
+					msgID+" to dedup")
+		}
 		s.writeError(w, err)
 		return
 	}
@@ -208,9 +250,9 @@ func (e batchEntry) publishReq(line int) (queue.PublishReq, error) {
 }
 
 // batchLineError wraps a per-entry validation error with its 1-based line index while
-// preserving the error's type, so wireCode still maps it to the right code.
+// preserving the error's type, so the mapping still resolves it to the right code.
 func batchLineError(line int, err error) error {
-	return errs.E(err, "", "line %d: %s", line, errMessage(err))
+	return errs.E(err, "", "line %d: %s", line, errorMessage(err))
 }
 
 // handlePublishBatch is POST /v1/streams/{stream}/messages:batch: NDJSON in, one
@@ -231,12 +273,12 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	sc := info.Config()
 
-	if r.ContentLength > s.maxBatchBytes {
+	if r.ContentLength > s.cfg.MaxBatchBytes {
 		s.writeError(w, errs.E(errs.ErrTooLarge, "api.publishBatch",
-			"batch body is %d bytes, limit is %d", r.ContentLength, s.maxBatchBytes))
+			"batch body is %d bytes, limit is %d", r.ContentLength, s.cfg.MaxBatchBytes))
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBatchBytes+1)
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBatchBytes+1)
 
 	var reqs []queue.PublishReq
 	dec := json.NewDecoder(r.Body)
@@ -249,7 +291,7 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 			var maxErr *http.MaxBytesError
 			if errors.As(decErr, &maxErr) {
 				s.writeError(w, errs.E(errs.ErrTooLarge, "api.publishBatch",
-					"batch body exceeds the %d-byte limit", s.maxBatchBytes))
+					"batch body exceeds the %d-byte limit", s.cfg.MaxBatchBytes))
 				return
 			}
 			s.writeError(w, errs.E(errs.ErrBadRequest, "api.publishBatch",
@@ -273,9 +315,13 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ack, err := s.store.PublishBatch(r.Context(), store.BatchCmd{Stream: stream, Reqs: reqs})
+	// Same disconnect-immune submit as the raw-body route: the batch is one
+	// transaction, and a hung-up publisher's committed batch still dedups on retry.
+	submitCtx, cancel := s.submitCtx(context.Background())
+	defer cancel()
+	ack, err := s.store.PublishBatch(submitCtx, store.BatchCmd{Stream: stream, Reqs: reqs})
 	if err != nil {
-		s.writeError(w, err)
+		s.writeError(w, s.classifySubmit("api.publishBatch", err))
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, ack)

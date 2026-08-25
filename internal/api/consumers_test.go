@@ -68,7 +68,7 @@ func TestCreateConsumerRoute(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("immutable status = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
-	var env errorEnvelope
+	var env Envelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestCreateConsumerRejectsUnsupported(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s status = %d, want 400 (%s)", feature, rec.Code, rec.Body)
 		}
-		var env errorEnvelope
+		var env Envelope
 		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 			t.Fatalf("decode: %v", err)
 		}

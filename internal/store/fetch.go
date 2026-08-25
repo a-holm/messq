@@ -79,6 +79,12 @@ type FetchResult struct {
 	Inflight      int64       `json:"inflight"`
 	Backlog       int64       `json:"backlog"`
 	MaxAckPending int64       `json:"max_ack_pending,omitempty"`
+
+	// NextVisibleAtMS is when this consumer's earliest not-yet-visible READY row
+	// becomes claimable (unix ms; 0 = unknown/no such row). #14's long poll caps its
+	// park timer at this instant so a redelivery is picked up even when the sweeper
+	// is late. Additive, omitempty: older readers ignore it.
+	NextVisibleAtMS int64 `json:"next_visible_at_ms,omitempty"`
 }
 
 // claimedDelivery is the metadata of one claimed row, enough to mint its token and read
@@ -101,6 +107,7 @@ type fetchResult struct {
 	inflight      int64
 	backlog       int64
 	maxAckPending int64 // populated when hold == flow_control
+	nextVisibleMS int64 // earliest future READY visible_at; 0 = none/unknown
 	generation    int64
 	maxDeliver    int32
 	ackWaitMS     int64
@@ -148,9 +155,18 @@ func (s *Store) Fetch(ctx context.Context, req FetchReq) (FetchResult, error) {
 	return FetchResult{
 		Messages: msgs, Hold: fr.hold, CursorSeq: fr.cursorSeq,
 		Pending: fr.pending, Inflight: fr.inflight, Backlog: fr.backlog,
-		MaxAckPending: fr.maxAckPending,
+		MaxAckPending: fr.maxAckPending, NextVisibleAtMS: fr.nextVisibleMS,
 	}, nil
 }
+
+// ConsumerLimits exposes the process-wide consumer ceilings (--max-fetch-batch,
+// --fetch-max-bytes, --max-ack-wait, ...) the API layer clamps and echoes effective
+// values against. Read-only copy.
+func (s *Store) ConsumerLimits() queue.ConsumerLimits { return s.consumerLimits }
+
+// MaxSettleBatch exposes --max-settle-batch so the HTTP layer can refuse an over-cap
+// batch with 413 BEFORE submitting anything.
+func (s *Store) MaxSettleBatch() int { return s.maxSettleBatch }
 
 // fetchCmd is the single writer command behind Fetch.
 type fetchCmd struct {
@@ -263,7 +279,41 @@ func (c fetchCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result,
 	if hold == HoldFlowControl {
 		res.maxAckPending = st.maxAckPending
 	}
+	if hold == HoldBackoff || hold == HoldCatchingUp || hold == HoldEmpty {
+		// The park-timer cap (#14 §6.4): when the next claimable instant is known, a
+		// parked fetch may stop waiting for the sweeper and wake itself then. One
+		// indexed range seek on deliveries_ready, only on short holds.
+		nextMS, nErr := nextVisibleAt(ctx, tx, c.stream, c.consumer, nowMS)
+		if nErr != nil {
+			return nil, nil, nErr
+		}
+		res.nextVisibleMS = nextMS
+	}
 	return res, events, nil
+}
+
+// nextVisibleAt returns the earliest visible_at strictly in the future among this
+// consumer's READY delivery rows, or 0 when every row is claimable now.
+func nextVisibleAt(ctx context.Context, tx *sql.Tx, stream, name string, nowMS int64) (int64, error) {
+	var next any
+	err := tx.QueryRowContext(ctx,
+		`SELECT MIN(visible_at) FROM deliveries
+		 WHERE stream = ? AND consumer = ? AND state = 'ready' AND visible_at > ?`,
+		stream, name, nowMS).Scan(&next)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("nextVisibleAt: %w", err)
+	}
+	if next == nil {
+		return 0, nil
+	}
+	n, ok := next.(int64)
+	if !ok {
+		return 0, nil
+	}
+	return n, nil
 }
 
 // loadConsumerTx reads the authoritative consumers-row slice inside the transaction.

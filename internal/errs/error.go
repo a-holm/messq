@@ -38,6 +38,41 @@ func E(sentinel error, op, format string, args ...any) *Error {
 	return &Error{Err: sentinel, Op: op, Msg: fmt.Sprintf(format, args...)}
 }
 
+// codedError attaches a wire code to any error without disturbing its identity. It is
+// a separate wrapper — not a field on [Error] — because codes refine typed store/queue
+// errors too, and those are not always *Error values.
+type codedError struct {
+	code string
+	err  error
+}
+
+func (e *codedError) Error() string { return e.err.Error() }
+
+// Unwrap exposes the wrapped error to errors.Is/errors.As, so a tagged error keeps its
+// sentinel identity and every mapping that consults the chain still works.
+func (e *codedError) Unwrap() error { return e.err }
+
+// WithCode attaches a wire code to err (issue #14 §4): the one sanctioned refinement
+// mechanism for many-codes-per-sentinel. The result wraps err — errors.Is still finds
+// everything beneath it — and renders identically. A nil err stays nil and an empty
+// code returns err unchanged, so call sites can attach unconditionally.
+func WithCode(err error, code string) error {
+	if err == nil || code == "" {
+		return err
+	}
+	return &codedError{code: code, err: err}
+}
+
+// CodeOf returns the wire code attached with [WithCode], or ok=false when err carries
+// none. The innermost attachment read is the outermost wrapper's.
+func CodeOf(err error) (string, bool) {
+	var c *codedError
+	if !errors.As(err, &c) || c.code == "" {
+		return "", false
+	}
+	return c.code, true
+}
+
 // WithNext returns err with next appended to its suggestions. The result wraps err, so
 // errors.Is still finds the sentinel and the rendered message is unchanged. err is never
 // modified: the caller may already have handed it to someone else.

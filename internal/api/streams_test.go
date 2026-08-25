@@ -27,7 +27,11 @@ func newStreamsServer(t *testing.T) (*store.Store, *Server) {
 	t.Helper()
 	clk := clock.NewFake(time.UnixMilli(1_700_000_000_000))
 	st := openTestStore(t, clk, store.DurabilityRelaxed)
-	return st, New(st, clk, discardLogger(), time.Minute, queue.DefaultLimits(), defaultMaxBatchBytes)
+	return st, New(Config{
+		Store:  st,
+		Clock:  clk,
+		Logger: discardLogger(),
+	})
 }
 
 // doJSON issues one request against the handler and returns the recorder.
