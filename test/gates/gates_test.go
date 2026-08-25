@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -74,26 +75,55 @@ const modDownloadTimeout = 5 * time.Minute
 // already present: no concurrent downloads, no stderr pollution, no TempDir-cleanup race. This
 // must hold even when the setup-go cache restore misses, so this deliberately does NOT depend on
 // the cache being warm — it warms the cache itself.
+//
+// #gates-fix (2026-08-25): one `go mod download` warms only the MAIN module graph, and that is
+// not every module a row can need. The pinned tools live in their own module files and are
+// invoked as `go tool -modfile=tools/<tool>.mod <tool>` (Makefile), so the lint rows pull the
+// whole golangci-lint/actionlint graphs and fmt-check pulls gofumpt's graph from inside the row;
+// tidy-check's `go mod tidy -diff` resolves the full graph including test dependencies. On a
+// cold runner each of those started a downloader mid-row, which the CI logs show as the
+// "make output shows 'go: downloading ...'" breadcrumb on B1/G26/G24 even when the row passed.
+// The warm-up therefore also downloads every tools/*.mod module file, serially, before any row
+// runs. That closes the gap for everything known today; the row validator additionally treats
+// residual downloader chatter as benign noise (see stripDownloadNoise), because cold-cache on a
+// FIRST ever run — a dependency added by a fresh branch — can never be fully pre-warmed.
 func TestMain(m *testing.M) {
-	start := clock.System{}.Now()
 	root := repoRoot()
-	ctx, cancel := context.WithTimeout(context.Background(), modDownloadTimeout)
-	cmd := exec.CommandContext(ctx, "go", "mod", "download")
-	cmd.Dir = root
-	cmd.Env = childEnv()
-	out, err := cmd.CombinedOutput()
-	cancel()
-	fmt.Fprintf(os.Stderr, "gates: module-cache warm-up (%s) took %v\n", "go mod download", clock.System{}.Since(start).Round(time.Millisecond))
-	if err != nil {
-		// The warm-up failing is a real preflight failure, not a gate verdict. Do not shrug it
-		// off: every row below would then race concurrent downloads again, and the whole point
-		// of the gates selftest is to prove the gates bite, not to rediscover the cold-cache
-		// herd. Fail loudly, with the downloader's own stderr. A test binary must not call
-		// os.Exit directly (forbidigo), and returning skips m.Run, so a panic is the one
-		// remaining way to stop the suite with a nonzero exit here.
-		panic("gates: module-cache warm-up failed: " + err.Error() + "\n" + string(out))
-	}
+	warmModuleCache(root)
 	m.Run() // the testing package exits with m.Run's code when TestMain returns
+}
+
+// warmModuleCache fills the shared GOMODCACHE before any row is admitted: once for the main
+// module graph, then once per pinned-tool module file under tools/. Each download gets its own
+// modDownloadTimeout budget. A failed warm-up is a real preflight failure, not a gate verdict:
+// shrugging it off would put every row back into the concurrent-download race the warm-up
+// exists to prevent. A test binary must not call os.Exit directly (forbidigo) and returning
+// skips m.Run, so a panic is the one remaining way to stop the suite with a nonzero exit here.
+func warmModuleCache(root string) {
+	start := clock.System{}.Now()
+	download := func(args ...string) {
+		ctx, cancel := context.WithTimeout(context.Background(), modDownloadTimeout)
+		defer cancel()
+		argv := append([]string{"mod", "download"}, args...)
+		cmd := exec.CommandContext(ctx, "go", argv...)
+		cmd.Dir = root
+		cmd.Env = childEnv()
+		out, err := cmd.CombinedOutput()
+		fmt.Fprintf(os.Stderr, "gates: module-cache warm-up (%s) took %v\n",
+			strings.Join(argv, " "), clock.System{}.Since(start).Round(time.Millisecond))
+		if err != nil {
+			panic("gates: module-cache warm-up failed (" + strings.Join(argv, " ") + "): " + err.Error() + "\n" + string(out))
+		}
+	}
+	download()
+	toolMods, err := filepath.Glob(filepath.Join(root, "tools", "*.mod"))
+	if err != nil {
+		panic("gates: module-cache warm-up could not list tools/*.mod: " + err.Error())
+	}
+	sort.Strings(toolMods)
+	for _, modfile := range toolMods {
+		download("-modfile=" + modfile)
+	}
 }
 
 // repoRoot returns the repository root as an absolute path. The test binary runs from
@@ -133,25 +163,33 @@ func TestGates(t *testing.T) {
 
 			code, output := runMake(t, root, g.target, g.makeArgs...)
 
+			// The verdict reads the transcript with benign module-downloader chatter stripped
+			// (stripDownloadNoise), so a cold-cache `go: downloading ...` line can never flip a
+			// row in either direction: the expected sentinel still governs, and a row that
+			// fails without its sentinel — or exits when it should not — stays red for its own
+			// reason. The failure dumps below deliberately keep the RAW output, so nothing is
+			// hidden from whoever debugs the run.
+			verdict := stripDownloadNoise(output)
+
 			if g.wantOK {
 				if code != 0 {
 					t.Fatalf("gates: %s %-40s %-20s exit=%d, want 0\n%s", g.id, g.name, "make "+g.target, code, output)
 				}
-				if !strings.Contains(output, g.want) {
+				if !strings.Contains(verdict, g.want) {
 					t.Fatalf("gates: %s %-40s output does not contain %q\n%s", g.id, g.name, g.want, output)
 				}
-				t.Logf("gates: %-3s %-42s make %-20s exit=0  ok\n       %s", g.id, g.name, g.target, matched(output, g.want))
+				t.Logf("gates: %-3s %-42s make %-20s exit=0  ok\n       %s", g.id, g.name, g.target, matched(verdict, g.want))
 				return
 			}
 
 			if code == 0 {
 				t.Fatalf("gates: %s %-40s make %s exited 0; the gate does not bite\n%s", g.id, g.name, g.target, output)
 			}
-			if !strings.Contains(output, g.want) {
+			if !strings.Contains(verdict, g.want) {
 				t.Fatalf("gates: %s %-40s make %s failed with exit=%d but without %q; it failed for the wrong reason\n%s",
 					g.id, g.name, g.target, code, g.want, output)
 			}
-			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s", g.id, g.name, g.target, code, matched(output, g.want))
+			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s", g.id, g.name, g.target, code, matched(verdict, g.want))
 		})
 	}
 }
@@ -444,6 +482,30 @@ func matched(output, want string) string {
 	return ""
 }
 
+// stripDownloadNoise removes the go command's benign module-downloader progress lines from a
+// row's combined output, so a row's verdict is decided by its own sentinel and exit code rather
+// than by whether the module cache happened to be warm:
+//
+//	go: downloading github.com/prometheus/client_golang v1.24.1
+//
+// This is a determinism guard, not an escape hatch. Only whole lines whose entire content is
+// downloader chatter are dropped — never error text (a FAILED download still fails the row via
+// its exit code and its missing sentinel), never a gate's own verdict lines, and nothing else.
+// A true wrong-reason failure keeps failing: if the expected fragment is absent after the strip,
+// the row is red exactly as before. The TestMain warm-up remains the primary fix; this only
+// covers the residue no warm-up can know about (the first run that meets a brand-new module).
+func stripDownloadNoise(output string) string {
+	var kept strings.Builder
+	kept.Grow(len(output))
+	for line := range strings.Lines(output) {
+		if strings.HasPrefix(strings.TrimRight(line, "\n"), "go: downloading ") {
+			continue
+		}
+		kept.WriteString(line)
+	}
+	return kept.String()
+}
+
 // install copies fixture files from testdata into the scratch tree. Arguments are
 // fixture, destination pairs.
 func install(pairs ...string) func(*testing.T, string) {
@@ -686,11 +748,10 @@ func runMake(t *testing.T, root, target string, extra ...string) (int, string) {
 	output, err := cmd.CombinedOutput()
 
 	// Diagnostic guard: if a row's make run still shows `go: downloading ...` on its stderr,
-	// the module cache was raced despite the TestMain warm-up (e.g. a module added by this
-	// row's own code, or a cache-restore miss). The warm-up in TestMain is the fix; this is not
-	// a second verdict but a breadcrumb so a "failed for the wrong reason" row is
-	// distinguishable from a gate that genuinely does not bite. The row's own assertion below
-	// still decides.
+	// the module cache was cold for this row despite the TestMain warm-up (a module no
+	// tools/*.mod file and not the main graph knows about — e.g. a dependency a fresh branch
+	// just added). This is not a second verdict: the row's assertion below decides, on the
+	// stripped transcript, so the chatter alone can neither pass nor fail a row.
 	if strings.Contains(string(output), "go: downloading") {
 		t.Logf("gates: %s: make output shows 'go: downloading ...' (module cache was cold for this row; see TestMain warm-up)", target)
 	}
