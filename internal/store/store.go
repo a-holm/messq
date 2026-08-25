@@ -102,8 +102,10 @@ type Store struct {
 	// peek bounds from Options (§6); defaulted in applyDefaults.
 	peekMaxLimit  int
 	peekScanLimit int
-	maxBatchMsgs  int
-	dedupSweep    time.Duration
+	// eventQueryMaxLimit caps one Events page (issue #20, --event-query-max-limit).
+	eventQueryMaxLimit int
+	maxBatchMsgs       int
+	dedupSweep         time.Duration
 }
 
 // dbPath renders <dir>/messq.db.
@@ -270,6 +272,7 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 		eventRepeatInterval: opt.EventRepeatInterval,
 		peekMaxLimit:        opt.PeekMaxLimit,
 		peekScanLimit:       opt.PeekScanLimit,
+		eventQueryMaxLimit:  opt.EventQueryMaxLimit,
 		maxBatchMsgs:        opt.MaxBatchMessages,
 		dedupSweep:          opt.DedupSweepInterval,
 		clk:                 opt.Clock,
