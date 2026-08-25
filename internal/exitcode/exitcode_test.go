@@ -31,3 +31,31 @@ func TestServeCodesDoNotCollideWithClientRange(t *testing.T) {
 		}
 	}
 }
+
+// TestExitCodeLiteralValues pins every exported constant to its exact integer
+// value. The values themselves are the contract (systemd's
+// RestartPreventExitStatus="2 78"; sysexits EX_IOERR=74, EX_TEMPFAIL=75), so any
+// renumber — e.g. IOERR 74→73 or CONFIG 78→77 — must go RED here first.
+func TestExitCodeLiteralValues(t *testing.T) {
+	t.Parallel()
+
+	// want is always an integer literal, never derived from the constants under
+	// test; got references the constant so a changed definition cannot hide.
+	pinned := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "OK", got: OK, want: 0},
+		{name: "Error", got: Error, want: 1},
+		{name: "Usage", got: Usage, want: 2},
+		{name: "IOERR", got: IOERR, want: 74},
+		{name: "TEMPFAIL", got: TEMPFAIL, want: 75},
+		{name: "CONFIG", got: CONFIG, want: 78},
+	}
+	for _, p := range pinned {
+		if p.got != p.want {
+			t.Errorf("%s = %d, want literal %d (exit-code values are the contract — do not renumber)", p.name, p.got, p.want)
+		}
+	}
+}
