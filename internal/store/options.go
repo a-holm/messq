@@ -53,6 +53,10 @@ type Options struct {
 	// --event-query-max-limit); a filter asking above it gets the clamped page plus a
 	// resume cursor instead of a silent clamp. <= 0 means 1000.
 	EventQueryMaxLimit int
+	// EventScanBudget bounds the journal rows one [Store.Events] page may examine
+	// before it returns an honest partial answer (issue #20, --event-scan-budget).
+	// A filter may lower it per page via EventFilter.ScanBudget. <= 0 means 10000.
+	EventScanBudget int
 	// MaxBatchMessages caps one PublishBatch command (§7, --max-batch-messages);
 	// <= 0 means 1000.
 	MaxBatchMessages int
@@ -96,6 +100,7 @@ const (
 	defaultPeekMaxLimit  = 1_000
 	defaultPeekScanLimit = 10_000
 	defaultEventMaxLimit = 1_000
+	defaultEventScan     = 10_000
 	defaultMaxBatch      = 1_000
 	defaultDedupSweep    = 60 * time.Second
 	defaultSettleBatch   = 1_024
@@ -137,6 +142,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.EventQueryMaxLimit <= 0 {
 		o.EventQueryMaxLimit = defaultEventMaxLimit
+	}
+	if o.EventScanBudget <= 0 {
+		o.EventScanBudget = defaultEventScan
 	}
 	if o.MaxBatchMessages <= 0 {
 		o.MaxBatchMessages = defaultMaxBatch

@@ -4,6 +4,8 @@ package store
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -390,4 +392,128 @@ func openEventStore(t *testing.T, tweak func(o *Options)) *Store {
 		}
 	})
 	return st
+}
+
+// ---- Issue #20 slice 2: scan-budget honesty + the anchor→index plan audit. ----------
+
+// TestEventsScanBudgetStopsHonestly pins Decision 1's second half: residual scanning
+// is budgeted. A page that stops on --event-scan-budget reports Complete=false with
+// ScannedToID/NextAfterID as the resume point — never a silently truncated answer —
+// and paging to exhaustion still yields every row exactly once (pagination totality
+// under the bound).
+func TestEventsScanBudgetStopsHonestly(t *testing.T) {
+	ctx := context.Background()
+	st := openEventStore(t, func(o *Options) { o.EventScanBudget = 4 })
+	seedEvents(t, st, sevenRowJournal())
+
+	// Page 1 rides the option ceiling: scans rows 1..4, all match, budget out.
+	p1, err := st.Events(ctx, EventFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("budget page 1: %v", err)
+	}
+	if len(p1.Events) != 4 {
+		t.Errorf("page 1 returned %d rows, want the 4-row budget", len(p1.Events))
+	}
+	if p1.Complete {
+		t.Errorf("page 1: Complete = true, want false (scan budget ran out)")
+	}
+	if p1.ScannedToID != 4 || p1.NextAfterID != 4 {
+		t.Errorf("page 1: ScannedToID=%d NextAfterID=%d, want 4/4",
+			p1.ScannedToID, p1.NextAfterID)
+	}
+
+	// Page 2 overrides the budget per filter: two more rows, same honest stop.
+	p2, err := st.Events(ctx, EventFilter{AfterID: p1.NextAfterID, Limit: 100, ScanBudget: 2})
+	if err != nil {
+		t.Fatalf("budget page 2: %v", err)
+	}
+	if len(p2.Events) != 2 || p2.Complete || p2.NextAfterID != 6 {
+		t.Errorf("page 2: n=%d Complete=%v NextAfterID=%d, want 2/false/6",
+			len(p2.Events), p2.Complete, p2.NextAfterID)
+	}
+
+	// Page 3 finishes the range inside its budget: honestly complete.
+	p3, err := st.Events(ctx, EventFilter{AfterID: p2.NextAfterID, Limit: 100, ScanBudget: 99})
+	if err != nil {
+		t.Fatalf("budget page 3: %v", err)
+	}
+	if !p3.Complete || p3.NextAfterID != 0 || len(p3.Events) != 1 {
+		t.Errorf("page 3: n=%d Complete=%v NextAfterID=%d, want 1/true/0",
+			len(p3.Events), p3.Complete, p3.NextAfterID)
+	}
+
+	gotTS := append(append(eventTSList(p1), eventTSList(p2)...), eventTSList(p3)...)
+	want := []int64{
+		1_700_000_000_010, 1_700_000_000_020, 1_700_000_000_030,
+		1_700_000_000_040, 1_700_000_000_050, 1_700_000_000_060,
+		1_700_000_000_070,
+	}
+	if !int64Equal(gotTS, want) {
+		t.Errorf("budgeted walk = %v, want each row exactly once %v", gotTS, want)
+	}
+}
+
+// bindForPlan splices the query's own arguments in as literals: EXPLAIN QUERY PLAN
+// refuses unbound parameters, and plan choice does not depend on bound values, so the
+// audited SQL stays byte-for-byte what buildEventQuery ships.
+func bindForPlan(q string, args []any) string {
+	out := q
+	for _, a := range args {
+		var lit string
+		switch v := a.(type) {
+		case string:
+			lit = "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		case int:
+			lit = strconv.Itoa(v)
+		case int64:
+			lit = strconv.FormatInt(v, 10)
+		default:
+			lit = "NULL"
+		}
+		out = strings.Replace(out, "?", lit, 1)
+	}
+	return out
+}
+
+// TestEventsQueryPlansAnchorOnIndexes is G5: every query class anchors on its §4.2
+// index — msg_id → events_msg, trace_id → events_trace, time range → events_ts, tail
+// → the rowid primary key — and no class sorts in a temp b-tree except the time-range
+// class, whose index orders by ts while the contract orders by id. A dropped or
+// defeated index changes these plans and reds this audit (a lost index is a failing
+// test, not an outage). The audited SQL comes from buildEventQuery itself, so the
+// plans are the shipped queries, not hand-copied look-alikes.
+func TestEventsQueryPlansAnchorOnIndexes(t *testing.T) {
+	st := openEventStore(t, nil)
+	cases := []struct {
+		name      string
+		filter    EventFilter
+		wantIndex string // "" = must ride the rowid PK, no secondary index
+		allowSort bool   // only the ts-anchored class may temp-sort for id order
+	}{
+		{"msg_id anchors on events_msg", EventFilter{MsgID: "m"}, "events_msg", false},
+		{"trace_id anchors on events_trace", EventFilter{TraceID: "t"}, "events_trace", false},
+		{"time range anchors on events_ts", EventFilter{Since: 1000, Until: 2000}, "events_ts", true},
+		{"desc tail rides the primary key", EventFilter{Order: OrderDesc}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, args := buildEventQuery(tc.filter, 101)
+			plan := eqp(t, st, bindForPlan(q, args))
+			switch {
+			case tc.wantIndex != "":
+				if !strings.Contains(plan, tc.wantIndex) {
+					t.Errorf("plan does not anchor on %s:\n%s", tc.wantIndex, plan)
+				}
+			default:
+				for _, idx := range []string{"events_msg", "events_trace", "events_ts"} {
+					if strings.Contains(plan, idx) {
+						t.Errorf("tail plan must ride the rowid PK, saw %s:\n%s", idx, plan)
+					}
+				}
+			}
+			if !tc.allowSort && strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("plan sorts in a temp b-tree — the anchor's order was lost:\n%s", plan)
+			}
+		})
+	}
 }

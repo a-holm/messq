@@ -112,16 +112,17 @@ const (
 // in Go over the bounded scan. AfterID is an EXCLUSIVE cursor in scan direction — the
 // resume point handed back as [EventPage.NextAfterID], and later the follow handoff.
 type EventFilter struct {
-	MsgID    string   // anchor: events_msg(msg_id, id)
-	TraceID  string   // anchor: events_trace(trace_id, id)
-	Stream   string   // residual: exact stream name
-	Consumer string   // residual: exact consumer name
-	Events   []string // residual: exact ("msg.dead") or one-level glob ("msg.*")
-	Since    int64    // unix ms, inclusive; 0 = unbounded
-	Until    int64    // unix ms, exclusive; 0 = unbounded
-	AfterID  int64    // exclusive cursor in scan direction; 0 = start
-	Limit    int      // clamped to Options.EventQueryMaxLimit; <= 0 means the ceiling
-	Order    Order    // [OrderAsc] (default) | [OrderDesc]
+	MsgID      string   // anchor: events_msg(msg_id, id)
+	TraceID    string   // anchor: events_trace(trace_id, id)
+	Stream     string   // residual: exact stream name
+	Consumer   string   // residual: exact consumer name
+	Events     []string // residual: exact ("msg.dead") or one-level glob ("msg.*")
+	Since      int64    // unix ms, inclusive; 0 = unbounded
+	Until      int64    // unix ms, exclusive; 0 = unbounded
+	AfterID    int64    // exclusive cursor in scan direction; 0 = start
+	Limit      int      // clamped to Options.EventQueryMaxLimit; <= 0 means the ceiling
+	ScanBudget int      // max rows examined; clamped to Options.EventScanBudget; <= 0 means it
+	Order      Order    // [OrderAsc] (default) | [OrderDesc]
 }
 
 // EventPage is one honest answer about the journal. Complete is false only when the
@@ -141,17 +142,84 @@ type EventPage struct {
 
 // Events reads one page of the journal through the read pool. It never blocks on the
 // writer and never enqueues work: a stalled reader costs the pool one connection and
-// nothing else.
+// nothing else. The SQL carries LIMIT limit+budget as a hard cap so even the
+// time-range class's bounded sorter cannot balloon: rows consumed can never exceed
+// what the fill/budget checks stop at.
 func (s *Store) Events(ctx context.Context, f EventFilter) (EventPage, error) {
 	limit := f.Limit
 	if limit <= 0 || limit > s.eventQueryMaxLimit {
 		limit = s.eventQueryMaxLimit
+	}
+	budget := f.ScanBudget
+	if budget <= 0 || budget > s.eventScanBudget {
+		// A filter may lower the budget below --event-scan-budget, never raise it:
+		// the flag is the process-wide I11 ceiling.
+		budget = s.eventScanBudget
 	}
 	horizon, err := s.EventHorizon(ctx)
 	if err != nil {
 		return EventPage{}, err
 	}
 
+	q, args := buildEventQuery(f, limit+budget)
+	ro := s.readPool()
+	rows, qErr := ro.QueryContext(ctx, q, args...)
+	if qErr != nil {
+		return EventPage{}, fmt.Errorf("query events: %w", qErr)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.logger.Warn("store.Events", "error", cerr.Error())
+		}
+	}()
+
+	page := EventPage{
+		Events:    make([]obs.Event, 0, min(limit, 64)),
+		HorizonTS: horizon,
+	}
+	filled := false
+	boundReached := false
+	scanned := 0
+	for rows.Next() {
+		if scanned == budget {
+			// The bound is on rows EXAMINED, not matches: stop before consuming
+			// another row (ListMessages' discipline). If the source ends here
+			// naturally, rows.Next() ends the loop first and boundReached never
+			// fires, so the page stays honestly complete.
+			boundReached = true
+			break
+		}
+		scanned++
+		e, rowID, scanErr := scanEventRow(rows)
+		if scanErr != nil {
+			return EventPage{}, fmt.Errorf("scan event row: %w", scanErr)
+		}
+		page.ScannedToID = rowID
+		if !f.matches(e) {
+			continue
+		}
+		page.Events = append(page.Events, e)
+		if len(page.Events) == limit {
+			filled = true
+			break
+		}
+	}
+	if rErr := rows.Err(); rErr != nil {
+		return EventPage{}, fmt.Errorf("iterate events: %w", rErr)
+	}
+	switch {
+	case filled || boundReached:
+		page.NextAfterID = page.ScannedToID // resume AFTER the last examined row
+	default:
+		page.Complete = true // the whole filter range fit inside this page
+	}
+	return page, nil
+}
+
+// buildEventQuery renders one Events page query: anchors and cursor in SQL, ORDER BY
+// id in scan direction, and LIMIT maxRows as the hard consumption cap (limit+budget).
+// Extracted so the EXPLAIN QUERY PLAN audit tests the SHIPPED SQL, not a look-alike.
+func buildEventQuery(f EventFilter, maxRows int) (string, []any) {
 	var clauses []string
 	args := []any{}
 	if f.MsgID != "" {
@@ -187,49 +255,10 @@ func (s *Store) Events(ctx context.Context, f EventFilter) (EventPage, error) {
 		dir = "DESC"
 	}
 	q := `SELECT id, ts, event, stream, consumer, subject, msg_id, seq, attempt,
-		trace_id, actor, detail FROM events` + where + ` ORDER BY id ` + dir
-
-	ro := s.readPool()
-	rows, qErr := ro.QueryContext(ctx, q, args...)
-	if qErr != nil {
-		return EventPage{}, fmt.Errorf("query events: %w", qErr)
-	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			s.logger.Warn("store.Events", "error", cerr.Error())
-		}
-	}()
-
-	page := EventPage{
-		Events:    make([]obs.Event, 0, min(limit, 64)),
-		HorizonTS: horizon,
-	}
-	filled := false
-	for rows.Next() {
-		e, rowID, scanErr := scanEventRow(rows)
-		if scanErr != nil {
-			return EventPage{}, fmt.Errorf("scan event row: %w", scanErr)
-		}
-		page.ScannedToID = rowID
-		if !f.matches(e) {
-			continue
-		}
-		page.Events = append(page.Events, e)
-		if len(page.Events) == limit {
-			filled = true
-			break
-		}
-	}
-	if rErr := rows.Err(); rErr != nil {
-		return EventPage{}, fmt.Errorf("iterate events: %w", rErr)
-	}
-	switch {
-	case filled:
-		page.NextAfterID = page.ScannedToID // resume AFTER the last returned row
-	default:
-		page.Complete = true // the whole filter range fit inside this page
-	}
-	return page, nil
+		trace_id, actor, detail FROM events` + where +
+		` ORDER BY id ` + dir + ` LIMIT ?`
+	args = append(args, maxRows)
+	return q, args
 }
 
 // matches applies the residual predicates against one carrier. Kept next to the SQL
