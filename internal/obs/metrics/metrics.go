@@ -94,7 +94,6 @@ type Metrics struct {
 	buildInfo *prometheus.GaugeVec
 	dropped   prometheus.Counter // messq_metrics_dropped_series_total
 	truncated prometheus.Counter // messq_metrics_truncated_total
-	waiters   prometheus.Gauge   // nil unless Options.Waiters is set
 
 	commit *prommetrics.CommitMetrics
 
@@ -164,14 +163,6 @@ func New(o Options) (*Metrics, error) {
 				}, spec.Labels)
 				m.buildInfo = g
 				m.reg.MustRegister(g)
-			case spec.Name == metricWaitersGauge && o.Waiters == nil:
-				continue // unregistered, not zero: an unwired gauge would read as "no waiters", a lie
-			case spec.Name == metricWaitersGauge:
-				g := prometheus.NewGauge(prometheus.GaugeOpts{
-					Name: spec.Name, Help: spec.Help,
-				})
-				m.waiters = g
-				m.reg.MustRegister(g)
 			case len(spec.Labels) > 0:
 				// Labelled bookkeeping gauges the collector feeds (the self-metrics).
 				g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -226,7 +217,8 @@ func descFed(name string) bool {
 	case namePending, nameInflight, nameBacklog, nameOldestPendingAge,
 		nameConsumerPaused, nameDLQDepth, metricSweepBacklog,
 		nameDBBytes, nameWALBytes, nameEventsRows, nameDiskFreeBytes,
-		nameScrapeErrorsTotal, nameSnapshotAgeSeconds, nameCollectDurationSecs:
+		nameScrapeErrorsTotal, nameSnapshotAgeSeconds, nameCollectDurationSecs,
+		metricWaitersGauge:
 		return true
 	}
 	return false

@@ -177,14 +177,14 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	cheap := cheapSnap.cheap
 	heavy := heavySnap.heavy
 
-	if c.m.waiters != nil {
-		c.m.waiters.Set(float64(c.m.o.Waiters()))
-	}
-
 	const gaugeType = prometheus.GaugeValue
 
 	emit := func(name string, value float64, lvs ...string) {
 		sendConst(ch, c.descs[name], gaugeType, value, name, lvs...)
+	}
+
+	if c.m.o.Waiters != nil {
+		emit(metricWaitersGauge, float64(c.m.o.Waiters()))
 	}
 
 	// Per-pair gauges with the S5.3 definitions.
