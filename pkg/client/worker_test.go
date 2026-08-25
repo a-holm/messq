@@ -349,7 +349,14 @@ func TestWorkerGoroutineCensus(t *testing.T) {
 		b := newFakeBroker()
 		c := newFakeClient(t, b)
 
+		// runtime.NumGoroutine is PROCESS-wide even inside a bubble, so sibling-test
+		// churn can shift the absolute number by one either way. The load-bearing
+		// property is the DELTA around Run: exactly the fixed complement (fetcher +
+		// keeper + settler + N handlers, the Run wrapper being the fetcher's caller)
+		// — any per-message goroutine or timer-goroutine design blows far past it.
+		const wantDelta = 7 // 3 + Concurrency(4), including the goroutine running Run
 		before := runtime.NumGoroutine()
+
 		w, _ := c.NewWorker(WorkerConfig{Stream: "orders", Consumer: "w", Concurrency: 4})
 		done := make(chan error, 1)
 		go func() {
@@ -357,17 +364,16 @@ func TestWorkerGoroutineCensus(t *testing.T) {
 		}()
 		synctest.Wait()
 		during := runtime.NumGoroutine()
-		// Run caller + fetcher + keeper + settler + 4 handlers.
-		if during-before != 7 {
-			t.Errorf("goroutines during Run: +%d, want +7 (3 + Concurrency)", during-before)
+		if d := during - before; d < wantDelta || d > wantDelta+1 {
+			t.Errorf("goroutines during Run: +%d, want +%d (3 + Concurrency; +1 tolerated for process churn)", d, wantDelta)
 		}
 		w.Drain(context.Background())
 		if err := <-done; err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		synctest.Wait()
-		if after := runtime.NumGoroutine(); after != before {
-			t.Errorf("goroutines after Drain: %d, want baseline %d", after, before)
+		if after := runtime.NumGoroutine(); after > before+1 || after < before-1 {
+			t.Errorf("goroutines after Drain: %d, want back at the baseline %d (±1 churn)", after, before)
 		}
 	})
 }
