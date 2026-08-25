@@ -73,6 +73,25 @@ jobs:
           GATES_PARALLEL: "1"
         run: make gates-selftest
 
+  # Issue #18's wire-contract lane: shape digests, the ADDITIVE/BREAKING classifier and
+  # the closed-code enum source. Its own job rather than a step of `ci` for the same
+  # reason fuzz is: the contract/docs suites this grows into need a budget of their own,
+  # and sharding now keeps that move additive instead of a mid-milestone reshuffle.
+  # Unlike fuzz this IS a required check: branch protection lists the `wirecheck` context
+  # alongside ci+gates (review must-fix on PR #71) — a wire-contract lane nobody waits
+  # for is documentation theatre, not a gate.
+  wirecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: go.sum
+      - run: make wirecheck
+
   # The main-push crash lane: 100 kill/restart cycles in both durability modes against the
   # three-valued ledger oracle. It is deliberately NOT on the pull-request path — the 8-cycle
   # smoke already runs inside `make test` in the `ci` job — and its budget exceeds the ci job's
