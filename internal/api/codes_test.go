@@ -19,8 +19,11 @@ import (
 // wireCode → mapCode and the statusFor helper → the codeStatus map — so these tests
 // bind onto the merged names.
 
-// TestAPIStatusesMatchWirecodeTable: for every code marked Produced, the API's
-// codeStatus mapping must send exactly the shared table's status.
+// TestAPIStatusesMatchWirecodeTable binds the API's codeStatus map onto the shared
+// table in BOTH directions. Forward: every Produced row sends exactly the shared
+// status. Reverse: every code the API maps must have a shared-table row at the same
+// status — an api-only member is a private enum the docs, freeze gates and #14's
+// envelope cannot see (the drift the #18 review probe caught).
 func TestAPIStatusesMatchWirecodeTable(t *testing.T) {
 	for _, c := range wirecode.All() {
 		e := wirecode.Table[c]
@@ -29,6 +32,16 @@ func TestAPIStatusesMatchWirecodeTable(t *testing.T) {
 		}
 		if got := codeStatus[Code(c)]; got != e.Status {
 			t.Errorf("codeStatus[%q] = %d, wirecode.Table says %d", c, got, e.Status)
+		}
+	}
+	for c, want := range codeStatus {
+		e, ok := wirecode.Table[wirecode.Code(c)]
+		if !ok {
+			t.Errorf("api emits %q but wirecode.Table has no row (unshared source!)", c)
+			continue
+		}
+		if e.Status != want {
+			t.Errorf("codeStatus[%q] = %d, wirecode.Table says %d", c, want, e.Status)
 		}
 	}
 }

@@ -69,7 +69,13 @@ Produced today:
 | `invalid_token` | 400 | unknown or malformed ack token |
 | `stale_ack` | 409 | ack/settle against a redelivered or reset consumer |
 | `paused` | 409 | consumer is paused |
+| `extend_capped` | 409 | extend would exceed the consumer's ack-pending cap |
+| `method_not_allowed` | 405 | HTTP method not supported on this route |
+| `unsupported_media_type` | 415 | Content-Type is not `application/json` |
 | `flow_control` | 429 | max_ack_pending reached; slow down |
+| `busy` | 503 | writer did not accept the command within `--writer-submit-timeout`; retry |
+| `commit_unknown` | 503 | write outcome unknown (daemon interrupted mid-commit); retry safely |
+| `too_many_waiters` | 503 | concurrent-waiter cap reached; retry after `Retry-After` |
 | `stream_full` | 507 | stream at its limit and discard=new |
 | `disk_full` | 507 | insufficient free disk space (#17 adds degraded-writes semantics) |
 | `internal` | 500 | unclassified failure (the catch-all) |

@@ -51,6 +51,17 @@ const (
 	StreamFull   Code = "stream_full"
 	DiskFull     Code = "disk_full" // emittable today; #17 continues with degraded-writes semantics
 
+	// Live-surface router and backpressure codes the #18 review drift probe caught
+	// living only in the API's private map: method_not_allowed is the router's 405,
+	// extend_capped the settle-extend cap, unsupported_media_type the non-JSON
+	// content-type refusal, and the three 503s the commit/wait backpressure set.
+	MethodNotAllowed     Code = "method_not_allowed"
+	ExtendCapped         Code = "extend_capped"
+	UnsupportedMediaType Code = "unsupported_media_type"
+	CommitUnknown        Code = "commit_unknown" // write outcome unknown; retry safely (#6)
+	Busy                 Code = "busy"           // writer did not accept within --writer-submit-timeout
+	TooManyWaiters       Code = "too_many_waiters"
+
 	// Reserved for named future issues; producing one before its owner ships fails
 	// the wire freeze.
 	RateLimited Code = "rate_limited" // #39: max in-flight / flow control
@@ -117,6 +128,13 @@ var Table = map[Code]Entry{
 	FlowControl:  {Status: 429},
 	StreamFull:   {Status: 507},
 	DiskFull:     {Status: 507},
+
+	MethodNotAllowed:     {Status: 405},
+	ExtendCapped:         {Status: 409},
+	UnsupportedMediaType: {Status: 415},
+	CommitUnknown:        {Status: 503},
+	Busy:                 {Status: 503},
+	TooManyWaiters:       {Status: 503},
 
 	RateLimited: {Status: 429, Kind: Reserved, Owner: "#39"},
 

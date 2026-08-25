@@ -77,6 +77,9 @@ jobs:
   # the closed-code enum source. Its own job rather than a step of `ci` for the same
   # reason fuzz is: the contract/docs suites this grows into need a budget of their own,
   # and sharding now keeps that move additive instead of a mid-milestone reshuffle.
+  # Unlike fuzz this IS a required check: branch protection lists the `wirecheck` context
+  # alongside ci+gates (review must-fix on PR #71) — a wire-contract lane nobody waits
+  # for is documentation theatre, not a gate.
   wirecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 5
