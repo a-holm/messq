@@ -38,6 +38,7 @@ var serveFlagNames = map[string]struct{}{
 	"--peek-scan-limit":          {},
 	"--peek-max-limit":           {},
 	"--dedup-sweep-interval":     {},
+	"--drain-timeout":            {},
 	"--max-waiters":              {},
 	"--max-waiters-per-consumer": {},
 	"--max-fetch-wait":           {},
@@ -64,6 +65,10 @@ type serveConfig struct {
 	peekScanLimit      int
 	peekMaxLimit       int
 	dedupSweepInterval time.Duration
+	// drainTimeout is the SIGTERM drain budget (PLAN §4.4). The default is SEMANTICS
+	// A1's register value; the flag and MESSQ_DRAIN_TIMEOUT override it at runtime.
+	// Consumed by the lifecycle manager when #17's composition-root slice lands.
+	drainTimeout time.Duration
 
 	maxWaiters            int
 	maxWaitersPerConsumer int
@@ -171,6 +176,11 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	if cfg.dedupSweepInterval, err = time.ParseDuration(resolve("--dedup-sweep-interval", "MESSQ_DEDUP_SWEEP_INTERVAL", "60s")); err != nil {
 		return serveConfig{}, fmt.Errorf("--dedup-sweep-interval: %w", err)
 	}
+	// 10s is A1's register value for the graceful-drain bound; the flag only overrides
+	// it at runtime, the register stays the source of truth (brief-17 §8 Q1 ruling).
+	if cfg.drainTimeout, err = time.ParseDuration(resolve("--drain-timeout", "MESSQ_DRAIN_TIMEOUT", "10s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--drain-timeout: %w", err)
+	}
 
 	// Issue #14 §9 transport bounds: flag → MESSQ_* env → default.
 	if cfg.maxWaiters, err = parsePositiveInt(resolve("--max-waiters", "MESSQ_MAX_WAITERS", "4096"), "--max-waiters"); err != nil {
@@ -215,6 +225,9 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	}
 	if cfg.dedupSweepInterval <= 0 {
 		return serveConfig{}, errors.New("--dedup-sweep-interval must be positive")
+	}
+	if cfg.drainTimeout <= 0 {
+		return serveConfig{}, errors.New("--drain-timeout must be positive")
 	}
 
 	return cfg, nil
@@ -447,6 +460,7 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		"peek_scan_limit", cfg.peekScanLimit,
 		"peek_max_limit", cfg.peekMaxLimit,
 		"dedup_sweep_interval", cfg.dedupSweepInterval,
+		"drain_timeout", cfg.drainTimeout,
 		"max_waiters", cfg.maxWaiters,
 		"max_waiters_per_consumer", cfg.maxWaitersPerConsumer,
 		"max_fetch_wait", cfg.maxFetchWait.String(),

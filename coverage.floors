@@ -17,6 +17,7 @@ internal/subject                   95.0    issue #3: a matcher bug misroutes sil
 internal/id                        95.0    issue #3: ids are the spine of messq trace
 internal/errs                      95.0    issue #3: the closed sentinel set
 internal/clock                     90.0    issue #3: the seam every timing test runs through
+internal/lifecycle                 90.0    issue #17: the daemon state machine and stop ordering
 internal/auth                      90.0    issue #16: the pure security core (pattern, roles, verify, preflight)
 internal/docsguard                 95.0    issue #4: the gate that keeps the normative spec honest
 internal/testutil/ledger           85.0    issue #8: the three-valued reconciliation ledger oracle
