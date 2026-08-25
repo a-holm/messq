@@ -74,7 +74,7 @@ func TestWorkerHeartbeatKeepsLongHandlerAlive(t *testing.T) {
 		}()
 
 		synctest.Wait() // handler running, first extend window pending
-		time.Sleep(16 * time.Second)
+		advance(16 * time.Second)
 		synctest.Wait()
 		close(release) // finish the handler just after the 15 s heartbeat
 		synctest.Wait()
@@ -122,7 +122,7 @@ func TestWorkerExtendBatchingIndependentOfConcurrency(t *testing.T) {
 		go func() {
 			done <- w.Run(context.Background(), func(_ context.Context, _ *Delivered) error {
 				started <- struct{}{}
-				<-time.After(50 * time.Second) // spans one extend window, finishes inside the drain budget
+				<-asyncAfter(50 * time.Second) // spans one extend window, finishes inside the drain budget
 				return nil
 			})
 		}()
@@ -130,7 +130,7 @@ func TestWorkerExtendBatchingIndependentOfConcurrency(t *testing.T) {
 			<-started
 		}
 
-		time.Sleep(30 * time.Second)
+		advance(30 * time.Second)
 		synctest.Wait()
 
 		w.Drain(context.Background())
@@ -248,24 +248,24 @@ func TestWorkerHoldMatrixBackoffs(t *testing.T) {
 		go func() { done <- w.Run(ctx, func(context.Context, *Delivered) error { return nil }) }()
 
 		// paused: next fetch not before 1 s.
-		time.Sleep(500 * time.Millisecond)
+		advance(500 * time.Millisecond)
 		synctest.Wait()
 		if n := len(b.fetchCalls()); n != 1 {
 			t.Fatalf("paused hold refetched %d times within 500 ms, want exactly the initial fetch", n)
 		}
 		// past the 1 s floor the second fetch (backoff answer) has landed.
-		time.Sleep(600 * time.Millisecond)
+		advance(600 * time.Millisecond)
 		synctest.Wait()
 		// backoff hint 2.5 s: third fetch not before it elapses.
-		time.Sleep(2 * time.Second)
+		advance(2 * time.Second)
 		synctest.Wait()
 		if n := len(b.fetchCalls()); n != 2 {
 			t.Fatalf("backoff hint ignored: %d fetches by t≈3.1s, want 2", n)
 		}
-		time.Sleep(600 * time.Millisecond)
+		advance(600 * time.Millisecond)
 		synctest.Wait()
 		// flow_control floor is 100 ms; empty and shutting_down answers follow quickly.
-		time.Sleep(200 * time.Millisecond)
+		advance(200 * time.Millisecond)
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run = %v", err)
@@ -325,7 +325,7 @@ func TestWorkerDrainNaksWhatItHolds(t *testing.T) {
 
 		select {
 		case <-drained:
-		case <-time.After(45 * time.Second):
+		case <-asyncAfter(45 * time.Second):
 			t.Fatal("Drain did not return within DrainTimeout")
 		}
 		synctest.Wait() // the drain-timeout nak itself has landed
@@ -349,13 +349,23 @@ func TestWorkerGoroutineCensus(t *testing.T) {
 		b := newFakeBroker()
 		c := newFakeClient(t, b)
 
-		// runtime.NumGoroutine is PROCESS-wide even inside a bubble, so sibling-test
-		// churn can shift the absolute number by one either way. The load-bearing
-		// property is the DELTA around Run: exactly the fixed complement (fetcher +
-		// keeper + settler + N handlers, the Run wrapper being the fetcher's caller)
-		// — any per-message goroutine or timer-goroutine design blows far past it.
-		const wantDelta = 7 // 3 + Concurrency(4), including the goroutine running Run
-		before := runtime.NumGoroutine()
+		// Count ONLY goroutines whose stacks mention the Worker: NumGoroutine is
+		// process-wide (race detector, sibling-test leftovers), which makes absolute
+		// counts flaky. Worker-scoped counting keeps the assertion exact: during Run
+		// there are exactly 3 + Concurrency (fetcher-on-Run-caller, keeper, settler,
+		// one per handler); any per-message goroutine design blows far past it.
+		count := func() int {
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			blocks := strings.Split(string(buf[:n]), "\n\n")
+			found := 0
+			for _, bl := range blocks {
+				if strings.Contains(bl, "a-holm/messq/pkg/client.(*Worker)") {
+					found++
+				}
+			}
+			return found
+		}
 
 		w, _ := c.NewWorker(WorkerConfig{Stream: "orders", Consumer: "w", Concurrency: 4})
 		done := make(chan error, 1)
@@ -363,17 +373,19 @@ func TestWorkerGoroutineCensus(t *testing.T) {
 			done <- w.Run(context.Background(), func(context.Context, *Delivered) error { return nil })
 		}()
 		synctest.Wait()
-		during := runtime.NumGoroutine()
-		if d := during - before; d < wantDelta || d > wantDelta+1 {
-			t.Errorf("goroutines during Run: +%d, want +%d (3 + Concurrency; +1 tolerated for process churn)", d, wantDelta)
+
+		if got := count(); got != 7 {
+			t.Errorf("worker goroutines during Run = %d, want exactly 7 (3 + Concurrency)", got)
 		}
+
 		w.Drain(context.Background())
 		if err := <-done; err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		synctest.Wait()
-		if after := runtime.NumGoroutine(); after > before+1 || after < before-1 {
-			t.Errorf("goroutines after Drain: %d, want back at the baseline %d (±1 churn)", after, before)
+		synctest.Wait()
+		if got := count(); got != 0 {
+			t.Errorf("worker goroutines after Drain = %d, want 0", got)
 		}
 	})
 }
@@ -402,7 +414,7 @@ func TestWorkerMaxLeaseGiveUp(t *testing.T) {
 			})
 		}()
 		synctest.Wait()
-		time.Sleep(13 * time.Second)
+		advance(13 * time.Second)
 		synctest.Wait()
 		<-handlerReturned
 

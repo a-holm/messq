@@ -64,7 +64,7 @@ func TestBrokerRestartFencesHeldTokens(t *testing.T) {
 		}()
 		synctest.Wait()
 
-		time.Sleep(16 * time.Second) // first heartbeat (t≈15 s) succeeds
+		advance(16 * time.Second) // first heartbeat (t≈15 s) succeeds
 		synctest.Wait()
 		if got := len(b.extendCalls()); got != 1 {
 			t.Fatalf("extends so far = %d, want exactly the first heartbeat", got)
@@ -79,7 +79,7 @@ func TestBrokerRestartFencesHeldTokens(t *testing.T) {
 			}
 			return SettleResult{Results: results}, 200
 		})
-		time.Sleep(40 * time.Second) // second heartbeat (t≈45 s) hits the fence
+		advance(40 * time.Second) // second heartbeat (t≈45 s) hits the fence
 		synctest.Wait()
 
 		for range 2 {
@@ -88,7 +88,7 @@ func TestBrokerRestartFencesHeldTokens(t *testing.T) {
 				if !errors.Is(cause, ErrLeaseLost) {
 					t.Errorf("handler cancelled with cause %v, want ErrLeaseLost", cause)
 				}
-			case <-time.After(time.Second):
+			case <-asyncAfter(time.Second):
 				t.Fatal("handler context not cancelled within one extend window of the fence")
 			}
 		}
@@ -136,13 +136,13 @@ func TestExtendTransportFailureRetriesWithinMargin(t *testing.T) {
 				if !once.CompareAndSwap(false, true) {
 					return nil
 				}
-				<-time.After(20 * time.Second) // spans the flaky extend attempts
+				<-asyncAfter(20 * time.Second) // spans the flaky extend attempts
 				close(handlerDone)
 				return nil
 			})
 		}()
 
-		time.Sleep(21 * time.Second)
+		advance(21 * time.Second)
 		<-handlerDone
 
 		w.Drain(context.Background())
@@ -176,7 +176,7 @@ func TestAckLostAfterRetryBudgetReportedNotFatal(t *testing.T) {
 		}()
 
 		synctest.Wait()
-		time.Sleep(100 * time.Millisecond)
+		advance(100 * time.Millisecond)
 		synctest.Wait()
 
 		w.Drain(context.Background())

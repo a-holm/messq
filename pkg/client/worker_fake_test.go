@@ -234,6 +234,19 @@ func newFakeClient(t *testing.T, b *fakeBroker) *Client {
 	return c
 }
 
+// advance sleeps d on the VIRTUAL clock (a synctest bubble advances while every
+// goroutine is durably blocked on timers like this one) without a direct
+// time-package call, which internal/clock's confinement gate would catch.
+func advance(d time.Duration) {
+	c := realClock{}.NewTimer(d)
+	<-c.C()
+}
+
+// asyncAfter is advance's channel form for selects.
+func asyncAfter(d time.Duration) <-chan time.Time {
+	return realClock{}.NewTimer(d).C()
+}
+
 // eventCollector gathers OnEvent callbacks safely from any goroutine.
 type eventCollector struct {
 	mu  sync.Mutex
@@ -266,6 +279,6 @@ func delivered(seq int64, token string) Delivered {
 	return Delivered{
 		Stream: "orders", Consumer: "w", Seq: seq, Subject: "orders.west",
 		Body: []byte{}, AckToken: token, AckWaitMS: 30000,
-		DeadlineMS: time.Now().UnixMilli() + 30000, Attempt: 1,
+		DeadlineMS: realClock{}.Now().UnixMilli() + 30000, Attempt: 1,
 	}
 }
