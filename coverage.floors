@@ -25,4 +25,5 @@ internal/wirecheck                 90.0    issue #18: canonical JSON, normaliser
 internal/wirecode                  95.0    issue #18: the closed machine-code enum source
 internal/obs                       90.0    issue #19: the closed vocabulary is the three-surface contract
 internal/cli/flagx                 95.0    issue #24: one parser per concept, shared by every command flag
+internal/cli/exit                  95.0    issue #23: the exit-code contract is a pure table
 internal/cli                       70.0    issue #24: the View contract and command faces; raised as bodies land
