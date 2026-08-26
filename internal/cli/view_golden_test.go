@@ -320,6 +320,26 @@ func TestEveryViewHasThreeFaces(t *testing.T) {
 	}
 }
 
+// TestHintWireShape pins the frozen machine form of one hint inside next[]
+// (PLAN §8 freezes JSON field names at 1.0): lowercase snake_case keys, and a
+// hint without a reason carries no why key at all instead of an empty string.
+func TestHintWireShape(t *testing.T) {
+	withWhy, err := json.Marshal(Hint{Cmd: "messq trace X", Why: "see whether the work ran twice"})
+	if err != nil {
+		t.Fatalf("marshal Hint with Why: %v", err)
+	}
+	if want := `{"cmd":"messq trace X","why":"see whether the work ran twice"}`; string(withWhy) != want {
+		t.Fatalf("Hint{Cmd,Why} marshals as %s, want %s", withWhy, want)
+	}
+	noWhy, err := json.Marshal(Hint{Cmd: "messq peek orders --seq 10494"})
+	if err != nil {
+		t.Fatalf("marshal Hint without Why: %v", err)
+	}
+	if want := `{"cmd":"messq peek orders --seq 10494"}`; string(noWhy) != want {
+		t.Fatalf("hint without a reason marshals as %s, want %s (empty why omitted)", noWhy, want)
+	}
+}
+
 // docWithoutNext returns the document map with its top-level next key removed.
 func docWithoutNext(doc map[string]any) map[string]any {
 	out := make(map[string]any, len(doc))

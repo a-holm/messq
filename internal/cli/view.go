@@ -38,8 +38,8 @@ type View interface {
 // the leading "messq", so a resolve test can hand it straight to the command tree;
 // Why is the optional reason rendered only in the table face.
 type Hint struct {
-	Cmd string
-	Why string
+	Cmd string `json:"cmd"`
+	Why string `json:"why,omitempty"`
 }
 
 // WriteHints renders the `next` block that closes every inspect command (§8's rule),

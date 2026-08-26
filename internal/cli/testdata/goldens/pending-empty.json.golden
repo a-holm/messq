@@ -6,8 +6,8 @@
   "older_than_ms": 60000,
   "next": [
     {
-      "Cmd": "messq pending orders worker --older-than 60s",
-      "Why": "widen the filter"
+      "cmd": "messq pending orders worker --older-than 60s",
+      "why": "widen the filter"
     }
   ]
 }

@@ -26,12 +26,10 @@
   "scanned_to_seq": 10496,
   "next": [
     {
-      "Cmd": "messq peek orders --seq 10496 --raw",
-      "Why": ""
+      "cmd": "messq peek orders --seq 10496 --raw"
     },
     {
-      "Cmd": "messq trace 01J8ZQ4P0000000000000000",
-      "Why": ""
+      "cmd": "messq trace 01J8ZQ4P0000000000000000"
     }
   ]
 }

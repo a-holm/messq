@@ -8,12 +8,10 @@
   "duplicate": false,
   "next": [
     {
-      "Cmd": "messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E",
-      "Why": ""
+      "cmd": "messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E"
     },
     {
-      "Cmd": "messq peek orders --seq 10494",
-      "Why": ""
+      "cmd": "messq peek orders --seq 10494"
     }
   ]
 }
