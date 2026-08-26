@@ -52,6 +52,13 @@ func newFetchFixture(t *testing.T, mutate func(*queue.ConsumerConfig)) *fetchFix
 		Store: st, Clock: clk, Logger: discardLogger(),
 		MaxFetchWait:     30 * time.Second,
 		FetchEmptyDamper: 5 * time.Millisecond,
+		// The wake-ordering property under test has nothing to do with the production
+		// submit window, but the handler wraps every store call in it: under -race +
+		// -coverpkg parallel load a starved writer can blow the 5s default, the fetch
+		// answers busy (503), and the round looks exactly like a lost wakeup. Fixture
+		// budgets are effectively unbounded; a test that needs the window sets it
+		// explicitly.
+		WriterSubmitTimeout: time.Hour,
 	})
 	// Attach the group-commit engine with the registry as its event sink — without it
 	// the store runs the engine-less fallback, which has no fan-out pump and can
@@ -81,11 +88,23 @@ func (f *fetchFixture) do(t *testing.T, body string) chan *httptest.ResponseReco
 	return done
 }
 
-func decodeFetchResponse(t *testing.T, rec *httptest.ResponseRecorder) fetchResponse {
-	t.Helper()
+// decodeFetchResponse decodes a fetch response and refuses to guess: an error envelope
+// (busy, commit_unknown, …) unmarshals into a zero fetchResponse — nil messages, empty
+// hold — which once masqueraded as a lost wakeup under load (a blown submit window
+// answers 503 busy). Any non-200 or error envelope is now a named failure naming the
+// transcript, so infrastructure trouble is attributed to infrastructure.
+func decodeFetchResponse(tb testing.TB, rec *httptest.ResponseRecorder) fetchResponse {
+	tb.Helper()
+	if rec.Code != http.StatusOK {
+		tb.Fatalf("fetch returned HTTP %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if json.Unmarshal(rec.Body.Bytes(), &env) == nil && env.Error.Code != "" {
+		tb.Fatalf("fetch returned an error envelope, want a fetch shape: %s", rec.Body.String())
+	}
 	var out fetchResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("fetch response not JSON (%v): %q", err, rec.Body.String())
+		tb.Fatalf("fetch response not JSON (%v): %q", err, rec.Body.String())
 	}
 	return out
 }
@@ -152,6 +171,14 @@ func TestFetchRejectsQueryParamsAndNegativeWait(t *testing.T) {
 	}
 }
 
+// wakeGuard bounds one park→…→response wait against a REGRESSION hang, never against
+// latency: the fixture's fake clock stands still, so a truly lost wakeup parks the
+// handler forever and only this guard turns that into a named failure instead of the
+// package-level timeout. It is sized far beyond any observed scheduling stall under
+// -race + -coverpkg parallel load (whole-package runtimes are tens of seconds), so a
+// green property can never lose to it and a red one is real.
+const wakeGuard = 5 * time.Minute
+
 func TestPausedFetchReturnsImmediatelyAndOccupiesNoSlot(t *testing.T) {
 	t.Parallel()
 
@@ -167,7 +194,7 @@ func TestPausedFetchReturnsImmediatelyAndOccupiesNoSlot(t *testing.T) {
 		if got := f.srv.waiters.Parked(); got != 0 {
 			t.Errorf("Parked() = %d after a paused fetch, want 0 — parking cannot help here", got)
 		}
-	case <-clock.System{}.NewTimer(5 * time.Second).C():
+	case <-clock.System{}.NewTimer(wakeGuard).C():
 		t.Fatal("paused fetch parked instead of returning immediately")
 	}
 }
@@ -227,7 +254,7 @@ func TestPublishWakesParkedFetchImmediately(t *testing.T) {
 		if out.HoldReason != "" {
 			t.Errorf("hold_reason = %q on a delivery, want empty", out.HoldReason)
 		}
-	case <-clock.System{}.NewTimer(5 * time.Second).C():
+	case <-clock.System{}.NewTimer(wakeGuard).C():
 		t.Fatal("publish did not wake the parked fetch — lost wakeup")
 	}
 }
@@ -280,6 +307,80 @@ func TestShutdownDrainsParkedFetch(t *testing.T) {
 	}
 }
 
+// recT is a minimal testing.TB stand-in for pinning decodeFetchResponse's refusal
+// paths: Fatalf is documented as noreturn, so the stub panics to keep that contract.
+type recT struct {
+	testing.TB
+	failed bool
+	msg    string
+}
+
+func (r *recT) Helper() {}
+
+func (r *recT) Fatalf(format string, args ...any) {
+	r.failed = true
+	r.msg = fmt.Sprintf(format, args...)
+	panic(r)
+}
+
+// TestDecodeFetchResponseRejectsErrorEnvelopes pins the decoder's honesty: an error
+// envelope or any non-200 must be a NAMED failure, never a zero fetchResponse. This is
+// the regression lock for the load flake where a blown submit window answered busy/503
+// and the rapid-interleaving assertion read it as "0 messages after wake".
+func TestDecodeFetchResponseRejectsErrorEnvelopes(t *testing.T) {
+	t.Parallel()
+
+	rec := func(code int, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRecorder()
+		r.Code = code
+		r.Body.WriteString(body)
+		return r
+	}
+
+	// A well-formed empty fetch still decodes.
+	out := decodeFetchResponse(t, rec(http.StatusOK,
+		`{"messages":[],"hold_reason":"empty","retry_after_ms":0,"pending":0,"backlog":0,"batch":1,"max_bytes":8,"wait_ms":5}`))
+	if out.HoldReason != "empty" || out.Messages == nil || out.Batch != 1 {
+		t.Fatalf("well-formed fetch decoded as %+v, want the recorded shape", out)
+	}
+
+	for name, tc := range map[string]struct {
+		code int
+		body string
+		want string
+	}{
+		"envelope on a 200": {
+			http.StatusOK,
+			`{"error":{"code":"busy","message":"writer did not accept the command within --writer-submit-timeout","next":[],"trace_id":"t"}}`,
+			"error envelope",
+		},
+		"busy status": {
+			http.StatusServiceUnavailable,
+			`{"error":{"code":"busy","message":"writer did not accept the command within --writer-submit-timeout","next":[],"trace_id":"t"}}`,
+			"HTTP 503",
+		},
+	} {
+		rt := &recT{}
+		func() {
+			// Fatalf is documented noreturn and the stub honours that by panicking.
+			// Contain the panic here, but re-panic anything that is not our own
+			// recorded refusal.
+			defer func() {
+				if p := recover(); p != nil && !rt.failed {
+					panic(p)
+				}
+			}()
+			decodeFetchResponse(rt, rec(tc.code, tc.body))
+		}()
+		if !rt.failed {
+			t.Fatalf("%s: decodeFetchResponse accepted a response it must refuse", name)
+		}
+		if !strings.Contains(rt.msg, tc.want) {
+			t.Fatalf("%s: refusal %q does not name %q", name, rt.msg, tc.want)
+		}
+	}
+}
+
 // TestNoLostWakeupUnderRapidInterleaving drives repeated park→publish→deliver rounds;
 // each round's fetch must complete via the wake while its clock stands still. The
 // -race build is what makes this worth running.
@@ -318,7 +419,7 @@ func TestNoLostWakeupUnderRapidInterleaving(t *testing.T) {
 			}}); sErr != nil {
 				t.Fatalf("round %d ack: %v", i, sErr)
 			}
-		case <-clock.System{}.NewTimer(10 * time.Second).C():
+		case <-clock.System{}.NewTimer(wakeGuard).C():
 			t.Fatalf("round %d: wake lost", i)
 		}
 	}
