@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// The tests run against buffers, which are not terminals: auto mode resolves to the
+// machine faces there. Explicit --output table pins the human face deterministically.
+
 func TestRun_Table(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -21,43 +24,43 @@ func TestRun_Table(t *testing.T) {
 		wantEmptyStderr    bool
 	}{
 		{
-			name:               "no arguments prints usage and succeeds",
+			name:               "no arguments prints help and succeeds",
 			args:               nil,
 			wantExit:           0,
 			wantStdoutContains: "Usage:",
 			wantEmptyStderr:    true,
 		},
 		{
-			name:               "help subcommand",
-			args:               []string{"help"},
-			wantExit:           0,
-			wantStdoutContains: "version    Print build information.",
-			wantEmptyStderr:    true,
-		},
-		{
-			name:               "-h flag",
+			name:               "-h flag prints help to stdout",
 			args:               []string{"-h"},
 			wantExit:           0,
 			wantStdoutContains: "Usage:",
 			wantEmptyStderr:    true,
 		},
 		{
-			name:               "--help flag",
+			name:               "--help flag prints help to stdout",
 			args:               []string{"--help"},
 			wantExit:           0,
 			wantStdoutContains: "Usage:",
 			wantEmptyStderr:    true,
 		},
 		{
-			name:               "version subcommand",
-			args:               []string{"version"},
+			name:               "--version flag prints the build line",
+			args:               []string{"--version"},
 			wantExit:           0,
 			wantStdoutContains: "messq ",
 			wantEmptyStderr:    true,
 		},
 		{
-			name:               "--version flag",
-			args:               []string{"--version"},
+			name:               "version on a pipe resolves to json",
+			args:               []string{"version"},
+			wantExit:           0,
+			wantStdoutContains: `"version"`,
+			wantEmptyStderr:    true,
+		},
+		{
+			name:               "version table face is the text line",
+			args:               []string{"--output", "table", "version"},
 			wantExit:           0,
 			wantStdoutContains: "messq ",
 			wantEmptyStderr:    true,
@@ -77,31 +80,24 @@ func TestRun_Table(t *testing.T) {
 			wantEmptyStderr:    true,
 		},
 		{
-			name:               "version text output is explicit",
-			args:               []string{"version", "--output", "text"},
-			wantExit:           0,
-			wantStdoutContains: "messq ",
-			wantEmptyStderr:    true,
-		},
-		{
-			name:               "unknown command is a usage error",
-			args:               []string{"bogus"},
+			name:               "unknown command is a usage error naming it",
+			args:               []string{"--output", "table", "bogus"},
 			wantExit:           2,
 			wantStderrContains: `unknown command "bogus"`,
 			wantEmptyStdout:    true,
 		},
 		{
-			name:               "unsupported output format is a usage error",
+			name:               "a fifth output mode is refused listing all four",
 			args:               []string{"version", "--output", "yaml"},
 			wantExit:           2,
-			wantStderrContains: "unsupported --output",
+			wantStderrContains: "auto|table|json|ndjson",
 			wantEmptyStdout:    true,
 		},
 		{
 			name:               "missing output value is a usage error",
 			args:               []string{"version", "--output"},
 			wantExit:           2,
-			wantStderrContains: "--output needs a value",
+			wantStderrContains: "flag needs an argument",
 			wantEmptyStdout:    true,
 		},
 		{
@@ -138,6 +134,19 @@ func TestRun_Table(t *testing.T) {
 	}
 }
 
+func TestHelpListsEveryCurrentCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", exit, stderr.String())
+	}
+	out := stdout.String()
+	for _, cmd := range []string{"version", "serve", "verify"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("help does not list %q:\n%s", cmd, out)
+		}
+	}
+}
+
 // TestRun_VersionJSONKeys checks the rendered command output, not just the struct tags, so a
 // change of renderer cannot silently change the contract frozen in PLAN.md section 8.
 func TestRun_VersionJSONKeys(t *testing.T) {
@@ -166,15 +175,12 @@ func TestRun_VersionJSONKeys(t *testing.T) {
 	}
 }
 
-// TestRun_VersionIsNeverEmpty guards the `go run ./cmd/messq version` case, where no ldflags
-// are injected at all.
-func TestRun_VersionIsNeverEmpty(t *testing.T) {
+// TestRun_VersionTableFaceIsTheTextLine pins the human face's byte shape.
+func TestRun_VersionTableFaceIsTheTextLine(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-
-	if exit := Run([]string{"version"}, strings.NewReader(""), &stdout, &stderr); exit != 0 {
+	if exit := Run([]string{"--output", "table", "version"}, strings.NewReader(""), &stdout, &stderr); exit != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %q)", exit, stderr.String())
 	}
-
 	line := strings.TrimSpace(stdout.String())
 	rest, ok := strings.CutPrefix(line, "messq ")
 	if !ok {
@@ -183,4 +189,44 @@ func TestRun_VersionIsNeverEmpty(t *testing.T) {
 	if version, _, _ := strings.Cut(rest, " ("); version == "" {
 		t.Errorf("version line = %q, want a non-empty version field", line)
 	}
+}
+
+// TestRun_VersionIsNeverEmpty guards the `go run ./cmd/messq version` case, where no ldflags
+// are injected at all.
+func TestRun_VersionIsNeverEmpty(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	if exit := Run([]string{"--output", "table", "version"}, strings.NewReader(""), &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", exit, stderr.String())
+	}
+
+	line := strings.TrimSpace(stdout.String())
+	if !strings.HasPrefix(line, "messq ") {
+		t.Fatalf("version line = %q, want it to start with %q", line, "messq ")
+	}
+}
+
+// TestServeAndVerifyRoutedThroughTree proves the two pre-chassis commands answer on
+// the new tree with their contracts intact (their own suites exercise the bodies).
+func TestServeAndVerifyRoutedThroughTree(t *testing.T) {
+	t.Run("serve without data dir keeps its own usage error and code 2", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := Run([]string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 2 {
+			t.Errorf("exit = %d, want 2 (stderr %q)", code, stderr.String())
+		}
+		if got := stderr.String(); !strings.Contains(got, "--data-dir is required") || strings.Contains(got, "Error:") {
+			t.Errorf("serve's bytes moved or were double-rendered: %q", got)
+		}
+	})
+	t.Run("unknown flag reaches serve's own parser untouched", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := Run([]string{"serve", "--data-dir", t.TempDir(), "--wat"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 2 {
+			t.Errorf("exit = %d, want 2 from serve's hand-parsed layer (stderr %q)", code, stderr.String())
+		}
+		if strings.Contains(stderr.String(), "Error:") {
+			t.Errorf("funnel re-rendered serve's own message: %q", stderr.String())
+		}
+	})
 }
