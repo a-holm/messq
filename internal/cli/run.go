@@ -11,11 +11,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/cli/exit"
 	"github.com/a-holm/messq/internal/cli/render"
 	"github.com/a-holm/messq/internal/cli/uierr"
+	"github.com/a-holm/messq/pkg/client"
 	"github.com/spf13/cobra"
 )
 
@@ -80,6 +82,18 @@ func RunEnv(ctx context.Context, env *Env, args []string) int {
 	}()
 
 	root := NewRoot(env)
+	root.SetArgs(args)
+	return ExecuteTree(ctx, env, root, args)
+}
+
+// ExecuteTree runs one assembled tree through the single error/exit funnel: execute
+// once, render any failure exactly once via uierr on stderr (unless the failure
+// rendered itself), and return the documented exit code. clitest uses it so harness
+// runs take exactly the production path.
+func ExecuteTree(ctx context.Context, env *Env, root *cobra.Command, args []string) int {
+	if env == nil {
+		env = &Env{}
+	}
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
 	if err == nil {
@@ -153,8 +167,9 @@ func newVersionCmd(env *Env) *cobra.Command {
 		Long: "Print the version, platform, Go toolchain and commit of this messq binary.\n" +
 			"\n" +
 			"The default output follows the global --output contract: a human line\n" +
-			"on a terminal, one JSON document otherwise. Add --remote (issue #23\n" +
-			"§9) to also ask the daemon for its build and report any skew.",
+			"on a terminal, one JSON document otherwise. Add --remote to also ask\n" +
+			"the daemon at --addr for its build and report any skew between the\n" +
+			"two binaries.",
 		Example: "  messq version\n  messq version --output json | jq .commit",
 		GroupID: "server",
 		Args:    exactArgsMessage,
@@ -166,17 +181,56 @@ func newVersionCmd(env *Env) *cobra.Command {
 			out := env.stdoutOrDiscard()
 			if format == render.FormatTable {
 				fmt.Fprintln(out, buildinfo.Short())
-				return nil
-			}
-			// json and ndjson carry the same single frozen document for a scalar.
-			if err := json.NewEncoder(out).Encode(buildinfo.Get()); err != nil {
+			} else if err := json.NewEncoder(out).Encode(buildinfo.Get()); err != nil {
 				return fmt.Errorf("write version json: %w", &exit.Err{Code: exit.Error})
 			}
-			return nil
+			return reportRemote(cmd, env, out, format)
 		},
 	}
-	cmd.Annotations = map[string]string{annExits: "0,1,2"}
+	cmd.Flags().Bool("remote", false, "also ask the daemon for its build (2 s budget)")
+	cmd.Annotations = map[string]string{annExits: "0,1,2,3,4,6,7"}
 	return cmd
+}
+
+// remoteBudget bounds the opt-in /v1/info probe so `messq version --remote` can
+// never hang a script that merely wanted to know what binary it is.
+const remoteBudget = 2 * time.Second
+
+// reportRemote asks the daemon for its build when --remote was given. Offline stays
+// the default: plain `messq version` performs no network I/O at all. In machine
+// modes the frozen document above is left untouched — skew narration goes to stderr,
+// where jq pipelines never look.
+func reportRemote(cmd *cobra.Command, env *Env, out io.Writer, format render.Format) error {
+	remote, err := cmd.Flags().GetBool("remote")
+	if err != nil || !remote {
+		return nil
+	}
+	addr := cmd.Flags().Lookup("addr").Value.String()
+	ctx, cancel := context.WithTimeout(cmd.Context(), remoteBudget)
+	defer cancel()
+
+	cl, err := client.New(addr)
+	if err != nil {
+		return err
+	}
+	info, err := cl.Info(ctx)
+	if err != nil {
+		return err
+	}
+	if format == render.FormatTable {
+		fmt.Fprintf(out, "server      %s\n", render.Safe(info.Version))
+		fmt.Fprintf(out, "durability  %s\n", render.Safe(info.Durability))
+		fmt.Fprintf(out, "db_bytes    %d\n", info.DBBytes)
+	}
+	if info.Version == "" || info.Version == buildinfo.Get().Version {
+		return nil
+	}
+	quiet := cmd.Flags().Lookup("quiet").Value.String() == "true"
+	if !quiet {
+		fmt.Fprintf(env.stderr(), "warning: daemon is %s, this CLI is %s — consider upgrading the older one\n",
+			render.Safe(info.Version), render.Safe(buildinfo.Get().Version))
+	}
+	return nil
 }
 
 // exactArgsMessage refuses surplus arguments with a teaching message instead of

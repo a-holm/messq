@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/cli"
+	"github.com/spf13/cobra"
 )
 
 // Update mirrors the repo-wide -update convention: goldens rewrite instead of fail.
@@ -144,11 +145,13 @@ func (d *FakeDaemon) serveHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Runner describes one invocation's seams: environment map, forced TTY-ness, frozen
-// clock. Zero fields mean neutral defaults.
+// clock, and an optional custom tree builder for tests that need a scratch command
+// on the root. Zero fields mean neutral defaults.
 type Runner struct {
-	Env map[string]string // MESSQ_* layer; empty means nothing set
-	TTY bool              // forced IsTerminal answer for stdout/stderr
-	Now time.Time         // frozen clock; zero means a fixed arbitrary instant
+	Env   map[string]string // MESSQ_* layer; empty means nothing set
+	TTY   bool              // forced IsTerminal answer for stdout/stderr
+	Now   time.Time         // frozen clock; zero means a fixed arbitrary instant
+	Build func(*cli.Env) *cobra.Command
 }
 
 // Result captures one invocation's observable behaviour.
@@ -178,7 +181,11 @@ func Run(t *testing.T, r Runner, args ...string) Result {
 		},
 		Width: func() int { return 0 },
 	}
-	res := Result{Exit: cli.RunEnv(context.Background(), env, args)}
+	root := cli.NewRoot(env)
+	if r.Build != nil {
+		root = r.Build(env)
+	}
+	res := Result{Exit: cli.ExecuteTree(context.Background(), env, root, args)}
 	res.Stdout = stdout.String()
 	res.Stderr = stderr.String()
 	return res
