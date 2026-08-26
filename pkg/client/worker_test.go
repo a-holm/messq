@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
 	"testing"
@@ -96,6 +97,158 @@ func TestWorkerHeartbeatKeepsLongHandlerAlive(t *testing.T) {
 			t.Errorf("acks = %v", acks)
 		}
 	})
+}
+
+// The §7.3 skew contract, owned end to end: deadline_ms is display and skew
+// DETECTOR only — scheduling anchors on the LOCAL monotonic clock. A broker wall
+// clock ±5 minutes off must move neither the extend schedule nor the outcome, and
+// may fire OnEvent{ClockSkew} exactly once. Every fixture here used to build
+// deadline_ms = now+ack_wait, which let a broker-clock-anchored scheduler sail
+// through the whole suite (adversarial review mutant M8).
+func TestWorkerClockSkewLeavesExtendScheduleAndOutcomeAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		skew           time.Duration
+		wantSkewEvents int
+	}{
+		{name: "broker_five_minutes_behind", skew: -5 * time.Minute, wantSkewEvents: 1},
+		{name: "broker_five_minutes_ahead", skew: 5 * time.Minute, wantSkewEvents: 1},
+		{name: "no_skew_control_fires_nothing", skew: 0, wantSkewEvents: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const token = "orders/w/12/1/1"
+				b := newFakeBroker()
+				d := delivered(12, token)
+				// THE fixture the suite was missing: the broker's deadline_ms
+				// disagrees with the worker's clock by the scenario's skew.
+				d.DeadlineMS = realClock{}.Now().Add(30*time.Second + tc.skew).UnixMilli()
+				b.msgs = [][]Delivered{{d}}
+				c := newFakeClient(t, b)
+				ec := &eventCollector{}
+
+				w, _ := c.NewWorker(WorkerConfig{Stream: "orders", Consumer: "w", OnEvent: ec.add})
+				release := make(chan struct{})
+				done := make(chan error, 1)
+				go func() {
+					done <- w.Run(context.Background(), func(context.Context, *Delivered) error {
+						<-release // hold across the first extend window like a real handler
+						return nil
+					})
+				}()
+
+				synctest.Wait() // fetched, lease created, handler running
+				advance(10 * time.Second)
+				synctest.Wait()
+				if n := len(b.extendCalls()); n != 0 {
+					t.Fatalf("%s: %d extend calls before half the ack wait — the broker clock leaked into the schedule", tc.name, n)
+				}
+				advance(6 * time.Second) // t=16s: past the 15 s window on the LOCAL clock
+				synctest.Wait()
+				if extends := b.extendCalls(); len(extends) != 1 || len(extends[0]) != 1 || extends[0][0] != token {
+					t.Fatalf("%s: extend schedule moved under skew at t=16s: %v", tc.name, extends)
+				}
+
+				close(release) // the handler succeeds; the outcome must not care about skew
+				synctest.Wait()
+				w.Drain(context.Background())
+				if err := <-done; err != nil {
+					t.Fatalf("Run = %v", err)
+				}
+				if acks := b.ackedTokens(); len(acks) != 1 || len(acks[0]) != 1 || acks[0][0] != token {
+					t.Errorf("%s: outcome changed under skew: acks = %v, want exactly one ack", tc.name, acks)
+				}
+				if naks := b.nakkedItems(); len(naks) != 0 {
+					t.Errorf("%s: skewed broker produced naks: %v", tc.name, naks)
+				}
+				if st := w.Stats(); st.Acked != 1 {
+					t.Errorf("%s: Stats().Acked = %d, want 1", tc.name, st.Acked)
+				}
+				if got := ec.count(EventClockSkew); got != tc.wantSkewEvents {
+					t.Errorf("%s: OnEvent{ClockSkew} fired %d times, want exactly %d", tc.name, got, tc.wantSkewEvents)
+				}
+			})
+		})
+	}
+}
+
+// The loss half of the same contract (§7.3.5): when extends fail transport-wise,
+// retries run until LOCAL deadline − margin and the lease is then presumed lost —
+// never measured against the broker's wall clock. Under ±5 minutes of skew the
+// loss must land in the SAME window, with EventLeaseLost once and zero settles.
+func TestWorkerClockSkewDoesNotMoveLeaseLossUnderFailedExtends(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		skew           time.Duration
+		wantSkewEvents int
+	}{
+		{name: "broker_five_minutes_behind", skew: -5 * time.Minute, wantSkewEvents: 1},
+		{name: "broker_five_minutes_ahead", skew: 5 * time.Minute, wantSkewEvents: 1},
+		{name: "no_skew_control", skew: 0, wantSkewEvents: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const token = "orders/w/13/1/1"
+				b := newFakeBroker()
+				// Every extend answers 503 unavailable: transient, so the keeper
+				// retries inside its margin and then presumes the worst.
+				b.extendOverride = func([]string) (any, int) {
+					return map[string]any{"error": map[string]any{"code": "unavailable", "message": "down"}}, http.StatusServiceUnavailable
+				}
+				d := delivered(13, token)
+				d.DeadlineMS = realClock{}.Now().Add(30*time.Second + tc.skew).UnixMilli()
+				b.msgs = [][]Delivered{{d}}
+				c := newFakeClient(t, b)
+				ec := &eventCollector{}
+
+				w, _ := c.NewWorker(WorkerConfig{Stream: "orders", Consumer: "w", OnEvent: ec.add})
+				handlerReturned := make(chan struct{})
+				done := make(chan error, 1)
+				go func() {
+					done <- w.Run(context.Background(), func(ctx context.Context, _ *Delivered) error {
+						<-ctx.Done() // the cancellation IS the loss signal
+						close(handlerReturned)
+						return ctx.Err()
+					})
+				}()
+				synctest.Wait()
+
+				// t=20s: inside the retry window (local deadline − margin ≈ 27 s),
+				// the lease must still be held and extend attempts must have run.
+				advance(20 * time.Second)
+				synctest.Wait()
+				select {
+				case <-handlerReturned:
+					t.Fatalf("%s: lease presumed lost before local deadline − margin — the broker clock drove the schedule", tc.name)
+				default:
+				}
+				if len(b.extendCalls()) == 0 {
+					t.Fatalf("%s: no extend attempts by t=20s", tc.name)
+				}
+
+				advance(9 * time.Second) // t=29s: past the 27 s margin line
+				synctest.Wait()
+				select {
+				case <-handlerReturned:
+				case <-asyncAfter(45 * time.Second):
+					t.Fatalf("%s: lease never presumed lost past deadline − margin", tc.name)
+				}
+				w.Drain(context.Background())
+				if err := <-done; err != nil {
+					t.Fatalf("Run = %v", err)
+				}
+				if got := ec.count(EventLeaseLost); got != 1 {
+					t.Errorf("%s: OnEvent{LeaseLost} fired %d times, want exactly once", tc.name, got)
+				}
+				if acks := b.ackedTokens(); len(acks) != 0 {
+					t.Errorf("%s: a lease reported lost settled anyway: %v", tc.name, acks)
+				}
+				if got := ec.count(EventClockSkew); got != tc.wantSkewEvents {
+					t.Errorf("%s: OnEvent{ClockSkew} fired %d times, want exactly %d", tc.name, got, tc.wantSkewEvents)
+				}
+			})
+		})
+	}
 }
 
 func TestWorkerExtendBatchingIndependentOfConcurrency(t *testing.T) {

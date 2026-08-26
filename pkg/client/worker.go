@@ -532,7 +532,13 @@ func (w *Worker) trackClockSkew(m *Delivered, st *workerState) {
 	if m.DeadlineMS == 0 || m.AckWaitMS == 0 {
 		return
 	}
-	delta := m.DeadlineMS - w.client.clk.Now().UnixMilli()
+	// Compare the broker's stamp against the LOCAL DEADLINE as a wall clock
+	// (now + ack_wait, §7.3) — not against raw now. A synchronised broker stamps
+	// deadline_ms = itsNow + ack_wait, so the honest delta is the small gap between
+	// two walls; measuring against raw now reads ≈ ack_wait on EVERY delivery and
+	// cries skew on a healthy pair. The residual gap is exactly the skew.
+	localDeadlineWall := w.client.clk.Now().Add(time.Duration(m.AckWaitMS) * time.Millisecond)
+	delta := m.DeadlineMS - localDeadlineWall.UnixMilli()
 	halfWait := m.AckWaitMS / 2
 	if delta > halfWait || -delta > halfWait {
 		st.clockSkewOnce.Do(func() {
