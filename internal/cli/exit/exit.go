@@ -104,6 +104,14 @@ var ByWireCode = map[wirecode.Code]int{
 	wirecode.Locked:               Conflict,
 	wirecode.SchemaNewer:          Error,
 	wirecode.Unavailable:          Unreachable,
+
+	// Client-local refusals that never ride HTTP but still reach this classifier
+	// as *client.Error from client.New. They sit in the finest table, not the
+	// Kind fallback, because they ARE usage: retyping the address (or fixing the
+	// refused option combination) genuinely works, which is exit.go's bar for
+	// ever telling an operator to retype.
+	wirecode.Code("bad_address"):  Usage,
+	wirecode.Code("config_error"): Usage,
 }
 
 // ByKind maps the client's classification enum (#22 owns Kind, #23 owns policy) onto

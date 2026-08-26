@@ -67,6 +67,11 @@ func TestOfEnvelopeCodes(t *testing.T) {
 		{"method_not_allowed", Error},
 		{"read_only", Error},
 		{"commit_unknown", Error},
+		// Client-local refusals that never ride HTTP: a typoed --addr is the
+		// operator's input error, so "retype it" is advice that can work — usage,
+		// not a generic failure (the review's exit-1 finding).
+		{"bad_address", Usage},
+		{"config_error", Usage},
 		// An unknown code from a newer daemon never crashes and is never
 		// mis-bucketed as usage: it falls back to the kind bucket, which for an
 		// unlisted code is internal (§7).

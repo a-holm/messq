@@ -38,6 +38,12 @@ type Env struct {
 	Now        func() time.Time     // the clock seam; affects rendering only
 	IsTerminal func(io.Writer) bool // default: *os.File character-device probe
 	Width      func() int           // terminal columns; 0 = unlimited
+
+	// build replaces the assembled command tree for ONE RunEnv call. Zero value
+	// keeps [NewRoot]. In-package tests use it to hang a scratch command onto the
+	// real entry point (the subprocess interrupt probe); clitest drives trees
+	// without RunEnv and does not need it.
+	build func(*Env) *cobra.Command
 }
 
 // Annotations used across the tree.
@@ -134,7 +140,7 @@ func NewRoot(env *Env) *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return uierr.Usage("%v", err)
 	})
-	root.PersistentPreRunE = resolveInvocation(env)
+	root.PersistentPreRunE = resolveInvocation(env, root)
 	assemble(root, env)
 
 	return root
@@ -144,7 +150,13 @@ func NewRoot(env *Env) *cobra.Command {
 // resolves the output contract once per execution. Running it in the ROOT hook (with
 // cobra.EnableTraverseRunHooks) guarantees local flags of the executing command get
 // their env fallback too.
-func resolveInvocation(env *Env) func(*cobra.Command, []string) error {
+//
+// The resolved pass is stored on BOTH commands' contexts: the executing child reads
+// it via sessionFrom(cmd) inside its RunE, while the funnel's error-face lookup
+// (resolvedFormatOf) runs on the ROOT after Execute returns — cobra copies the
+// parent's context into the child before hooks run, so a value stored only on the
+// child is invisible there and machine modes would silently lose their error face.
+func resolveInvocation(env *Env, root *cobra.Command) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		getenv := env.Getenv
 		if getenv == nil {
@@ -174,7 +186,9 @@ func resolveInvocation(env *Env) func(*cobra.Command, []string) error {
 			colour: render.Colour(cmd.Flags().Lookup("color").Value.String(), getenv, isTTY),
 			env:    env,
 		}
-		cmd.SetContext(context.WithValue(cmd.Context(), sessionKey{}, sess))
+		ctx := context.WithValue(cmd.Context(), sessionKey{}, sess)
+		cmd.SetContext(ctx)
+		root.SetContext(ctx)
 
 		if n, pErr := strconv.Atoi(cmd.Flags().Lookup("verbose").Value.String()); pErr == nil && n >= 2 {
 			conf.Dump(env.stderr(), cmd, getenv)

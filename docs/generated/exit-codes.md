@@ -23,10 +23,12 @@ work) for systemd's `RestartPreventExitStatus`, and an interrupt exits
 
 | Wire code | Exit | Name |
 |---|---|---|
+| `bad_address` | 2 | `usage` |
 | `bad_request` | 2 | `usage` |
 | `bad_subject` | 2 | `usage` |
 | `busy` | 6 | `unreachable` |
 | `commit_unknown` | 1 | `error` |
+| `config_error` | 2 | `usage` |
 | `conflict` | 4 | `conflict` |
 | `disk_full` | 4 | `conflict` |
 | `extend_capped` | 4 | `conflict` |

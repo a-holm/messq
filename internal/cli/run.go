@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -63,6 +64,10 @@ func RunEnv(ctx context.Context, env *Env, args []string) int {
 	// in-flight work settles; a SECOND signal exits immediately — an operator who
 	// hits ^C twice has said so. SIGPIPE stays deliberately unhandled: Go's
 	// default die-on-write is correct for `messq events --follow | head -3`.
+	// The watch records the first catch so the funnel can tell a signal-driven
+	// unwind (exit 130, §7) from any other context cancellation.
+	watch := &interruptWatch{}
+	ctx = context.WithValue(ctx, interruptKey{}, watch)
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -71,6 +76,7 @@ func RunEnv(ctx context.Context, env *Env, args []string) int {
 		case <-ctx.Done():
 			return
 		case <-sigs:
+			watch.fired.Store(true)
 			cancel()
 			select {
 			case <-ctx.Done(): // graceful unwind won
@@ -81,7 +87,11 @@ func RunEnv(ctx context.Context, env *Env, args []string) int {
 		}
 	}()
 
-	root := NewRoot(env)
+	newTree := NewRoot
+	if env.build != nil {
+		newTree = env.build
+	}
+	root := newTree(env)
 	root.SetArgs(args)
 	return ExecuteTree(ctx, env, root, args)
 }
@@ -100,10 +110,61 @@ func ExecuteTree(ctx context.Context, env *Env, root *cobra.Command, args []stri
 		return exit.OK
 	}
 	code := classifyExecuteError(err)
+	face := taughtFace(root, err)
+	if interruptedBySignal(ctx) && errors.Is(err, context.Canceled) {
+		// The operator's first signal caused this unwind, not the daemon: §7 pins
+		// "interrupted by signal" at 130 (128+SIGINT). Letting it classify as 6/1
+		// invites cron retry loops against a command someone explicitly stopped
+		// and leaks Go internals onto the error face.
+		code = exitInterrupted
+		face = &uierr.UserError{
+			Code:    "interrupted",
+			Summary: "interrupted by signal",
+			Next:    []string{"messq --help"},
+			Cause:   err, // keeps the unwind chain unwrappable and the exit field rendered
+		}
+	}
 	if !rendersItself(err) {
-		uierr.Render(&uierr.Env{Stderr: env.stderr(), Format: resolvedFormatOf(root)}, err, code)
+		uierr.Render(&uierr.Env{Stderr: env.stderr(), Format: resolvedFormatOf(root)}, face, code)
 	}
 	return code
+}
+
+// exitInterrupted is §7's documented exception outside the 0–7 table: the shell
+// convention for a process killed by SIGINT after it unwound gracefully.
+const exitInterrupted = 130
+
+// interruptWatch records that this invocation's own signal handler caught the first
+// SIGINT/SIGTERM. It rides the context so clitest-driven trees (plain Background)
+// keep today's behaviour and RunEnv stays the only producer of the state.
+type interruptWatch struct{ fired atomic.Bool }
+
+type interruptKey struct{}
+
+func interruptedBySignal(ctx context.Context) bool {
+	w, ok := ctx.Value(interruptKey{}).(*interruptWatch)
+	return ok && w.fired.Load()
+}
+
+// taughtFace adapts a raw daemon envelope into the teaching type so rendering keeps
+// the server's Message verbatim and its next[]/detail/trace_id intact (uierr's
+// no-invented-text rule). Errors that already carry a *uierr.UserError — a command
+// built its own teaching error, or adapted the envelope at the call site — pass
+// through untouched; anything that is not a *client.Error has nothing to adapt.
+func taughtFace(root *cobra.Command, err error) error {
+	var ue *uierr.UserError
+	if errors.As(err, &ue) {
+		return err
+	}
+	var ce *client.Error
+	if !errors.As(err, &ce) {
+		return err
+	}
+	addr := ""
+	if f := root.PersistentFlags().Lookup("addr"); f != nil {
+		addr = f.Value.String()
+	}
+	return uierr.FromClient(ce, addr)
 }
 
 // preRendered is the marker for failures whose message already went to stderr in
