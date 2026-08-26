@@ -88,6 +88,8 @@ func TestBytesAcceptsIECAndSI(t *testing.T) {
 		{"1MB", 1000 * 1000}, // SI: MB is powers of ten, not MiB
 		{"1KB", 1000},
 		{"2GB", 2 * 1000 * 1000 * 1000},
+		{"1TB", 1e12}, // SI: the big powers of ten are claimed too
+		{"1PB", 1e15},
 		{"1kib", 1024}, // the unit is case-insensitive
 		{"4GIB", 4 * 1024 * 1024 * 1024},
 	}
