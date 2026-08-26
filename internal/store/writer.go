@@ -475,20 +475,43 @@ func (w *Writer) Do(ctx context.Context, cmd Cmd) (Result, error) {
 }
 
 // run is the writer goroutine: it assembles batches and commits them, in enqueue order,
-// until Close signals stop — and even then only after every already-queued command has been
-// committed (drain-before-exit). A batch is never empty: takeBatch blocks for the first
-// command, so an idle writer holds no timers and burns no CPU.
+// until Close signals stop — and even then only after every already-queued command has
+// been committed (drain-before-exit). A batch is never empty: nextRequest blocks for the
+// first command, so an idle writer holds no timers and burns no CPU.
+//
+// Solo commands (#27 §3) are the exception to assembly: dequeued ones run alone, outside
+// every transaction, via commitSolo; one that arrives while a batch is assembling stops
+// that batch (takeBatch's fill treats it like a byte-budget overflow) and runs between
+// the two transactions. Enqueue order is preserved throughout.
 //
 // w.ch is never closed: Close is a stop signal plus a drain, which removes the entire
 // send-on-closed-channel class instead of racing it.
 func (w *Writer) run() {
 	defer close(w.done)
 	batch := make([]*request, 0, w.cfg.CommitMaxBatch)
-	var pending *request // an over-budget command held for the NEXT batch
+	var pending *request // an over-budget (or solo) command held for the NEXT turn
 	for {
-		assembled, next, ok := w.takeBatch(batch[:0], pending)
+		// A held-over command may itself be solo — fill stopped the previous batch on
+		// it. Run it alone before assembling anything new.
+		if pending != nil && isSolo(pending.cmd) {
+			w.commitSolo(pending)
+			pending = nil
+			continue
+		}
+		first := pending
+		if first == nil {
+			var ok bool
+			if first, ok = w.nextRequest(); !ok {
+				return // stopped and fully drained
+			}
+			if isSolo(first.cmd) {
+				w.commitSolo(first)
+				continue
+			}
+		}
+		assembled, next, ok := w.takeBatch(batch[:0], first)
 		if !ok {
-			return // stopped and fully drained
+			return
 		}
 		pending = next
 		w.obsrv.ObserveQueueDepth(len(w.ch))
@@ -496,11 +519,29 @@ func (w *Writer) run() {
 	}
 }
 
+// nextRequest blocks until one command arrives or Close drains the queue dry. It is
+// takeBatch's former first-command fetch, lifted so run can intercept Solo values
+// BEFORE any assembly happens.
+func (w *Writer) nextRequest() (*request, bool) {
+	select {
+	case r := <-w.ch:
+		return r, true
+	case <-w.stop:
+		// Draining: accept what is already queued, else tell run to exit.
+		select {
+		case r := <-w.ch:
+			return r, true
+		default:
+			return nil, false
+		}
+	}
+}
+
 // takeBatch assembles one batch under the three closing rules — commit-window,
 // commit-max-batch, commit-max-bytes, whichever fires first:
 //
-//   - It blocks for the first command (or reports not-ok when stopped with an empty queue),
-//     so a batch is never empty and no fsync is ever spent on nothing.
+//   - `held` is non-nil always (run passes the already-dequeued first command); it opens
+//     the batch without blocking.
 //   - With a positive CommitWindow it lingers on the clock seam: the fill select prefers the
 //     channel while arrivals are queued, so under load batching self-clocks and the window
 //     barely matters; at low rate a lone caller pays at most one window.
@@ -509,28 +550,17 @@ func (w *Writer) run() {
 //
 // A command whose bytes would push the batch past CommitMaxBytes is held as `next` and opens
 // the following batch; a lone oversized command therefore still commits alone — the budget
-// closes batches, it never rejects commands.
+// closes batches, it never rejects commands. A SOLO command does the same from the other
+// direction (#27 §3): arriving mid-assembly it closes this batch and runs alone next.
 func (w *Writer) takeBatch(batch []*request, held *request) ([]*request, *request, bool) {
 	first := held
-	if first == nil {
-		select {
-		case first = <-w.ch:
-		case <-w.stop:
-			// Draining: accept what is already queued, else tell run to exit.
-			select {
-			case first = <-w.ch:
-			default:
-				return nil, nil, false
-			}
-		}
-	}
 	batch = append(batch, first)
 	bytes := int64(first.cmd.Bytes())
 
 	fill := func(r *request) bool {
 		rb := int64(r.cmd.Bytes())
-		if len(batch) > 0 && bytes+rb > w.cfg.CommitMaxBytes {
-			return false // over budget: hold for the next batch
+		if len(batch) > 0 && (isSolo(r.cmd) || bytes+rb > w.cfg.CommitMaxBytes) {
+			return false // solo or over budget: hold for the next turn
 		}
 		batch = append(batch, r)
 		bytes += rb
@@ -672,6 +702,45 @@ func (w *Writer) commitBatch(batch []*request) {
 	if len(events) > 0 { // 2. fan-out — off the latency path, never blocking
 		select {
 		case w.evCh <- events:
+		default:
+			w.log.Warn("events.dropped",
+				"node", w.node,
+				"reason", "fan-out queue overflow; the events table remains complete")
+		}
+	}
+}
+
+// commitSolo executes one Solo command (#27 §3) on the writer goroutine, outside every
+// transaction: the raw rw handle is the writer's alone to touch, and PRAGMAs cannot run
+// inside one anyway. Its error classification is the point of the whole amendment —
+// G6: a failed checkpoint or vacuum is logged loudly and replied to its caller; it is
+// NEVER routed through doomed/doomedCommit, never latches the store read-only, and never
+// closes the rw pool. SQLITE_BUSY (surfaced as CheckpointResult.Busy, or as a driver
+// error under contention) means a reader is holding the WAL back; retrying is the
+// caller's decision on its next tick.
+func (w *Writer) commitSolo(r *request) {
+	sc, isS := r.cmd.(Solo)
+	if !isS { // unreachable: run only routes isSolo commands here
+		r.err = fmt.Errorf("store: %s does not implement Solo", sc)
+		close(r.done)
+		return
+	}
+	res, evs, err := sc.ApplySolo(context.Background(), w.rw, w.batchNow())
+	switch {
+	case err != nil:
+		w.log.Warn("store.solo",
+			"node", w.node,
+			"kind", string(sc.Kind()),
+			"error", err.Error(),
+			"hint", "a solo command failure is a starved attempt, not a storage fatality")
+		r.err = err
+	default:
+		r.res = res
+	}
+	close(r.done)
+	if len(evs) > 0 { // same post-completion fan-out contract as commitBatch
+		select {
+		case w.evCh <- evs:
 		default:
 			w.log.Warn("events.dropped",
 				"node", w.node,
