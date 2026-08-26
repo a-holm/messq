@@ -88,6 +88,7 @@ func NewRoot(env *Env) *cobra.Command {
 		SilenceUsage:               true,
 		SilenceErrors:              true,
 		SuggestionsMinimumDistance: 2,
+		Example:                    "  messq version\n  messq serve --data-dir /var/lib/messq\n  messq verify --deep --data-dir /var/lib/messq",
 		Version:                    buildinfo.Short(),
 		CompletionOptions:          cobra.CompletionOptions{DisableDefaultCmd: true},
 		Args:                       cobra.ArbitraryArgs,

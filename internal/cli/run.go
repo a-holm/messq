@@ -175,6 +175,7 @@ func newVersionCmd(env *Env) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Annotations = map[string]string{annExits: "0,1,2"}
 	return cmd
 }
 
