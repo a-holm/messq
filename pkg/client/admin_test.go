@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +210,136 @@ func TestPeekMessageDataReturnsRawBytes(t *testing.T) {
 	}
 	if len(data) != 3 || data[2] != 0xff {
 		t.Errorf("data = %x, want raw bytes un-decoded", data)
+	}
+}
+
+// The peek-data route answers REAL error envelopes on every non-200 (auth-middleware
+// 401, daemon 5xx) just like its JSON siblings, so it must ride decodeFailure's
+// classification. Hardcoding not_found turned an auth failure or an outage into
+// "message missing" — exactly wrong input for #23's exit-code mapping.
+func TestPeekMessageDataClassifiesErrorEnvelopes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		wantTarget error
+		wantKind   Kind
+		wantCode   string
+	}{
+		{
+			name:       "auth_401_is_unauthorized_not_not_found",
+			status:     http.StatusUnauthorized,
+			body:       `{"error":{"code":"unauthorized","message":"bad token","trace_id":"t-401"}}`,
+			wantTarget: ErrUnauthorized,
+			wantKind:   KindPermission,
+			wantCode:   "unauthorized",
+		},
+		{
+			name:       "real_404_envelope_stays_not_found",
+			status:     http.StatusNotFound,
+			body:       `{"error":{"code":"not_found","message":"no such sequence"}}`,
+			wantTarget: ErrNotFound,
+			wantKind:   KindNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "daemon_500_is_internal_not_not_found",
+			status:     http.StatusInternalServerError,
+			body:       `{"error":{"code":"internal","message":"sweeper wedged"}}`,
+			wantTarget: ErrInternal,
+			wantKind:   KindInternal,
+			wantCode:   "internal",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Messq-Request-Id", "req-1")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer ts.Close()
+
+			c := newTestClient(t, ts)
+			_, err := c.PeekMessageData(context.Background(), "orders", 7)
+			var e *Error
+			if !errors.As(err, &e) {
+				t.Fatalf("err = %v, want a typed *Error carrying the envelope", err)
+			}
+			if !errors.Is(err, tc.wantTarget) {
+				t.Errorf("errors.Is = false for %v; decoded Code = %q", tc.wantTarget, e.Code)
+			}
+			if got := Classify(err); got != tc.wantKind {
+				t.Errorf("Classify = %s, want %s", got, tc.wantKind)
+			}
+			if e.Code != tc.wantCode {
+				t.Errorf("Code = %q, want the envelope's %q verbatim", e.Code, tc.wantCode)
+			}
+			if e.Status != tc.status {
+				t.Errorf("Status = %d, want %d", e.Status, tc.status)
+			}
+			if e.RequestID != "req-1" {
+				t.Errorf("RequestID = %q, want req-1 from the response header", e.RequestID)
+			}
+		})
+	}
+}
+
+// A proxy's HTML 502 carries no envelope: decodeFailure keeps the status and a short
+// snippet and classifies internal — anything but "the message does not exist".
+func TestPeekMessageDataNonEnvelopeFailureKeepsTheStatus(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, "<html>bad gateway</html>")
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts)
+	_, err := c.PeekMessageData(context.Background(), "orders", 7)
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("err = %v, want a typed *Error", err)
+	}
+	if e.Status != http.StatusBadGateway || e.Code != "internal" || Classify(err) != KindInternal {
+		t.Errorf("got [%d %s %s], want [502 internal internal] with the proxy page as a snippet", e.Status, e.Code, Classify(err))
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("a 502 classified as not_found: %v", err)
+	}
+}
+
+// The old branch read the body BEFORE checking the status, so an error response
+// larger than MaxResponseBytes surfaced as ErrTooLarge and buried the daemon's
+// actual answer. The status decides first; the body only feeds the detail.
+func TestPeekMessageDataStatusIsNotShadowedByAnOversizedErrorBody(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("x", 4096)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, huge)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts, WithMaxResponseBytes(1024))
+	_, err := c.PeekMessageData(context.Background(), "orders", 7)
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("err = %v, want a typed *Error", err)
+	}
+	if errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized ERROR body shadowed the status as too_large: %v", err)
+	}
+	if e.Status != http.StatusInternalServerError || Classify(err) != KindInternal {
+		t.Errorf("got [%d %s], want [500 internal] — the status must win over the unreadable body", e.Status, Classify(err))
 	}
 }
 

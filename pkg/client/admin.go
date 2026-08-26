@@ -378,22 +378,26 @@ func (c *Client) PeekMessageData(ctx context.Context, stream string, seq int64) 
 		return nil, err
 	}
 	data, rerr := readCapped(resp.Body, c.maxResponseBytes)
-	drainErr := drain(resp.Body, 4096)
+	drainErr := drain(resp.Body, c.maxResponseBytes)
 	closeErr := resp.Body.Close()
-	switch {
-	case rerr != nil:
-		return nil, rerr
-	case resp.StatusCode != http.StatusOK:
-		return nil, &Error{
-			Code:    "not_found",
-			Message: fmt.Sprintf("GET %s: status %d", path, resp.StatusCode),
-			Status:  resp.StatusCode,
-			err:     ErrNotFound,
+	if rerr == nil {
+		rerr = drainErr
+	}
+	if closeErr != nil && rerr == nil {
+		rerr = unreachable("GET "+path, closeErr)
+	}
+	// The STATUS decides first: this route answers real envelopes on every non-200
+	// (auth-middleware 401, daemon 5xx), so its failures ride decodeFailure like
+	// every other wrapper. A body that will not read — oversize or truncated — feeds
+	// at most the detail; it must never shadow the status into a fake not_found.
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeFailure("GET "+path, resp, data)
+	}
+	if rerr != nil {
+		if _, too := rerr.(*Error); too { //nolint:errorlint // single type switch on our own sentinel-carrying error
+			return nil, rerr
 		}
-	case closeErr != nil:
-		return nil, unreachable("GET "+path, closeErr)
-	case drainErr != nil:
-		return data, nil //nolint:nilerr // a truncated drain costs keep-alive reuse, not correctness: the bytes are in hand
+		return nil, unreachable("GET "+path, rerr)
 	}
 	return data, nil
 }
