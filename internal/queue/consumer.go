@@ -48,16 +48,19 @@ const (
 	StartTime Start = "time"
 )
 
-// StartPosition carries the creation-time cursor anchor. Kind selects which of Seq
-// and Time is meaningful. The zero value is invalid: a consumer must be created with
+// StartPosition carries the creation-time cursor anchor. Kind selects which of Seq,
+// Time and Rel is meaningful. The zero value is invalid: a consumer must be created with
 // an explicit start.
 type StartPosition struct {
 	Kind Start
-	Seq  int64 // StartSeq only
-	Time int64 // StartTime only, unix ms
+	Seq  int64         // StartSeq only
+	Time int64         // StartTime only, unix ms; ignored when Rel is set
+	Rel  time.Duration // StartTime only: a negative offset ("time:-2h") resolved against the daemon clock at use
 }
 
 // String renders the wire form ParseStartPosition accepts, so the pair round-trips.
+// The renderings are byte-compared against the meta table's recorded start
+// (checkStartImmutable), so existing forms must never change spelling.
 func (s StartPosition) String() string {
 	switch s.Kind {
 	case StartFirst:
@@ -67,23 +70,31 @@ func (s StartPosition) String() string {
 	case StartSeq:
 		return fmt.Sprintf("seq:%d", s.Seq)
 	case StartTime:
+		if s.Rel != 0 {
+			return "time:" + s.Rel.String()
+		}
 		return fmt.Sprintf("time:%d", s.Time)
 	default:
 		return ""
 	}
 }
 
-// ParseStartPosition parses the wire spelling of a start position: "first", "new",
-// "seq:N" or "time:T". Anything else is errs.ErrBadRequest.
+// ParseStartPosition parses the wire spelling of a start position — ONE grammar
+// shared by consumer creation, seek --to and replay (#28): "first" (or its
+// alias "start"), "new", "seq:N", "time:T", or "time:-<duration>". T is either
+// a unix-millisecond integer (the #9 form) or an RFC3339 timestamp; the
+// duration form is a negative offset ("time:-2h") that the daemon resolves
+// against ITS clock at use, never the client's. Anything else is
+// errs.ErrBadRequest.
 func ParseStartPosition(s string) (StartPosition, error) {
 	switch s {
-	case "first":
+	case "first", "start":
 		return StartPosition{Kind: StartFirst}, nil
 	case "new":
 		return StartPosition{Kind: StartNew}, nil
 	case "":
 		return StartPosition{}, errs.E(errs.ErrBadRequest, "",
-			"start is required: one of \"first\", \"new\", \"seq:N\", \"time:T\"")
+			`start is required: one of "first"/"start", "new", "seq:N", "time:<unix-ms|RFC3339>", "time:-<duration>"`)
 	}
 	if rest, ok := strings.CutPrefix(s, "seq:"); ok {
 		n, err := strconv.ParseInt(rest, 10, 64)
@@ -94,15 +105,37 @@ func ParseStartPosition(s string) (StartPosition, error) {
 		return StartPosition{Kind: StartSeq, Seq: n}, nil
 	}
 	if rest, ok := strings.CutPrefix(s, "time:"); ok {
+		// Relative offset: "-<duration>", strictly negative. A zero or
+		// positive offset is not in the grammar — "new" is the spelling for
+		// now — and the sign is required so a bare duration cannot sneak in.
+		if len(rest) > 1 && rest[0] == '-' {
+			d, derr := time.ParseDuration(rest)
+			if derr != nil || d >= 0 {
+				return StartPosition{}, errs.E(errs.ErrBadRequest, "",
+					"start %q is not a valid relative time: use time:-<duration>, e.g. time:-2h", s)
+			}
+			return StartPosition{Kind: StartTime, Rel: d}, nil
+		}
+		// Absolute RFC3339 wall-clock stamp, truncated to the millisecond
+		// unit every persisted timestamp uses.
+		if ts, terr := time.Parse(time.RFC3339, rest); terr == nil {
+			ms := ts.UnixMilli()
+			if ms < 0 {
+				return StartPosition{}, errs.E(errs.ErrBadRequest, "",
+					"start %q predates the epoch and has no unix-millisecond value", s)
+			}
+			return StartPosition{Kind: StartTime, Time: ms}, nil
+		}
+		// The #9 legacy form: a unix-millisecond integer.
 		n, err := strconv.ParseInt(rest, 10, 64)
 		if err != nil || n < 0 {
 			return StartPosition{}, errs.E(errs.ErrBadRequest, "",
-				"start %q is not a valid unix-millisecond timestamp", s)
+				"start %q is not one of \"first\"/\"start\", \"new\", \"seq:N\", \"time:<unix-ms|RFC3339>\", \"time:-<duration>\"", s)
 		}
 		return StartPosition{Kind: StartTime, Time: n}, nil
 	}
 	return StartPosition{}, errs.E(errs.ErrBadRequest, "",
-		"start %q is not one of \"first\", \"new\", \"seq:N\", \"time:T\"", s)
+		"start %q is not one of \"first\"/\"start\", \"new\", \"seq:N\", \"time:<unix-ms|RFC3339>\", \"time:-<duration>\"", s)
 }
 
 // ConsumerConfig is the validated shape of a consumer's configuration, as stored in
@@ -325,6 +358,10 @@ const (
 	WarningMaxDeliverUnlimited       = "max_deliver_unlimited"
 	WarningBackoffNonMonotonic       = "backoff_nonmonotonic"
 	WarningHorizonShorterThanAckWait = "horizon_shorter_than_ack_wait"
+	// WarningStartClamped reports a start position resolved below the stream's
+	// retained floor (#28): the anchor predates live data and was moved up to
+	// first_seq. Never silent — the response carries this warning.
+	WarningStartClamped = "start_clamped"
 )
 
 // Warnings is the ordered set of non-fatal findings a validation produced.

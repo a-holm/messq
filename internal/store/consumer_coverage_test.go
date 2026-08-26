@@ -165,7 +165,7 @@ func TestResolveStartPositionEdgeCases(t *testing.T) {
 
 	// Unknown start kind.
 	run(func(tx *sql.Tx) error {
-		if _, err := resolveStartPosition(ctx, tx, "orders", queue.StartPosition{Kind: queue.Start("bogus")}); !errors.Is(err, errs.ErrBadRequest) {
+		if _, _, err := resolveStartPosition(ctx, tx, "orders", queue.StartPosition{Kind: queue.Start("bogus")}, time.UnixMilli(fakeStartMillis)); !errors.Is(err, errs.ErrBadRequest) {
 			t.Fatalf("resolve unknown kind = %v, want ErrBadRequest", err)
 		}
 		return nil

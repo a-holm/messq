@@ -33,6 +33,12 @@ const (
 	I7  = "I7"
 	I8  = "I8"
 	I10 = "I10"
+
+	// PTS1 is #28's P-TS1: within every stream, published_at is non-decreasing
+	// in seq. The monotonic batch stamp (#6's batchNow) is what makes the
+	// messages_age index seek equivalent to min(seq) for the shared time→seq
+	// resolution; this checker proves the assumption on live data.
+	PTS1 = "P-TS1"
 )
 
 // currentSchemaVersion is the schema version this binary ships (the migration ladder's
