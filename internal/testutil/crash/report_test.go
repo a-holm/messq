@@ -27,9 +27,14 @@ func TestGuardsFire(t *testing.T) {
 	if g := guardNames((Report{OK: 1000, Unknown: 5}).Guards()); !g["KILL-LANDS-LOW"] {
 		t.Errorf("KILL-LANDS-LOW did not fire for 0.5%% UNKNOWN: %v", g)
 	}
-	// Kill-lands high: UNKNOWN above 20% means the oracle has gone blind.
+	// Kill-lands high: a ~100% UNKNOWN dump means the oracle has gone blind. The cap is
+	// 75% (see killLandsHighShare): 90% must fire, and a loaded-but-healthy sweep (the
+	// observed worst was 44.3%) must not.
 	if g := guardNames((Report{OK: 10, Unknown: 90}).Guards()); !g["KILL-LANDS-HIGH"] {
 		t.Errorf("KILL-LANDS-HIGH did not fire for 90%% UNKNOWN: %v", g)
+	}
+	if g := guardNames((Report{OK: 30, Unknown: 70}).Guards()); g["KILL-LANDS-HIGH"] {
+		t.Errorf("KILL-LANDS-HIGH fired for 70%% UNKNOWN, the recalibrated cap must sit above every legitimate loaded schedule: %v", g)
 	}
 	// Survivorship: both outcomes must be observed.
 	if g := guardNames((Report{OK: 100, Unknown: 10, UnknownPresent: 10, UnknownAbsent: 0}).Guards()); !g["SURVIVORSHIP"] {

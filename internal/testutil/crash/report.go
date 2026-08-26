@@ -42,12 +42,16 @@ type Report struct {
 const livenessOKFloor = 1
 
 // killLandsHighShare is the upper UNKNOWN share the sweep may carry before the oracle is
-// declared blind. 40% rather than the milestone plan's 20%: the per-merge smoke runs the
-// driver under the race detector and coverage instrumentation, which slows the driver's
-// ledger and HTTP relative to the daemon's commit rate and pushes the UNKNOWN share up (a
-// non-instrumented sweep sits near 18%). A blind classifier dumps ~100% to UNKNOWN, so 40%
-// still catches it with margin.
-const killLandsHighShare = 0.40
+// declared blind. Blindness is a classifier that dumps ~100% of answers to UNKNOWN, so the
+// cap only has to sit safely above every legitimate schedule while keeping margin against
+// that signature. Calibration evidence (2026-08-26 class fix): an unloaded sweep sits near
+// 18%; under full make-cover parallel load the race+cover-instrumented driver crawls
+// (~10-25 records/cycle), so wall-clock kill windows (immediate [0,150ms], randomDelay
+// [50ms,2s]) land before commits and legitimately push the share to 43.3% and 44.3% in CI
+// transcripts — the 40% cap fired as "the oracle has gone blind" on healthy sweeps. 75%
+// keeps >30 points of headroom over the worst observed legitimate value while still
+// catching a blind run with 25 points of margin.
+const killLandsHighShare = 0.75
 
 // survivorshipRule names the both-outcome guard. It is the one guard whose trigger is
 // runner-scheduling-dependent, so [Config.SkipSurvivorship] drops exactly it — never the

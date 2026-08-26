@@ -74,10 +74,13 @@ func startServe(t *testing.T, dataDir, sock string, extraEnv ...string) *exec.Cm
 
 // waitForServe polls /healthz over the socket until the child answers or the deadline passes.
 // The poll uses the Clock seam's cancellable sleep, never time.Sleep, and dumps the child's
-// stderr when the daemon fails to come up so a startup error is not a silent timeout.
+// stderr when the daemon fails to come up so a startup error is not a silent timeout. The
+// deadline is a hang backstop, not a latency assertion — same rationale as the crash
+// harness's readinessDeadline: under full make-cover parallel load starved startups blew
+// past a 10s cap although healthy.
 func waitForServe(t *testing.T, sock string, stderr *bytes.Buffer) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	clk := clock.System{}
 	client := unixHTTPClient(sock)
