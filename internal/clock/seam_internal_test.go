@@ -28,6 +28,9 @@ var wallClockCallers = map[string]string{
 	"internal/clock/system.go": "the seam itself, which every other package reads the clock through",
 	"internal/tools/vulngate/main.go": "a build-gate command rather than the daemon: its -now flag is that command's " +
 		"own seam, and the single call carries a //nolint:forbidigo saying so",
+	"pkg/client/clock.go": "the client-side mirror of this seam (issue #22): pkg/client is public and " +
+		"layers.sh forbids it importing internal/clock, so it defines its own Clock interface over " +
+		"the same two calls; tests inject fakes or run under testing/synctest",
 }
 
 // skipDirs are not source. testdata holds fixtures, which are inputs to the sabotage matrix and

@@ -1,0 +1,158 @@
+[
+  {
+    "name": "orders",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "orders.dlq",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": false
+  },
+  {
+    "name": "OrderS",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "a",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "with-dash",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "with_underscore",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "a.b.c",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": false
+  },
+  {
+    "name": "x9.z",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": false
+  },
+  {
+    "name": "",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": ".",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "..",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": ".lead",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "trail.",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "dou..ble",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "has space",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "tab\tsep",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "slash/sus",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "colon:sus",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "star*",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "gt\u003e",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "emoji🚀",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "UPPER.lower",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": false
+  },
+  {
+    "name": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "stream_ok": true,
+    "new_stream_ok": false,
+    "consumer_ok": true
+  },
+  {
+    "name": "lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "stream_ok": false,
+    "new_stream_ok": false,
+    "consumer_ok": false
+  },
+  {
+    "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  },
+  {
+    "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+    "stream_ok": true,
+    "new_stream_ok": true,
+    "consumer_ok": true
+  }
+]
