@@ -48,6 +48,9 @@ const (
 type Store struct {
 	mu     sync.Mutex
 	closed bool
+	// prov is the restore provenance detected at Open (issue #30 step 4.5);
+	// nil when the directory was never restored.
+	prov *Provenance
 	// writer is the attached group-commit engine (#6): command methods submit their
 	// [Cmd] values through [Store.enqueue] onto it. Nil until [*Store.NewWriter]
 	// constructs one — which also takes the rw handle, so a nil writer and a live rw
@@ -410,6 +413,20 @@ func Open(ctx context.Context, opt Options) (*Store, *RecoveryReport, error) {
 			return fail(fmt.Errorf("%w: PRAGMA %s reported: %s", ErrCorrupt, kind, joined))
 		}
 		st.logger.Info("recovery.check", "node", nodeID, "kind", kind, "result", "ok")
+	}
+
+	// Step 4.5 (issue #30): convert a stamped snapshot into permanent restore
+	// provenance before anything else narrates this startup. Runs after the
+	// integrity gate so a damaged directory is refused, never re-annotated.
+	// announce is true only on the start that performed the conversion; later
+	// restarts still answer Provenance() but do not re-announce.
+	restored, announce, provErr := detectRestoredProvenance(ctx, rw, st.clk)
+	if provErr != nil {
+		return fail(provErr)
+	}
+	st.prov = restored
+	if announce {
+		report.Restored = restored
 	}
 
 	reclaimed, dedupExpired, err := reclaimLeasesAndTrimDedup(ctx, rw, st.clk, opt.ReclaimJitter)
