@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/clock"
 
 	"github.com/a-holm/messq/internal/cli/conf"
@@ -87,6 +88,7 @@ func NewRoot(env *Env) *cobra.Command {
 		SilenceUsage:               true,
 		SilenceErrors:              true,
 		SuggestionsMinimumDistance: 2,
+		Version:                    buildinfo.Short(),
 		CompletionOptions:          cobra.CompletionOptions{DisableDefaultCmd: true},
 		Args:                       cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -123,6 +125,7 @@ func NewRoot(env *Env) *cobra.Command {
 	root.AddGroup(&cobra.Group{ID: "operate", Title: "Operate"})
 	root.AddGroup(&cobra.Group{ID: "server", Title: "Server"})
 
+	root.SetVersionTemplate(buildinfo.Short() + "\n")
 	root.SetOut(env.stdoutOrDiscard())
 	root.SetErr(env.stderr())
 	// One format for flag errors: a teaching usage failure → exit 2, usage text
@@ -131,6 +134,7 @@ func NewRoot(env *Env) *cobra.Command {
 		return uierr.Usage("%v", err)
 	})
 	root.PersistentPreRunE = resolveInvocation(env)
+	assemble(root, env)
 
 	return root
 }
