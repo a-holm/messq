@@ -19,7 +19,8 @@ func TestCommandTreeIsWellFormed(t *testing.T) {
 }
 
 // TestDXLinterBites sabotages one rule at a time and proves the linter names it —
-// five deliberate breakages, five catches (issue test-plan §8).
+// each row is one deliberate breakage and must produce exactly its named catch
+// (issue test-plan §8).
 func TestDXLinterBites(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -106,6 +107,23 @@ func TestDXLinterBites(t *testing.T) {
 				return version
 			},
 			want: `messq.exits`,
+		},
+		{
+			name: "alias collides with a sibling's name",
+			sabotage: func(root *cobra.Command) *cobra.Command {
+				findCmd(root, "version").Aliases = []string{"verify"}
+				return findCmd(root, "version")
+			},
+			want: `collides with sibling`,
+		},
+		{
+			name: "aliases collide between siblings",
+			sabotage: func(root *cobra.Command) *cobra.Command {
+				findCmd(root, "version").Aliases = []string{"ver"}
+				findCmd(root, "serve").Aliases = []string{"ver"}
+				return findCmd(root, "version")
+			},
+			want: `collides between`,
 		},
 	}
 	for _, tt := range tests {

@@ -28,11 +28,46 @@ func lintCommandTree(root *cobra.Command) []string {
 		if !dxExempt[cmd.Name()] {
 			problems = append(problems, lintOne(cmd)...)
 		}
+		problems = append(problems, lintSiblingAliases(cmd)...)
 		for _, sub := range cmd.Commands() {
 			walk(sub)
 		}
 	}
 	walk(root)
+	return problems
+}
+
+// lintSiblingAliases enforces §8's alias rule within one command group: two siblings
+// must not share an alias, and an alias must not swallow a sibling's name — either
+// way `messq <alias>` resolves to a command the operator did not mean. Exempt
+// commands still count as names: aliasing to "help" collides even though help's own
+// phrasing is cobra's.
+func lintSiblingAliases(parent *cobra.Command) []string {
+	kids := parent.Commands()
+	if len(kids) < 2 {
+		return nil
+	}
+	names := make(map[string]bool, len(kids))
+	for _, c := range kids {
+		names[c.Name()] = true
+	}
+	var problems []string
+	firstAlias := make(map[string]string, len(kids)) // alias -> its first owner
+	for _, c := range kids {
+		for _, a := range c.Aliases {
+			if other, taken := firstAlias[a]; taken {
+				problems = append(problems,
+					fmt.Sprintf("%s: alias %q collides between %s and %s", c.Name(), a, other, c.Name()))
+				continue
+			}
+			if a != c.Name() && names[a] {
+				problems = append(problems,
+					fmt.Sprintf("%s: alias %q collides with sibling command's name", c.Name(), a))
+				continue
+			}
+			firstAlias[a] = c.Name()
+		}
+	}
 	return problems
 }
 
