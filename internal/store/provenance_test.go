@@ -205,7 +205,7 @@ func TestProvenanceNilWhenNeverRestored(t *testing.T) {
 
 func TestCorruptSnapshotProvenanceRefusesStartup(t *testing.T) {
 	dir := openWithStoreDir(t)
-	plantSnapshotProvenance(t, dir, time.Now(), map[string]int64{"orders": 1})
+	plantSnapshotProvenance(t, dir, clock.System{}.Now(), map[string]int64{"orders": 1})
 
 	// Sabotage the timestamp: not a number.
 	path := filepath.Join(dir, "messq.db")

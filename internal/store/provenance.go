@@ -83,7 +83,7 @@ func detectRestoredProvenance(ctx context.Context, rw *sql.DB, clk clock.Clock) 
 
 	takenMs, parseErr := strconv.ParseInt(strings.TrimSpace(takenRaw), 10, 64)
 	if parseErr != nil {
-		return nil, false, fmt.Errorf("%w: meta[%s] = %q is not unix ms: %v",
+		return nil, false, fmt.Errorf("%w: meta[%s] = %q is not unix ms: %w",
 			ErrCorrupt, metaSnapshotTakenAt, takenRaw, parseErr)
 	}
 	snapshotAt := time.UnixMilli(takenMs)
@@ -95,7 +95,7 @@ func detectRestoredProvenance(ctx context.Context, rw *sql.DB, clk clock.Clock) 
 	heads := map[string]int64{}
 	if headsRaw != "" {
 		if unmarshalErr := json.Unmarshal([]byte(headsRaw), &heads); unmarshalErr != nil {
-			return nil, false, fmt.Errorf("%w: meta[%s] is not stream-head JSON: %v",
+			return nil, false, fmt.Errorf("%w: meta[%s] is not stream-head JSON: %w",
 				ErrCorrupt, metaSnapshotStreamHeads, unmarshalErr)
 		}
 	}
@@ -157,7 +157,7 @@ func loadRestoredProvenance(ctx context.Context, rw *sql.DB, clk clock.Clock) (*
 	}
 	atMs, parseErr := strconv.ParseInt(strings.TrimSpace(atRaw), 10, 64)
 	if parseErr != nil {
-		return nil, false, fmt.Errorf("%w: meta[%s] = %q is not unix ms: %v",
+		return nil, false, fmt.Errorf("%w: meta[%s] = %q is not unix ms: %w",
 			ErrCorrupt, metaRestoredAt, atRaw, parseErr)
 	}
 
@@ -171,7 +171,7 @@ func loadRestoredProvenance(ctx context.Context, rw *sql.DB, clk clock.Clock) (*
 	heads := map[string]int64{}
 	if headsRaw := readMetaOrEmpty(ctx, rw, metaRestoredStreamHeads); headsRaw != "" {
 		if unmarshalErr := json.Unmarshal([]byte(headsRaw), &heads); unmarshalErr != nil {
-			return nil, false, fmt.Errorf("%w: meta[%s] is not stream-head JSON: %v",
+			return nil, false, fmt.Errorf("%w: meta[%s] is not stream-head JSON: %w",
 				ErrCorrupt, metaRestoredStreamHeads, unmarshalErr)
 		}
 	}
