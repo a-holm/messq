@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/clock"
-	"github.com/a-holm/messq/internal/store"
 )
 
 // defaultCacheBytes bounds the snapshot connection's page cache (issue #30 §2
@@ -118,13 +117,21 @@ func Plan(ctx context.Context, o Options) (*SnapshotPlan, error) {
 
 	// Step 1: open the source read-only first — its failure outranks every
 	// destination refusal because nothing else can even be judged without it.
+	//
+	// The access mode is verify.Open's, not store.Open(ReadOnly): the daemon
+	// holds the data-dir flock EXCLUSIVE for its whole life (#5), so a
+	// flock-taking read-only open could never run against a live broker. A raw
+	// query_only(1) connection needs no data-dir lock — SQLite's own WAL
+	// protocol coordinates the two processes — which is what makes the backup
+	// usable while the daemon runs AND after it stops (issue §2 step 1). The
+	// snapshot connection still never writes: query_only fences it.
 	srcPath := filepath.Join(o.DataDir, "messq.db")
-	src, _, openErr := store.Open(ctx, store.Options{DataDir: o.DataDir, ReadOnly: true})
+	src, identity, openErr := openSourceFacts(ctx, srcPath)
 	if openErr != nil {
 		return nil, fmt.Errorf("open source data dir read-only: %w", openErr)
 	}
 	defer func() {
-		if closeErr := src.Close(context.WithoutCancel(ctx)); closeErr != nil {
+		if closeErr := src.Close(); closeErr != nil {
 			openErr = errors.Join(openErr, fmt.Errorf("close source: %w", closeErr))
 		}
 	}()
@@ -155,7 +162,7 @@ func Plan(ctx context.Context, o Options) (*SnapshotPlan, error) {
 	// Step 3: size estimate from the source's own pragmas, and step 2d's
 	// free-space precheck against the ×1.1 requirement.
 	var pageCount, freelist, pageSize int64
-	scanErr := src.RO().QueryRowContext(ctx, `SELECT
+	scanErr := src.QueryRowContext(ctx, `SELECT
 			(SELECT page_count FROM pragma_page_count),
 			(SELECT freelist_count FROM pragma_freelist_count),
 			(SELECT page_size FROM pragma_page_size)`).
@@ -163,6 +170,14 @@ func Plan(ctx context.Context, o Options) (*SnapshotPlan, error) {
 	if scanErr != nil {
 		return nil, fmt.Errorf("read source sizing pragmas: %w", scanErr)
 	}
+	var userVersion, autoVacuum int64
+	if uvErr := src.QueryRowContext(ctx,
+		`SELECT (SELECT user_version FROM pragma_user_version),
+		        (SELECT auto_vacuum FROM pragma_auto_vacuum)`).
+		Scan(&userVersion, &autoVacuum); uvErr != nil {
+		return nil, fmt.Errorf("read source identity pragmas: %w", uvErr)
+	}
+
 	free, freeErr := FreeBytes(destDir)
 	if freeErr != nil {
 		return nil, freeErr
@@ -182,7 +197,73 @@ func Plan(ctx context.Context, o Options) (*SnapshotPlan, error) {
 		Pages:         pageCount,
 		Freelist:      freelist,
 		PageSize:      pageSize,
+
+		SourceNodeID:        identity.nodeID,
+		SourceSchemaVersion: identity.schemaVersion,
+		SourceUserVersion:   userVersion,
+		SourceAutoVacuum:    autoVacuum,
 	}, nil
+}
+
+// sourceIdentity is what Plan learns about the source from its meta table.
+type sourceIdentity struct {
+	schemaVersion int
+	nodeID        string
+}
+
+// openSourceFacts opens messq.db fenced read-only (no data-dir flock — see
+// Plan's step-1 comment) and reads the on-disk identity. A database without a
+// meta table is not a messq data dir and is refused with a teaching error
+// rather than snapshotted as garbage.
+func openSourceFacts(ctx context.Context, srcDB string) (*sql.DB, sourceIdentity, error) {
+	db, err := sql.Open("sqlite", "file:"+srcDB+"?_pragma=query_only(1)")
+	if err != nil {
+		return nil, sourceIdentity{}, fmt.Errorf("open %s: %w", srcDB, err)
+	}
+	db.SetMaxOpenConns(1)
+	if pingErr := db.PingContext(ctx); pingErr != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			pingErr = errors.Join(pingErr, closeErr)
+		}
+		return nil, sourceIdentity{}, fmt.Errorf("open %s: %w", srcDB, pingErr)
+	}
+
+	var identity sourceIdentity
+	var tableName string
+	metaErr := db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'meta'`).Scan(&tableName)
+	switch {
+	case errors.Is(metaErr, sql.ErrNoRows):
+		if closeErr := db.Close(); closeErr != nil {
+			_ = closeErr // reporting the real refusal matters more
+		}
+		return nil, sourceIdentity{}, fmt.Errorf(
+			"%s is not a messq data dir (no meta table); point --data-dir at the directory holding messq.db", srcDB)
+	case metaErr != nil:
+		if closeErr := db.Close(); closeErr != nil {
+			_ = closeErr
+		}
+		return nil, sourceIdentity{}, fmt.Errorf("inspect %s schema: %w", srcDB, metaErr)
+	}
+
+	var rawVersion string
+	if scanErr := db.QueryRowContext(ctx,
+		`SELECT v FROM meta WHERE k = 'schema_version'`).Scan(&rawVersion); scanErr == nil {
+		v, parseErr := strconv.Atoi(rawVersion)
+		if parseErr != nil {
+			if closeErr := db.Close(); closeErr != nil {
+				_ = closeErr
+			}
+			return nil, sourceIdentity{}, fmt.Errorf("meta[schema_version] = %q is not an integer", rawVersion)
+		}
+		identity.schemaVersion = v
+	}
+	var nodeID string
+	if scanErr := db.QueryRowContext(ctx,
+		`SELECT v FROM meta WHERE k = 'node_id'`).Scan(&nodeID); scanErr == nil {
+		identity.nodeID = nodeID
+	}
+	return db, identity, nil
 }
 
 // SnapshotPlan is the outcome of a successful Plan call: everything checked,
@@ -199,6 +280,14 @@ type SnapshotPlan struct {
 	FreeBytes int64
 	// Pages, Freelist and PageSize are the source pragmas behind the estimate.
 	Pages, Freelist, PageSize int64
+
+	// Source identity read at Plan time; the self-check holds the snapshot to them.
+	SourceNodeID        string
+	SourceSchemaVersion int
+	// SourceUserVersion and SourceAutoVacuum are the file-header mirrors the
+	// self-check reads back from the copy (§11: never assume, always read).
+	SourceUserVersion int64
+	SourceAutoVacuum  int64
 }
 
 // insideDataDir reports whether dest lies under dataDir, symlink-aware where
@@ -233,8 +322,7 @@ func probeWritable(dir string) error {
 	return nil
 }
 
-// Result narrates one completed backup. Fields grow with the pipeline:
-// provenance/verification land with stamp.go/selfcheck.go (slice 3).
+// Result narrates one completed backup.
 type Result struct {
 	// Dest is the file the snapshot was renamed onto.
 	Dest string
@@ -248,6 +336,19 @@ type Result struct {
 	Duration time.Duration
 	// Swept counts stale .messq-backup-* directories removed by this run.
 	Swept int
+
+	// SourceNodeID is the source's meta.node_id, stamped into the snapshot.
+	SourceNodeID string
+	// SchemaVersion is the source meta.schema_version at plan time.
+	SchemaVersion int
+	// StreamHeads maps stream → last assigned seq at snapshot time.
+	StreamHeads map[string]int64
+	// InflightAtSnapshot counts deliveries INFLIGHT when the snapshot began;
+	// every one of them redelivers after a restore (§4.4 step 3).
+	InflightAtSnapshot int64
+	// Verified names the self-check that ran: "quick_check",
+	// "integrity_check", or "skipped".
+	Verified string
 }
 
 // Run executes the plan's pipeline: private temp dir → dedicated-connection
@@ -276,6 +377,22 @@ func Run(ctx context.Context, p *SnapshotPlan) (*Result, error) {
 	if openErr != nil {
 		return nil, openErr
 	}
+
+	// Step 3's spot counts, read on the very connection that will run the
+	// VACUUM INTO: stream heads and the INFLIGHT count at snapshot time.
+	heads, headErr := readStreamHeads(ctx, conn)
+	if headErr != nil {
+		return nil, headErr
+	}
+	var inflight int64
+	if scanErr := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM deliveries WHERE state = 1`).Scan(&inflight); scanErr != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			scanErr = errors.Join(scanErr, closeErr)
+		}
+		return nil, fmt.Errorf("count inflight deliveries: %w", scanErr)
+	}
+
 	if _, execErr := conn.ExecContext(ctx, `VACUUM INTO ?`, snap); execErr != nil {
 		if closeErr := conn.Close(); closeErr != nil {
 			execErr = errors.Join(execErr, fmt.Errorf("close snapshot connection: %w", closeErr))
@@ -284,6 +401,30 @@ func Run(ctx context.Context, p *SnapshotPlan) (*Result, error) {
 	}
 	if closeErr := conn.Close(); closeErr != nil {
 		return nil, fmt.Errorf("close snapshot connection: %w", closeErr)
+	}
+
+	// Step 6: stamp provenance into the SNAPSHOT (never the source), then
+	// step 7: prove the copy is restorable before it gets its real name.
+	if stampErr := stamp(ctx, snap, provenance{
+		TakenAt:      start,
+		DataDir:      p.opts.DataDir,
+		SourceDB:     p.sourceDB,
+		SourceNodeID: p.SourceNodeID,
+		Live:         sourceIsLive(p.opts.DataDir),
+		Heads:        heads,
+	}); stampErr != nil {
+		return nil, stampErr
+	}
+	checkErr := selfCheck(ctx, snap, SelfExpectations{
+		Verify:       p.opts.Verify,
+		SchemaVer:    p.SourceSchemaVersion,
+		UserVersion:  p.SourceUserVersion,
+		PageSize:     p.PageSize,
+		AutoVacuum:   p.SourceAutoVacuum,
+		RecordedHead: heads,
+	})
+	if checkErr != nil {
+		return nil, checkErr
 	}
 
 	// The payload is cleartext (D12): force 0600 whatever the creating
@@ -322,7 +463,57 @@ func Run(ctx context.Context, p *SnapshotPlan) (*Result, error) {
 		TakenAt:  start,
 		Duration: now.Sub(start),
 		Swept:    swept,
+
+		SourceNodeID:       p.SourceNodeID,
+		SchemaVersion:      p.SourceSchemaVersion,
+		StreamHeads:        heads,
+		InflightAtSnapshot: inflight,
+		Verified:           verifiedWord(p.opts.Verify),
 	}, nil
+}
+
+// verifiedWord names the self-check that ran (Result.Verified).
+func verifiedWord(mode VerifyMode) string {
+	switch mode {
+	case VerifyQuick:
+		return "quick_check"
+	case VerifyFull:
+		return "integrity_check"
+	case VerifyNone:
+		return "skipped"
+	default:
+		return "quick_check"
+	}
+}
+
+// readStreamHeads reads stream → last assigned seq from the snapshot
+// connection. stream_seq.next is the next sequence to assign, so the head is
+// next−1; streams with no messages yet carry next=1 and are omitted.
+func readStreamHeads(ctx context.Context, conn *sql.DB) (map[string]int64, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT stream, next FROM stream_seq`)
+	if err != nil {
+		return nil, fmt.Errorf("read stream heads: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = fmt.Errorf("close stream heads rows: %w", closeErr)
+		}
+	}()
+	heads := make(map[string]int64)
+	for rows.Next() {
+		var stream string
+		var next int64
+		if scanErr := rows.Scan(&stream, &next); scanErr != nil {
+			return nil, fmt.Errorf("scan stream heads: %w", scanErr)
+		}
+		if next > 1 {
+			heads[stream] = next - 1
+		}
+	}
+	if rowErr := rows.Err(); rowErr != nil {
+		return nil, fmt.Errorf("iterate stream heads: %w", rowErr)
+	}
+	return heads, err
 }
 
 // pageCountOf derives the snapshot's page count from its final size — honest,

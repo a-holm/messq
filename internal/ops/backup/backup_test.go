@@ -387,11 +387,20 @@ func TestPlanEstimateReflectsFreelistExclusion(t *testing.T) {
 		t.Fatalf("plan estimate = %d, want (page_count−freelist)×page_size = %d",
 			plan.EstimateBytes, want)
 	}
-	free, freeErr := FreeBytes(filepath.Dir(dest))
+	// The destination filesystem is shared with everything else on the box, so
+	// the two statfs readings cannot be required to match exactly; what must
+	// hold is that Plan reported a real reading close to a fresh one.
+	free2, freeErr := FreeBytes(filepath.Dir(dest))
 	if freeErr != nil {
-		t.Fatalf("statfs dest dir: %v", freeErr)
+		t.Fatalf("statfs dest dir again: %v", freeErr)
 	}
-	if plan.FreeBytes != free {
-		t.Fatalf("plan free bytes = %d, want %d", plan.FreeBytes, free)
+	drift := plan.FreeBytes - free2
+	if drift < 0 {
+		drift = -drift
+	}
+	const slack = int64(256) << 20 // 256 MiB of concurrent-write tolerance
+	if drift > slack {
+		t.Fatalf("plan free bytes %d vs fresh reading %d differ by more than %d",
+			plan.FreeBytes, free2, slack)
 	}
 }
