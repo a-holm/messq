@@ -176,7 +176,23 @@ func TestGates(t *testing.T) {
 			// #gates-fix-r2: the chatter-tolerance contract is pinned for the WHOLE matrix by
 			// TestDecideChatterNeverDecidesARow, so a future row cannot quietly reintroduce a
 			// module-cache-temperature-dependent verdict.
-			if ok, why := decide(g, code, output); !ok {
+			ok, why := decide(g, code, output)
+			if !ok && obscuredByEmbeddedSuiteFailure(g, code, output) {
+				// The cover rows embed the FULL ./... suite, so an unrelated load-flaky
+				// test can abort `make cover` before covergate ever runs and leave the
+				// row red without its sentinel — the wrong-reason shape, caused by noise
+				// rather than by the sabotage. One deterministic re-run on a fresh scratch
+				// turns that into evidence again; the retry's decide() alone settles the
+				// row, with the sentinel requirement byte-for-byte unchanged.
+				t.Logf("gates: %s: make %s aborted by an embedded-suite test failure before the gate rendered a verdict; re-running once on a fresh scratch", g.id, g.target)
+				root = scratchCopy(t)
+				if g.prepare != nil {
+					g.prepare(t, root)
+				}
+				code, output = runMake(t, root, g.target, g.makeArgs...)
+				ok, why = decide(g, code, output)
+			}
+			if !ok {
 				t.Fatalf("%s\n%s", why, output)
 			}
 			t.Logf("gates: %-3s %-42s make %-20s exit=%d  ok\n       %s",
@@ -532,6 +548,42 @@ func decide(g gate, code int, output string) (bool, string) {
 			g.id, g.name, g.target, code, g.want)
 	}
 	return true, ""
+}
+
+// obscuredByEmbeddedSuiteFailure reports whether a cover row's verdict was decided by
+// noise the sabotage cannot explain: one of the FULL suite's own tests failed inside
+// the row's `make cover`, make stopped at the go-test line, and covergate never ran —
+// so the expected sentinel is absent for a reason that has nothing to do with the
+// floor. This class is real and load-dependent: the #24 make-ci run went red exactly
+// this way when internal/api's rapid-interleaving flake failed inside G12's row, and
+// earlier runs the same way via internal/obs/metrics (#21, since fixed),
+// internal/store's writer-fatal suite and test/crash's SIGKILL probe. «tester skal
+// aldri være flaky» applies to the matrix too: a gate row whose verdict depends on
+// unrelated packages' scheduling measures nothing.
+//
+// The one-shot retry this predicate admits is deliberately narrow, so no invariant is
+// weakened:
+//   - only target=="cover" rows (B2/G12/G13) are eligible. G17's whole POINT is an
+//     embedded "--- FAIL:" (a planted data race), and every other target's tools are
+//     deterministic;
+//   - only when the transcript proves an embedded TEST failure ("--- FAIL:") AND the
+//     gate itself never rendered a verdict ("covergate:"): a real floor breach prints
+//     "covergate: FAIL ..." with its sentinel and decides the row on the first run; a
+//     tampered covergate that fails without its sentinel stays red; an exit-0 "the
+//     gate does not bite" stays red; a scratch build/setup failure ("FAIL ... [setup
+//     failed]") stays red — none of these are retried;
+//   - a killed or hung run (exit<0 from the 6h bound) stays red instead of burning a
+//     second bound;
+//   - exactly ONE re-run on a FRESH scratch copy, and the retry's decide() alone
+//     settles the row: the sentinel requirement is byte-for-byte unchanged.
+func obscuredByEmbeddedSuiteFailure(g gate, code int, output string) bool {
+	if g.target != "cover" || code <= 0 {
+		return false
+	}
+	if strings.Contains(output, "covergate:") {
+		return false // the gate rendered its verdict; the row decided on real evidence
+	}
+	return strings.Contains(output, "--- FAIL:")
 }
 
 // install copies fixture files from testdata into the scratch tree. Arguments are

@@ -1,0 +1,4 @@
+published  seq=10494  01J8ZQ4K2M9V0X7Y3B5N6C8D1E  14 B
+
+  next  messq trace 01J8ZQ4K2M9V0X7Y3B5N6C8D1E
+        messq peek orders --seq 10494

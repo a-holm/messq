@@ -27,6 +27,12 @@ func TestClassifyTable(t *testing.T) {
 		{"500 internal", 500, "internal", Unknown, false},
 		{"503 read_only", 503, "read_only", Unknown, false},
 		{"503 shutting_down", 503, "shutting_down", Unknown, false},
+		// Publish-path backpressure 503s (#6/#18): refusals or unknown-fate answers,
+		// never a definite failure — the same convention as read_only/shutting_down.
+		// Pinned because a starved writer under parallel load really emits them
+		// (TestOneGreenCycle died on an unclassified commit_unknown).
+		{"503 busy", 503, "busy", Unknown, false},
+		{"503 commit_unknown", 503, "commit_unknown", Unknown, false},
 		{"transport failure", 0, "", Unknown, false},
 		{"unmapped code", 500, "something_never_seen", Unknown, true},
 	}

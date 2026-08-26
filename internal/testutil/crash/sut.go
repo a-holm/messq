@@ -25,8 +25,17 @@ import (
 
 // readinessDeadline bounds how long a start/restart may take to answer /healthz. Recovery
 // runs inside store.Open before the listener exists, so a 200 is honest from the first
-// request; a daemon that cannot answer within this budget has failed startup.
-const readinessDeadline = 10 * time.Second
+// request. It is a hang backstop, not a latency assertion: Ready polls the concrete
+// readiness signal (/healthz 200) every 10ms and returns the moment it answers, so the
+// deadline only ever binds a daemon that never comes up. The 10s it replaced was the last
+// fixed short wait in the harness and produced the load-flake class of 2026-08-26 — under a
+// full make-cover parallel run (-race + -coverpkg suites on every core) starved startups
+// blew past it although healthy: TestStopCleanExit "serve did not become ready ... context
+// deadline exceeded" (12.21s) and TestCrashKill9/full cycle 5 (recovery quick_check alone
+// logged 2s). 2m is ~10x the worst observed loaded startup, so contention can no longer
+// reach it while a genuinely hung daemon still fails in bounded time instead of parking the
+// suite until the go-test timeout.
+const readinessDeadline = 2 * time.Minute
 
 // Config carries the harness knobs. The load-generator, kill-strategy and cycle fields are
 // filled by [Config.defaults] from their documented defaults when zero.
@@ -199,6 +208,14 @@ func Start(ctx context.Context, cfg Config, dataDir, sock string) (*SUT, error) 
 		"--data-dir", dataDir,
 		"--listen", "unix://"+sock,
 		"--durability", cfg.Durability,
+		// Pin the writer-submit window far above anything a loaded runner can produce.
+		// The sweep's property is the loss oracle, not submit latency: under a full
+		// make-cover parallel run the starved writer has blown the 5s default, and the
+		// submit deadline fires mid-wait AFTER acceptance, which the store answers
+		// commit_unknown/503 — TestOneGreenCycle "unclassified response code
+		// \"commit_unknown\" (status 503)". Same shape as the internal/api fetch fixture
+		// fix (9416559): the production default stays 5s; only the harness pins it.
+		"--writer-submit-timeout", "1h",
 	)
 	// Setpgid puts the daemon in its own process group, so Kill can SIGKILL the whole
 	// group — no descendant can survive a cycle and hold the flock (edge case 7).

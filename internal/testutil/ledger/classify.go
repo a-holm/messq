@@ -30,6 +30,16 @@ var failedCodes = map[string]bool{
 // (internal/api.wireCode plus disk_full). A recognised code not on the FAILED allow-list is
 // UNKNOWN; anything outside this set is a code the harness has never seen, which fails the
 // cycle rather than becoming a verdict.
+//
+// commit_unknown and busy are the publish-path backpressure 503s (#6/#18): a starved writer
+// used to surface them under parallel load and abort the sweep as "unclassified response
+// code". Both are refusals-or-unknowns by construction, so they map to UNKNOWN — the same
+// convention as the other refusal 503s below (read_only, shutting_down): busy fires only
+// BEFORE the command is accepted into a batch (classifySubmit), and commit_unknown is
+// literally "the fate of an accepted command is unknown", i.e. the kill window itself.
+// too_many_waiters is deliberately absent: it is fetch-side (parked-waiter cap) and can
+// never answer a publish, so if it ever shows up here something is genuinely wrong and the
+// unclassified tripwire should fire.
 var knownCodes = map[string]bool{
 	"stream_exists":    true,
 	"reserved_name":    true,
@@ -46,6 +56,8 @@ var knownCodes = map[string]bool{
 	"shutting_down":    true,
 	"internal":         true,
 	"disk_full":        true,
+	"commit_unknown":   true, // 503: accepted into a batch, commit fate unknown (#6)
+	"busy":             true, // 503: writer did not accept within --writer-submit-timeout
 }
 
 // Classify maps a client observation to a verdict. status is the HTTP status (0 for a

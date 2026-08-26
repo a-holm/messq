@@ -95,7 +95,11 @@ jobs:
       - name: SIGKILL sweep and keep the log
         run: |
           set -o pipefail
-          go test ./test/crash/ -run TestCrashKill9 -crash.cycles=1000 -crash.durability=both -timeout 90m 2>&1 | tee nightly-crash-sweep.log
+          # -crash.survivorship enforces the both-outcome SURVIVORSHIP vacuity guard here
+          # and only here: across 1 000 cycles both UNKNOWN outcomes are certain in every
+          # healthy run, while short parallel smokes legitimately produce all-absent
+          # stretches (see the flag's comment in test/crash/crash_test.go).
+          go test ./test/crash/ -run TestCrashKill9 -crash.cycles=1000 -crash.durability=both -crash.survivorship=true -timeout 90m 2>&1 | tee nightly-crash-sweep.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

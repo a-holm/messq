@@ -22,6 +22,15 @@ var (
 	crashSeed       = flag.Int64("crash.seed", 0, "seed; cycle N uses seed+N (0 = time-derived)")
 	crashDurability = flag.String("crash.durability", "full", "full, relaxed, or both")
 	crashPublishers = flag.Int("crash.publishers", 8, "concurrent publisher goroutines")
+	// crashSurvivorship opts into the both-outcome SURVIVORSHIP vacuity guard. Whether an
+	// UNKNOWN record survives recovery depends on whether a publish was mid-commit when
+	// the kill landed — runner-scheduling-dependent (see Config.SkipSurvivorship). Under a
+	// full make-cover parallel run the starved daemon legitimately produces whole sweeps
+	// with zero surviving UNKNOWNs ("SURVIVORSHIP: 0 UNKNOWN present, 68 absent" fired
+	// twice in CI), so short smokes assert only the deterministic guards; the nightly
+	// 1 000-cycle sweep passes -crash.survivorship, where the law of large numbers makes
+	// both outcomes certain in every healthy run.
+	crashSurvivorship = flag.Bool("crash.survivorship", false, "enforce the both-outcome SURVIVORSHIP guard (nightly sweep lane; scheduling-dependent on short smokes)")
 )
 
 // durabilities expands the --crash.durability flag into the modes a sweep runs.
@@ -41,6 +50,9 @@ func newConfig(t *testing.T, durability string) crash.Config {
 		Publishers: *crashPublishers,
 		Cycles:     *crashCycles,
 		Seed:       *crashSeed,
+		// The deterministic guards (LIVENESS, KILL-LANDS-LOW/HIGH, WAL-TAIL) always run;
+		// only the scheduling-dependent SURVIVORSHIP both-outcome requirement is opt-in.
+		SkipSurvivorship: !*crashSurvivorship,
 	}
 }
 

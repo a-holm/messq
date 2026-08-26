@@ -234,8 +234,22 @@ func TestSweeperRunExecutesRetireTicker(t *testing.T) {
 	waitSweep(t, func() bool {
 		return countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0`) == 1
 	}, "startup retire to drain one row")
-	// Fire the retire-interval ticker: the second stranded row goes.
+
+	// Fire the retire-interval ticker: the second stranded row goes. Run creates its
+	// tickers only AFTER the synchronous startup pass returns, and the waitSweep above
+	// gives no happens-before for that arming: under -race + -coverpkg parallel load the
+	// first Advance could land before NewTicker(RetireInterval), and a fake ticker armed
+	// afterwards fires only on FUTURE advances — of which this test makes none — so the
+	// second row strands forever (green isolated, red under full make-cover load).
+	// BlockUntil pins arming before any clock moves; the bounded advance retries are
+	// TestSweeperRunSweepTick's defence-in-depth against any missed grid point. The
+	// asserted property is unchanged: the retire TICKER must be what drains the row.
+	fk.BlockUntil(2) // the interval and retire tickers
 	fk.Advance(60 * time.Millisecond)
+	for i := 0; i < 100 && countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0`) != 0; i++ {
+		runtime.Gosched()
+		fk.Advance(20 * time.Millisecond)
+	}
 	waitSweep(t, func() bool {
 		return countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0`) == 0
 	}, "retire ticker to drain the second row")
@@ -262,6 +276,11 @@ func TestSweeperRunSweepTick(t *testing.T) {
 	}()
 	// Fire interval ticks until the expired row is released. The Run goroutine may not
 	// have armed its ticker yet, so retry with bounded advances (Gosched only — no Sleep).
+	// BlockUntil pins arming before the first advance: a fake ticker armed after an
+	// advance fires only on future ones (the same load-dependent stranding the retire
+	// ticker test hit — CI 2026-08-26), and exactly one waiter exists here because
+	// RetireInterval is 0.
+	fk.BlockUntil(1)
 	for i := 0; i < 100 && countRows(t, st, `SELECT count(*) FROM deliveries WHERE state = 0`) == 0; i++ {
 		runtime.Gosched()
 		fk.Advance(20 * time.Millisecond)

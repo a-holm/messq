@@ -20,6 +20,8 @@ const (
 	exitError      = 1
 	exitUsage      = 2
 	exitNotFound   = 3
+	exitConflict   = 4 // conflict/stale: would_lose_data, stale_ack, wrong_generation, confirm_mismatch
+	exitEmpty      = 5 // empty/timeout: a listing with no rows, sub's idle timeout
 	exitPermission = 7
 )
 
