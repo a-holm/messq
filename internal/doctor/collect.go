@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -68,6 +69,17 @@ type Snapshot struct {
 	// failing while Info succeeded). Checks missing exactly that data emit
 	// SevSkipped naming it; the run never dies over one bad endpoint.
 	CollectErrors []string
+
+	// Storage/Durability/Fsync are the disk-side fact bundles. A nil bundle
+	// means "not collected"; consuming checks then skip with a reason.
+	Storage    *StorageFacts
+	Durability *DurabilityFacts
+	Fsync      *FsyncFacts
+
+	// Analysis knobs the CLI passes through (§9 flags); zero means a check's
+	// documented default applies.
+	MinFreeBytes int64
+	WalMaxBytes  int64
 }
 
 // ServerFacts is what the live collector learns from /v1/info.
@@ -162,6 +174,20 @@ func (o OfflineCollector) Collect(ctx context.Context) (*Snapshot, error) {
 	}
 
 	snap.Restored = collectProvenance(ctx, db)
+
+	// Disk-side facts ride the same read-only handle: file sizes and statfs
+	// need no lock, and the synchronous value we report honestly as OUR OWN
+	// connection's (offline cannot see the daemon's writer, per §6).
+	if storage, sErr := collectStorageFacts(o.DataDir); sErr == nil {
+		snap.Storage = storage
+	} else {
+		err = errors.Join(err, fmt.Errorf("collect storage facts: %w", sErr))
+	}
+	var sync int
+	if pErr := db.QueryRowContext(ctx,
+		`SELECT synchronous FROM pragma_synchronous`).Scan(&sync); pErr == nil {
+		snap.Durability = &DurabilityFacts{Synchronous: sync, OwnConnection: true}
+	}
 	return snap, err
 }
 

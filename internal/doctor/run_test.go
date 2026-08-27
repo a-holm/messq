@@ -115,3 +115,26 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+func TestOfflineCollectFillsStorageAndDurabilityFacts(t *testing.T) {
+	dir := seedDoctorStore(t)
+	snap, err := OfflineCollector{DataDir: dir}.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if snap.Storage == nil {
+		t.Fatal("storage facts missing from offline snapshot")
+	}
+	if snap.Storage.DBBytes <= 0 || snap.Storage.FreeBytes <= 0 {
+		t.Fatalf("disk numbers empty: %+v", snap.Storage)
+	}
+	if snap.Storage.FsName == "" {
+		t.Fatalf("filesystem name not derived: %+v", snap.Storage)
+	}
+	if snap.Durability == nil || !snap.Durability.OwnConnection {
+		t.Fatalf("own-connection durability facts missing: %+v", snap.Durability)
+	}
+	if snap.Durability.Synchronous < 0 || snap.Durability.Synchronous > 3 {
+		t.Fatalf("synchronous out of SQLite range: %+v", snap.Durability)
+	}
+}
