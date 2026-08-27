@@ -4,9 +4,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/a-holm/messq/internal/errs"
+	"github.com/a-holm/messq/internal/obs"
 	"github.com/a-holm/messq/internal/queue"
 )
 
@@ -16,6 +20,8 @@ import (
 // delete cannot balloon one WAL transaction. The engine serialises both phases with
 // everything else; a create that slips in mid-reap hits refuseDuringReap's marker
 // check and gets the recreate-during-reap 409 instead of resurrected rows.
+
+const kindReapResume CmdKind = "reap.resume"
 
 // deleteChunkRows bounds each message-delete command; 10 000 rows is the same
 // page size the issue prescribes for the later async reaper's chunks.
@@ -89,4 +95,61 @@ func (s *Store) DeleteStream(ctx context.Context, name, confirm, actor string) (
 		}
 	}
 	return deleted, nil
+}
+
+// ReapResumeResult reports one background resume chunk.
+type ReapResumeResult struct {
+	Removed int64 // message rows deleted by this chunk
+	Pending bool  // work for this or another marker remains: reschedule now
+}
+
+// reapResumeCmd finishes ONE chunk of ONE pending reap (issue #27 owns the background
+// completion of an already-authorised stream deletion). The metadata transaction of a
+// crashed DeleteStream is long done; what remains is purely the bounded row-chunk loop.
+type reapResumeCmd struct{}
+
+func (c reapResumeCmd) Kind() CmdKind { return kindReapResume }
+func (c reapResumeCmd) Bytes() int    { return 0 }
+
+// Store.ReapResume drives one chunk through the writer. Pending tells the caller to
+// call again; an empty marker table yields a zero no-op result.
+func (s *Store) ReapResume(ctx context.Context) (ReapResumeResult, error) {
+	res, err := s.enqueue(ctx, "store.ReapResume", reapResumeCmd{})
+	if err != nil {
+		return ReapResumeResult{}, err
+	}
+	rr, ok := res.(ReapResumeResult)
+	if !ok {
+		return ReapResumeResult{},
+			fmt.Errorf("store.ReapResume: engine returned %T, want ReapResumeResult", res)
+	}
+	return rr, nil
+}
+
+func (c reapResumeCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (
+	Result, []obs.Event, error,
+) {
+	var name string
+	findErr := tx.QueryRowContext(ctx,
+		`SELECT k FROM meta WHERE k LIKE ? ORDER BY k ASC LIMIT 1`,
+		metaReapPrefix+"%").Scan(&name)
+	switch {
+	case errors.Is(findErr, sql.ErrNoRows):
+		return ReapResumeResult{}, nil, nil // idle: nothing authorised is unfinished
+	case findErr != nil:
+		return nil, nil, fmt.Errorf("find reap marker: %w", findErr)
+	}
+	name = name[len(metaReapPrefix):]
+
+	chunkRes, _, xErr := reapChunkCmd{name: name}.Apply(ctx, tx, now)
+	if xErr != nil {
+		return nil, nil, fmt.Errorf("resume reap chunk of %q: %w", name, xErr)
+	}
+	chunk, ok := chunkRes.(reapChunkResult)
+	if !ok {
+		return nil, nil, fmt.Errorf(
+			"resume reap of %q: engine returned %T, want reapChunkResult", name, chunkRes)
+	}
+	out := ReapResumeResult{Removed: chunk.Removed, Pending: !chunk.Cleared}
+	return out, nil, nil
 }
