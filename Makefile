@@ -74,7 +74,7 @@ TEST_COUNT ?= 1
 TEST_TIMEOUT ?= 6h
 
 test: ## Run the test suite under the race detector.
-	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
+	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) -p 2 -parallel 2 ./...
 
 # Issue #18's wire-contract machinery: internal/wirecheck (canonical JSON, normaliser,
 # shape digests, the ADDITIVE/BREAKING classifier) and internal/wirecode (the closed
