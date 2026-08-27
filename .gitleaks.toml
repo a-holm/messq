@@ -1,0 +1,24 @@
+# gitleaks configuration for messq (issue #16).
+#
+# The point of the msq1_ rule is GREPPABILITY, not zero false positives: a token
+# that reached a commit must be findable by GitHub secret scanning, by reviewers
+# with plain grep, and by this file. The prefix is deliberately fixed and
+# artificial so the rule can stay narrow.
+#
+#    extend = false   (this is a standalone config: `gitleaks detect --source . --config .gitleaks.toml`)
+title = "messq secret scanning"
+
+[allowlist]
+  description = "test fixtures and docs use obviously-fake credentials"
+  paths = [
+    '''(^|/)testdata/''',
+    '''^docs/PROTOCOL\.md$''',
+    '''^SECURITY\.md$''',
+    '''^\.gitleaks\.toml$''',
+  ]
+
+[[rules]]
+  id = "messq-bearer-credential"
+  description = "messq bearer credential (msq1_ prefix + full credential form)"
+  regex = '''msq1_[a-z0-9][a-z0-9._-]{1,63}_[A-Za-z0-9._~+-]{16,512}'''
+  tags = ["token", "auth", "#16"]
