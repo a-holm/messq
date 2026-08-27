@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,5 +345,53 @@ func TestStatsJobEmitsConsumerLagRateLimited(t *testing.T) {
 	}
 	if strings.Count(buf.String(), "consumer.lag") != 1 {
 		t.Fatalf("interval rollover did not re-report:\n%s", buf.String())
+	}
+}
+
+// ---- #27 metrics hook ------------------------------------------------------------
+
+type spyMetrics struct {
+	mu       sync.Mutex
+	observed map[string]int
+}
+
+func (s *spyMetrics) ObserveJob(name string, _ time.Duration) {
+	s.mu.Lock()
+	s.observed[name]++
+	s.mu.Unlock()
+}
+
+// The scheduler must hand every completed Run to the injected Metrics seam exactly
+// once, labelled by the job's closed-set name — the wire shape behind
+// messq_janitor_duration_seconds{job} (#21's projection keeps its cardinality).
+func TestJanitorObservesEveryRunDuration(t *testing.T) {
+	fc := clock.NewFake(time.UnixMilli(1_700_000_000_000))
+	spy := &spyMetrics{observed: make(map[string]int)}
+	drainer := &recordingJob{name: "retention", order: &recorder{}, moreN: 1}
+	j, jErr := New(Config{
+		Interval: tickInterval,
+		Clock:    fc,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Metrics:  spy,
+	}, []Job{drainer})
+	if jErr != nil {
+		t.Fatalf("New: %v", jErr)
+	}
+	if err := j.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := j.Stop(context.Background()); cerr != nil {
+			t.Logf("stop janitor: %v", cerr)
+		}
+	})
+
+	diskPump(fc, func() bool { return drainer.count() >= 2 && spy.observed["retention"] >= 2 })
+	if !waitFor(func() bool { return drainer.count() >= 2 }) {
+		t.Fatalf("drainer never reached two runs (%d)", drainer.count())
+	}
+	if !waitFor(func() bool { return spy.observed["retention"] == 2 }) {
+		t.Fatalf("metrics saw %v, want one observation per completed retention Run",
+			spy.observed)
 	}
 }

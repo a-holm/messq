@@ -159,11 +159,23 @@ type Config struct {
 	// Clock is the seam. Required.
 	Clock clock.Clock
 
+	// Metrics optionally receives one duration observation per completed job Run,
+	// labelled by the job's closed-set name — the seam behind #21's
+	// messq_janitor_duration_seconds{job} family. Nil disables the hook.
+	Metrics Metrics
+
 	// Logger receives janitor.sweep diagnostics and the disabled banner.
 	Logger *slog.Logger
 
 	// Jitter perturbs each tick period; nil jitters nothing (tests).
 	Jitter Jitter
+}
+
+// Metrics is the observability seam the janitor offers its host (#21 owns the wire
+// instruments). Durations may legitimately be zero under a fake clock; callers must
+// accept that and record it like any other sample.
+type Metrics interface {
+	ObserveJob(name string, d time.Duration)
 }
 
 const defaultBudget = 250 * time.Millisecond
@@ -267,7 +279,11 @@ func (j *Janitor) loop() {
 				clk:       j.cfg.Clock,
 			}
 			for {
+				started := j.cfg.Clock.Now()
 				res, err := job.Run(ctx, b)
+				if j.cfg.Metrics != nil {
+					j.cfg.Metrics.ObserveJob(job.Name(), j.cfg.Clock.Now().Sub(started))
+				}
 				if err != nil {
 					j.log.Warn("janitor.job_error", "job", job.Name(), "error", err.Error())
 					break
