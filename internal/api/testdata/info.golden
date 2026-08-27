@@ -1,9 +1,23 @@
 200
 {
-  "db_bytes": "<db-bytes>",
+  "commit": "",
+  "counts": {
+    "consumers": 0,
+    "events_rows": 1,
+    "streams": 0
+  },
+  "db_bytes": "<bytes>",
+  "degraded": [],
+  "disk_free_bytes": "<bytes>",
   "durability": "full",
+  "go_version": "<go-version>",
+  "listeners": [],
   "node_id": "<ulid>",
+  "schema_version": 3,
+  "started_at_ms": "<ts>",
+  "state": "ready",
   "synchronous": 2,
   "uptime_ms": "<ts>",
-  "version": "<version>"
+  "version": "<version>",
+  "wal_bytes": "<bytes>"
 }

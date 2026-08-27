@@ -5,11 +5,11 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +38,10 @@ type Server struct {
 	// health is the HealthState the probes read; New installs a tracker that mirrors
 	// the store's fsyncgate unless an implementation was injected.
 	health HealthState
+	// infoCache holds the --info-cache-cached measurements of /v1/info; guarded by
+	// infoMu so concurrent GETs share one refresh instead of stampeding syscalls.
+	infoMu    sync.Mutex
+	infoCache *infoSnapshot
 	// waiters is the bounded long-poll park/wake fabric: store.Waker for the sweeper
 	// and obs.Sink for committed publishes.
 	waiters *Registry
@@ -88,6 +92,10 @@ type Config struct {
 	// Listeners names the bound listener endpoints reported by /v1/info, e.g.
 	// "unix:///run/messq/messq.sock". The serve command fills it from its socket setup.
 	Listeners []string
+
+	// InfoCacheTTL is --info-cache (default 5s): how long the syscall-backed fields of
+	// /v1/info (file sizes, free disk, counts) may be reused between requests.
+	InfoCacheTTL time.Duration
 }
 
 // The §9 defaults for zero Config fields.
@@ -106,6 +114,8 @@ const (
 	// defaultMaxBatchBytes is the NDJSON batch-body ceiling when the serve command does
 	// not pass one (tests and embedders). It matches the --max-batch-bytes default (8 MiB).
 	defaultMaxBatchBytes = int64(8 << 20)
+
+	defaultInfoCacheTTL = 5 * time.Second
 )
 
 // New builds a Server around a live, already-recovered store. Zero Config fields take
@@ -163,6 +173,7 @@ func New(cfg Config) *Server {
 		}
 		cfg.HealthState = tr
 	}
+	cfg.fillInfoDefaults()
 	return &Server{
 		store:     cfg.Store,
 		clk:       cfg.Clock,
@@ -175,6 +186,13 @@ func New(cfg Config) *Server {
 		cfg:       cfg,
 		limits:    cfg.Limits,
 		health:    cfg.HealthState,
+	}
+}
+
+// fillInfoDefaults applies the zero-value defaults that depend on cfg being complete.
+func (cfg *Config) fillInfoDefaults() {
+	if cfg.InfoCacheTTL <= 0 {
+		cfg.InfoCacheTTL = defaultInfoCacheTTL
 	}
 }
 
@@ -309,37 +327,125 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// infoResponse is the /v1/info wire shape (issue §7): version, uptime, durability, the
-// live synchronous value, db bytes and node id.
+// infoResponse is the extended /v1/info wire shape (issue #15 §2). The original
+// top-level fields stay byte-compatible for #22's decoded subset; schema_version,
+// started_at_ms, wal_bytes, disk_free_bytes, counts, listeners, state and degraded[]
+// extend it additively. uptime_ms and state are computed per request and NEVER cached;
+// the syscall/count block obeys --info-cache via infoSnapshot below.
 type infoResponse struct {
-	Version     string `json:"version"`
-	UptimeMS    int64  `json:"uptime_ms"`
-	Durability  string `json:"durability"`
-	Synchronous int    `json:"synchronous"`
-	DBBytes     int64  `json:"db_bytes"`
-	NodeID      string `json:"node_id"`
+	Version       string        `json:"version"`
+	UptimeMS      int64         `json:"uptime_ms"`
+	Durability    string        `json:"durability"`
+	Synchronous   int           `json:"synchronous"` // LIVE pragma readback (#15), not a config copy
+	DBBytes       int64         `json:"db_bytes"`
+	NodeID        string        `json:"node_id"`
+	Commit        string        `json:"commit"`
+	GoVersion     string        `json:"go_version,omitempty"`
+	SchemaVersion int64         `json:"schema_version"`
+	StartedAtMS   int64         `json:"started_at_ms"`
+	WALBytes      int64         `json:"wal_bytes"`
+	DiskFreeBytes int64         `json:"disk_free_bytes"`
+	Counts        InfoCounts    `json:"counts"`
+	Listeners     []string      `json:"listeners"`
+	State         string        `json:"state"`
+	Degraded      []Degradation `json:"degraded"`
 }
 
-// handleInfo serves the /v1/info shape. Sizes is best-effort: a measurement failure is
-// logged and reported as zero rather than failing the info endpoint.
-func (s *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
-	dbBytes, _, err := s.store.Sizes()
-	if err != nil {
-		s.logger.Warn("info: measure sizes", "err", err)
-		dbBytes = 0
+// InfoCounts re-exports the store census type's name in json docs; the handler embeds
+// the store value directly (identical field names), so no aliasing wrapper is needed.
+type InfoCounts = store.InfoCounts
+
+// infoSnapshot is the --info-cache-cached part of /v1/info: syscalls and counts whose
+// freshness the window defines. uptime/state never enter this struct.
+type infoSnapshot struct {
+	until         time.Time
+	dbBytes       int64
+	walBytes      int64
+	diskFreeBytes int64
+	counts        store.InfoCounts
+}
+
+// refreshInfoSnapshot measures everything cached, under one mutex so concurrent GETs
+// do not stampede the syscalls. Measurement failures degrade to zero rather than
+// failing the endpoint; the log names them.
+func (s *Server) refreshInfoSnapshot(now time.Time) infoSnapshot {
+	s.infoMu.Lock()
+	defer s.infoMu.Unlock()
+	if s.infoCache != nil && now.Before(s.infoCache.until) {
+		return *s.infoCache
 	}
+	dbBytes, walBytes, sizeErr := s.store.Sizes()
+	if sizeErr != nil {
+		s.logger.Warn("info: measure sizes", "err", sizeErr)
+		dbBytes, walBytes = 0, 0
+	}
+	diskFree, diskErr := s.store.DiskFreeBytes()
+	if diskErr != nil {
+		s.logger.Warn("info: statfs data dir", "err", diskErr)
+		diskFree = 0
+	}
+	counts, countErr := s.store.InfoCounts(context.Background())
+	if countErr != nil {
+		s.logger.Warn("info: read counts", "err", countErr)
+		counts = store.InfoCounts{}
+	}
+	snap := infoSnapshot{
+		until:         now.Add(s.cfg.InfoCacheTTL),
+		dbBytes:       dbBytes,
+		walBytes:      walBytes,
+		diskFreeBytes: diskFree,
+		counts:        counts,
+	}
+	s.infoCache = &snap
+	return snap
+}
+
+// handleInfo serves the extended /v1/info shape over the real store handle. The live
+// synchronous readback rides the request path UNCACHED on purpose: it is the one field
+// whose job is to catch a durability promise that silently broke.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	now := s.clk.Now()
+	snap := s.refreshInfoSnapshot(now)
+
+	synchronous := s.store.Durability().Synchronous() // fallback when the pool is gone
+	if live, err := s.store.LiveSynchronous(r.Context()); err == nil {
+		synchronous = live
+	} else {
+		s.logger.Warn("info: live synchronous readback", "err", err)
+	}
+
+	state := "ready"
+	if ok, reason := s.health.Ready(); !ok {
+		state = reason
+	}
+
 	resp := infoResponse{
-		Version:     buildinfo.Get().Version,
-		UptimeMS:    s.clk.Since(s.startedAt).Milliseconds(),
-		Durability:  s.store.Durability().String(),
-		Synchronous: s.store.Durability().Synchronous(),
-		DBBytes:     dbBytes,
-		NodeID:      s.store.NodeID(),
+		Version:       buildinfo.Get().Version,
+		UptimeMS:      now.Sub(s.startedAt).Milliseconds(),
+		Durability:    s.store.Durability().String(),
+		Synchronous:   synchronous,
+		DBBytes:       snap.dbBytes,
+		NodeID:        s.store.NodeID(),
+		Commit:        buildinfo.Get().Commit,
+		GoVersion:     runtime.Version(),
+		SchemaVersion: int64(s.store.SchemaVersion()),
+		StartedAtMS:   s.startedAt.UnixMilli(),
+		WALBytes:      snap.walBytes,
+		DiskFreeBytes: snap.diskFreeBytes,
+		Counts:        snap.counts,
+		Listeners:     orEmptyStrings(s.cfg.Listeners),
+		State:         state,
+		Degraded:      orEmptyDegraded(s.health.Degraded()),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		s.logger.Warn("info: write response", "err", err)
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// orEmptyStrings keeps listeners an array in JSON, never null.
+func orEmptyStrings(v []string) []string {
+	if v == nil {
+		return []string{}
 	}
+	return v
 }
 
 // sweepOnce runs one dedup sweep pass: every stream's expired dedup keys are cleared.
