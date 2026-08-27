@@ -49,6 +49,10 @@ func (*Server) routes() []Route {
 		{http.MethodGet, "/v1/streams/{stream}", "get_stream", false, rolesAdmin, false, ""},
 		{http.MethodPatch, "/v1/streams/{stream}", "update_stream", true, rolesAdmin, false, ""}, // dry-run flips on with the narrowing Impact slice
 		{http.MethodDelete, "/v1/streams/{stream}", "delete_stream", true, rolesAdmin, false, "stream"},
+		{
+			http.MethodPost, "/v1/streams/{stream}/purge", "purge_stream", true,
+			rolesAdmin, true, "",
+		},
 
 		{
 			http.MethodPost, "/v1/streams/{stream}/messages", "publish_message", true,
@@ -81,6 +85,10 @@ func (*Server) routes() []Route {
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/resume", "resume_consumer", true,
 			rolesAdmin, false, "",
+		},
+		{
+			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/seek", "seek_consumer", true,
+			rolesAdmin, true, "",
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true,
@@ -188,6 +196,8 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 		return s.handleUpdateStream
 	case "delete_stream":
 		return s.handleDeleteStream
+	case "purge_stream":
+		return s.handlePurgeStream
 	case "publish_message":
 		return s.handlePublishMessage
 	case "publish_batch":
@@ -216,6 +226,8 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 		return s.handlePauseConsumer
 	case "resume_consumer":
 		return s.handleResumeConsumer
+	case "seek_consumer":
+		return s.handleSeekConsumer
 	case "ack":
 		return s.handleSettle(queue.VerbAck)
 	case "nak":
