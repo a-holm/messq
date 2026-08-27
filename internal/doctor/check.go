@@ -47,6 +47,13 @@ func (s Severity) String() string {
 	}
 }
 
+// MarshalJSON freezes the machine spelling of a severity as its lowercase name
+// ("skip"/"ok"/"info"/"warn"/"fail") — numeric tags would leak enum ordering
+// into documents operators already diff and alert on.
+func (s Severity) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.String() + `"`), nil
+}
+
 // Source declares which collector a Check needs.
 type Source uint8
 
