@@ -76,13 +76,16 @@ func (l LiveCollector) Collect(ctx context.Context) (*Snapshot, error) {
 		}
 		for _, cv := range consumers {
 			snap.Consumers = append(snap.Consumers, ConsumerState{
-				Stream:      cv.Stream,
-				Name:        cv.Name,
-				AckWaitMS:   cv.AckWaitMS,
-				MaxDeliver:  cv.MaxDeliver,
-				DeadPolicy:  cv.DeadPolicy,
-				Paused:      cv.Paused,
-				CreatedAtMS: cv.CreatedAt,
+				Stream:        cv.Stream,
+				Name:          cv.Name,
+				Filters:       cv.Filters,
+				BackoffMS:     cv.BackoffMS,
+				MaxAckPending: cv.MaxAckPending,
+				AckWaitMS:     cv.AckWaitMS,
+				MaxDeliver:    cv.MaxDeliver,
+				DeadPolicy:    cv.DeadPolicy,
+				Paused:        cv.Paused,
+				CreatedAtMS:   cv.CreatedAt,
 			})
 		}
 	}

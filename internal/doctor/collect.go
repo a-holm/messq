@@ -24,17 +24,34 @@ type StreamState struct {
 	MaxAgeMS    int64 // 0 = unlimited retention
 	MaxBytes    int64 // 0 = unlimited size
 	CreatedAtMS int64
+
+	// SampleSubjects holds recent publish subjects (bounded probe for the
+	// filter-matching check); nil means "not sampled", never "empty".
+	SampleSubjects []string
 }
 
 // ConsumerState is one consumer's config as doctor sees it.
 type ConsumerState struct {
-	Stream      string
-	Name        string
-	AckWaitMS   int64
-	MaxDeliver  int32  // 0 = unlimited
-	DeadPolicy  string // "dlq" | "drop"
-	Paused      bool
-	CreatedAtMS int64
+	Stream        string
+	Name          string
+	Filters       []string // subject filters; [">"] means everything
+	BackoffMS     []int64  // nak backoff ladder; drives TimeToDead approximations
+	MaxAckPending int64    // flow-control cap; 0 unset means store default 1000
+	AckWaitMS     int64
+	MaxDeliver    int32  // 0 = unlimited
+	DeadPolicy    string // "dlq" | "drop"
+	Paused        bool
+	CreatedAtMS   int64
+}
+
+// PendingFacts aggregates the deliveries table for ONE consumer without any
+// unbounded scan (D5 keeps the pending set small by construction).
+type PendingFacts struct {
+	PendingCount    int64 // rows in deliveries right now
+	InflightCount   int64
+	OldestReadyMS   int64 // age of the oldest READY delivery, 0 = none
+	LastDeliveredMS int64 // newest delivered_at; 0 = never delivered
+	PausedAtMS      int64 // when this consumer paused, from its latest event
 }
 
 // RestoredProvenance mirrors store's restored_* meta rows (issue #30 §4) so
@@ -76,10 +93,36 @@ type Snapshot struct {
 	Durability *DurabilityFacts
 	Fsync      *FsyncFacts
 
+	// Pending maps "stream\x00consumer" to the deliveries aggregate.
+	Pending map[string]PendingFacts
+
+	// Metrics arrives from /metrics in live mode; nil offline.
+	Metrics *MetricFacts
+
+	// Events carries windowed event aggregates when collected.
+	Events EventStats
+
 	// Analysis knobs the CLI passes through (§9 flags); zero means a check's
 	// documented default applies.
+	Window    time.Duration
+	IdleAfter time.Duration
+
 	MinFreeBytes int64
 	WalMaxBytes  int64
+}
+
+// MetricFacts is the slice of /metrics doctor reads (§9.4); the promtext
+// scanner lands with its own issue and feeds this shape.
+type MetricFacts struct {
+	StaleAcksTotal       int64
+	DroppedSeries        int64
+	PausedConsumers      int64
+	StaleAckTopConsumers map[string]int64 // "stream/consumer" -> count
+}
+
+// EventStats carries bounded event aggregates in window terms.
+type EventStats struct {
+	RetentionMS int64 // --event-retention as configured; 0 = unknown here
 }
 
 // ServerFacts is what the live collector learns from /v1/info.
@@ -188,7 +231,138 @@ func (o OfflineCollector) Collect(ctx context.Context) (*Snapshot, error) {
 		`SELECT synchronous FROM pragma_synchronous`).Scan(&sync); pErr == nil {
 		snap.Durability = &DurabilityFacts{Synchronous: sync, OwnConnection: true}
 	}
+
+	snap.Pending = collectPendingFacts(ctx, db)
+	collectPausedAges(ctx, db, snap)
+	collectSubjectSamples(ctx, db, snap)
 	return snap, err
+}
+
+// collectPendingFacts aggregates deliveries once, grouped per consumer pair;
+// the pending set is small by construction (D5) so the group scan stays cheap.
+// The oldest-ready AGE deliberately rides zero here: deriving it needs #27's
+// oldest-pending projection, and doctor would rather skip than guess.
+func collectPendingFacts(ctx context.Context, db *sql.DB) map[string]PendingFacts {
+	out := map[string]PendingFacts{}
+	rows, qErr := db.QueryContext(ctx, `
+		SELECT stream, consumer,
+		       COUNT(*),
+		       COALESCE(SUM(CASE WHEN state = 1 THEN 1 ELSE 0 END), 0),
+		       COALESCE(MAX(delivered_at), 0)
+		  FROM deliveries
+		 GROUP BY stream, consumer`)
+	if qErr != nil {
+		return nil // facts unavailable: checks skip rather than guess
+	}
+	defer func() {
+		if cErr := rows.Close(); cErr != nil {
+			// iterated fully already; the deferred close failing can only mean
+			// the driver is wedged — nothing left to do but let the caller's
+			// rows.Err-style checks have seen the honest picture above.
+			_ = cErr
+		}
+	}()
+	for rows.Next() {
+		var stream, consumer string
+		var pf PendingFacts
+		if sErr := rows.Scan(&stream, &consumer, &pf.PendingCount,
+			&pf.InflightCount, &pf.LastDeliveredMS); sErr == nil {
+			out[stream+"\x00"+consumer] = pf
+		}
+	}
+	if rErr := rows.Err(); rErr != nil {
+		return nil // partial rows would be lies; checks skip instead
+	}
+	return out
+}
+
+// collectPausedAges reads each paused consumer's most recent pause event so
+// "paused since when" answers from history instead of guesses.
+func collectPausedAges(ctx context.Context, db *sql.DB, snap *Snapshot) {
+	for _, c := range snap.Consumers {
+		if !c.Paused {
+			continue
+		}
+		var at sql.NullInt64
+		row := db.QueryRowContext(ctx, `
+			SELECT MAX(ts) FROM events
+			 WHERE event = 'consumer.pause' AND stream = ? AND consumer = ?`,
+			c.Stream, c.Name)
+		if row.Scan(&at) == nil && at.Valid {
+			key := c.Stream + "\x00" + c.Name
+			pf := snap.Pending[key]
+			pf.PausedAtMS = at.Int64
+			snap.Pending[key] = pf
+		}
+	}
+}
+
+// maxSampleStreams caps the fan-out of the subject-sampling probe.
+const maxSampleStreams = 64
+
+func collectSubjectSamples(ctx context.Context, db *sql.DB, snap *Snapshot) {
+	filtered := 0
+	for _, st := range snap.Streams {
+		for _, c := range snap.Consumers {
+			if c.Stream == st.Name && !hasFanOutFilter(c.Filters) {
+				filtered++
+				break
+			}
+		}
+	}
+	if filtered == 0 || filtered > maxSampleStreams {
+		return // nothing to match against, or too many probes to be cheap
+	}
+	for i := range snap.Streams {
+		st := &snap.Streams[i]
+		if st.Msgs == 0 || !needsSampling(snap.Consumers, st.Name) {
+			continue
+		}
+		st.SampleSubjects = sampleSubjects(ctx, db, st.Name)
+	}
+}
+
+// sampleSubjects reads one stream's most recent subjects; any failure along
+// the way returns nil, which checks treat as "not sampled" rather than data.
+func sampleSubjects(ctx context.Context, db *sql.DB, stream string) []string {
+	rows, qErr := db.QueryContext(ctx, `
+		SELECT subject FROM messages
+		 WHERE stream = ?
+		 ORDER BY seq DESC LIMIT ?`, stream, sampleSubjectsLookBack)
+	if qErr != nil {
+		return nil
+	}
+	defer func() {
+		if cErr := rows.Close(); cErr != nil {
+			// Same wedge case as above: nothing beyond honesty to do here.
+			_ = cErr
+		}
+	}()
+	var subjects []string
+	for rows.Next() {
+		var subj string
+		if sErr := rows.Scan(&subj); sErr != nil {
+			return nil
+		}
+		subjects = append(subjects, subj)
+	}
+	if rErr := rows.Err(); rErr != nil {
+		return nil
+	}
+	return subjects
+}
+
+func hasFanOutFilter(filters []string) bool {
+	return len(filters) == 0 || (len(filters) == 1 && filters[0] == ">")
+}
+
+func needsSampling(consumers []ConsumerState, stream string) bool {
+	for _, c := range consumers {
+		if c.Stream == stream && !hasFanOutFilter(c.Filters) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectProvenance reads the restored_* meta rows when present.
