@@ -26,6 +26,7 @@ type Route struct {
 func (*Server) routes() []Route {
 	return []Route{
 		{http.MethodGet, "/healthz", "healthz", false},
+		{http.MethodGet, "/readyz", "readyz", false},
 		{http.MethodGet, "/v1/info", "info", false},
 		{http.MethodPost, "/v1/streams", "create_stream", true},
 		{http.MethodGet, "/v1/streams", "list_streams", false},
@@ -126,6 +127,8 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 	switch name {
 	case "healthz":
 		return s.handleHealthz
+	case "readyz":
+		return s.handleReadyz
 	case "info":
 		return s.handleInfo
 	case "create_stream":

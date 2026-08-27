@@ -58,6 +58,7 @@ const (
 	CodeShuttingDown         Code = "shutting_down"
 	CodeDiskFull             Code = "disk_full"
 	CodeStreamFull           Code = "stream_full"
+	CodeNotReady             Code = "not_ready"
 )
 
 // allCodes is the whole enum in declaration order. TestEveryCodeIsProduced iterates it;
@@ -95,6 +96,7 @@ var allCodes = []Code{
 	CodeShuttingDown,
 	CodeDiskFull,
 	CodeStreamFull,
+	CodeNotReady,
 }
 
 // isCodeMember reports whether c is in the enum. Attached codes are typed constants at
@@ -206,6 +208,7 @@ var codeStatus = map[Code]int{
 	CodeShuttingDown:         http.StatusServiceUnavailable,
 	CodeDiskFull:             http.StatusInsufficientStorage,
 	CodeStreamFull:           http.StatusInsufficientStorage,
+	CodeNotReady:             http.StatusServiceUnavailable,
 }
 
 // retryAfterSeconds is the integer-second Retry-After every 503 carries (issue §4);
@@ -312,10 +315,14 @@ func (s *Server) writeError(w http.ResponseWriter, err error, next ...string) {
 }
 
 // writeEnvelope writes a fully-formed error body. next is always present (empty array,
-// never null) so clients parse one shape.
+// never null) so clients parse one shape. Any body carrying a 503-class code gets the
+// standard Retry-After automatically, so the probes' not_ready needs no special case.
 func (s *Server) writeEnvelope(w http.ResponseWriter, status int, body ErrorBody) {
 	if body.Next == nil {
 		body.Next = []string{}
+	}
+	if ra := retryAfterSeconds(body.Code); ra > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(ra))
 	}
 	s.writeJSON(w, status, Envelope{Error: body})
 }

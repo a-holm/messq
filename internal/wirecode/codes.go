@@ -51,6 +51,10 @@ const (
 	StreamFull   Code = "stream_full"
 	DiskFull     Code = "disk_full" // emittable today; #17 continues with degraded-writes semantics
 
+	// Issue #15 additions: probe states. not_ready is the 503 the probes return
+	// while recovery has not completed.
+	NotReady Code = "not_ready" // 503 + Retry-After before recovery completes
+
 	// Live-surface router and backpressure codes the #18 review drift probe caught
 	// living only in the API's private map: method_not_allowed is the router's 405,
 	// extend_capped the settle-extend cap, unsupported_media_type the non-JSON
@@ -135,6 +139,7 @@ var Table = map[Code]Entry{
 	CommitUnknown:        {Status: 503},
 	Busy:                 {Status: 503},
 	TooManyWaiters:       {Status: 503},
+	NotReady:             {Status: 503},
 
 	RateLimited: {Status: 429, Kind: Reserved, Owner: "#39"},
 

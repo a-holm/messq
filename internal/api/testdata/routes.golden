@@ -1,4 +1,5 @@
 GET /healthz healthz readonly
+GET /readyz readyz readonly
 GET /v1/info info readonly
 POST /v1/streams create_stream mutating
 GET /v1/streams list_streams readonly

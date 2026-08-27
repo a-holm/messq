@@ -113,6 +113,7 @@ var pinnedCodeStatus = []struct {
 	{CodeShuttingDown, http.StatusServiceUnavailable},
 	{CodeDiskFull, http.StatusInsufficientStorage},
 	{CodeStreamFull, http.StatusInsufficientStorage},
+	{CodeNotReady, http.StatusServiceUnavailable},
 }
 
 // pinnedStatusByCode indexes pinnedCodeStatus for the producer test; built once so the
@@ -234,6 +235,9 @@ func produce(c Code) error {
 		return errs.E(errs.ErrShuttingDown, "api.settle", "shutdown in progress")
 	case CodeStreamFull:
 		return errs.E(errs.ErrStreamFull, "store.Publish", "orders is at its limit and discard=new")
+	case CodeNotReady:
+		// The probes' producing path: readiness refused while recovery completes.
+		return errs.WithCode(errors.New("recovery has not completed"), string(CodeNotReady))
 	default:
 		return nil
 	}

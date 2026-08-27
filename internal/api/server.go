@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,6 +35,9 @@ type Server struct {
 	// compiled is the wildcard matcher index over routes(); routesOnce builds it.
 	compiled   []*compiledRoute
 	routesOnce sync.Once
+	// health is the HealthState the probes read; New installs a tracker that mirrors
+	// the store's fsyncgate unless an implementation was injected.
+	health HealthState
 	// waiters is the bounded long-poll park/wake fabric: store.Waker for the sweeper
 	// and obs.Sink for committed publishes.
 	waiters *Registry
@@ -78,6 +80,14 @@ type Config struct {
 	MaxRequestHeaderBytes int           // --max-request-header-bytes; http.Server cap (16 KiB)
 	WriterSubmitTimeout   time.Duration // --writer-submit-timeout; full cmdCh → busy (5s)
 	MaxConns              int           // --max-conns; accept-side semaphore (1024)
+
+	// HealthState overrides the probes' state source (#15). nil means the built-in
+	// healthTracker: degraded kinds recorded via RecordDegraded, draining for #17,
+	// and read-only mirrored from the store's writer latch (when Store is set).
+	HealthState HealthState
+	// Listeners names the bound listener endpoints reported by /v1/info, e.g.
+	// "unix:///run/messq/messq.sock". The serve command fills it from its socket setup.
+	Listeners []string
 }
 
 // The §9 defaults for zero Config fields.
@@ -146,6 +156,13 @@ func New(cfg Config) *Server {
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = defaultMaxConns
 	}
+	if cfg.HealthState == nil {
+		tr := newHealthTracker(cfg.Clock)
+		if cfg.Store != nil {
+			tr.setLatchedProbe(cfg.Store.LatchedReadOnly)
+		}
+		cfg.HealthState = tr
+	}
 	return &Server{
 		store:     cfg.Store,
 		clk:       cfg.Clock,
@@ -157,6 +174,26 @@ func New(cfg Config) *Server {
 		closing:   make(chan struct{}),
 		cfg:       cfg,
 		limits:    cfg.Limits,
+		health:    cfg.HealthState,
+	}
+}
+
+// RecordDegraded starts one degradation kind's window on the built-in tracker (#15:
+// purge_in_progress comes from the chunked-purge chaser). It is a no-op when an
+// injected HealthState replaced the tracker — the owner of the injected state records
+// its own degradations.
+func (s *Server) RecordDegraded(kind string) {
+	if tr, ok := s.health.(*healthTracker); ok {
+		tr.recordDegraded(kind)
+		return
+	}
+	s.logger.Warn("api: RecordDegraded ignored: HealthState was injected", "kind", kind)
+}
+
+// ClearDegraded ends one degradation kind's window on the built-in tracker.
+func (s *Server) ClearDegraded(kind string) {
+	if tr, ok := s.health.(*healthTracker); ok {
+		tr.clearDegraded(kind)
 	}
 }
 
@@ -230,13 +267,46 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return hs.Shutdown(ctx)
 }
 
-// handleHealthz reports 200 once the store is open. Recovery runs inside store.Open, so
-// a server that is answering /healthz has necessarily finished recovery.
+// handleHealthz answers "is the process alive" — always 200 once the listener is
+// bound, from memory only. Its degraded[] carries kind+since ONLY (issue #15 §2): no
+// version, count or path, because these two routes are the product's unauthenticated
+// surface and must stay useless for fingerprinting.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.WriteString(w, "ok\n"); err != nil {
-		s.logger.Warn("healthz: write response", "err", err)
+	s.writeJSON(w, http.StatusOK, healthzResponse{
+		Status:   "ok",
+		Degraded: orEmptyDegraded(s.health.Degraded()),
+	})
+}
+
+// healthzResponse is the probe body both probes share when healthy.
+type healthzResponse struct {
+	Status   string        `json:"status"`
+	Degraded []Degradation `json:"degraded"`
+}
+
+// orEmptyDegraded keeps degraded an array in JSON, never null.
+func orEmptyDegraded(d []Degradation) []Degradation {
+	if d == nil {
+		return []Degradation{}
 	}
+	return d
+}
+
+// handleReadyz answers "should clients send work here": recovery complete, store
+// writable, not draining — read from memory, NEVER SQLite (issue §2/G3). Disk pressure
+// deliberately does not enter this answer (PLAN §4.5). Failures are 503 envelopes with
+// code not_ready naming the distinct reason, always Retry-After: 1.
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	ok, reason := s.health.Ready()
+	if ok {
+		s.writeJSON(w, http.StatusOK, healthzResponse{Status: "ready", Degraded: nil})
+		return
+	}
+	s.writeEnvelope(w, http.StatusServiceUnavailable, ErrorBody{
+		Code:    CodeNotReady,
+		Message: reason,
+		Detail:  map[string]any{"status": reason, "degraded": orEmptyDegraded(s.health.Degraded())},
+	})
 }
 
 // infoResponse is the /v1/info wire shape (issue §7): version, uptime, durability, the
