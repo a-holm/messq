@@ -5,6 +5,7 @@ package auth
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -44,10 +45,8 @@ type Registry struct {
 	set atomic.Pointer[tokenSet]
 }
 
-// NewRegistry builds a registry over the given tokens. It stores the parsed set behind an
-// atomic pointer so a later reload (issue #17/#12) swaps it without touching in-flight
-// requests.
-func NewRegistry(tokens []Token) *Registry {
+// buildTokenSet constructs one immutable snapshot for NewRegistry and SwapTokens.
+func buildTokenSet(tokens []Token) *tokenSet {
 	set := &tokenSet{
 		byID:  make(map[string]entry, len(tokens)),
 		decoy: entry{hash: decoyDigest},
@@ -55,9 +54,38 @@ func NewRegistry(tokens []Token) *Registry {
 	for _, t := range tokens {
 		set.byID[t.ID] = entry{hash: t.Hash, principal: t.Principal()}
 	}
+	return set
+}
+
+// NewRegistry builds a registry over the given tokens. It stores the parsed set behind an
+// atomic pointer so a later reload (issue #17/#12) swaps it without touching in-flight
+// requests.
+func NewRegistry(tokens []Token) *Registry {
 	r := &Registry{}
-	r.set.Store(set)
+	r.set.Store(buildTokenSet(tokens))
 	return r
+}
+
+// SwapTokens atomically replaces the live token set with tokens. The new set is
+// built FIRST and swapped behind the same atomic pointer Verify reads, so an
+// in-flight request sees either the whole old set or the whole new one — never a
+// torn mixture — and every reader that started earlier finishes on its snapshot
+// without contention (issue #16 §9; the reloader's Apply calls this).
+func (r *Registry) SwapTokens(tokens []Token) {
+	set := buildTokenSet(tokens)
+	r.set.Store(set)
+}
+
+// LiveIDs returns the sorted ids of the live snapshot, taken atomically. This is
+// what reload diffs are computed FROM (ids only; digests never leave the engine).
+func (r *Registry) LiveIDs() []string {
+	set := r.set.Load()
+	ids := make([]string, 0, len(set.byID))
+	for id := range set.byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Verify checks credential and returns the principal it names. The credential is the whole
