@@ -198,11 +198,19 @@ func TestJanitorStaggersEveryJobs(t *testing.T) {
 func TestJanitorReentersWhileMoreAndBudgetRemain(t *testing.T) {
 	rec := &recorder{}
 	drainer := &recordingJob{name: "retention", order: rec, moreN: 2} // needs 3 slices of work
-	fc, _ := newHarness(t, Config{Interval: tickInterval, Budget: time.Minute}, drainer)
+	fc, j := newHarness(t, Config{Interval: tickInterval, Budget: time.Minute}, drainer)
 
 	pumpTicks(fc, tickInterval, func() bool { return drainer.count() >= 3 })
 	if !waitFor(func() bool { return drainer.count() >= 3 }) {
 		t.Fatalf("More=true job was not re-entered within its tick: %d runs", drainer.count())
+	}
+	// Quiesce: the pump may have dropped one extra tick into the channel buffer, and
+	// an Every(0) job is due on EVERY tick — a late tick legitimately runs slice #4.
+	// The property under test is More=false ENDS re-entry WITHIN one tick, so stop
+	// the loop before the exact-count assertion. (Stop also proves no re-entry was
+	// pending past More=false's break.)
+	if err := j.Stop(context.Background()); err != nil {
+		t.Logf("stop: %v", err)
 	}
 	// More=false must END the re-entry: after the tick's work is done the count is
 	// exactly 3 and never climbs. A mutant that re-enters unconditionally blows past.
