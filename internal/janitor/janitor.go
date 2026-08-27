@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-holm/messq/internal/clock"
@@ -173,9 +174,12 @@ type Janitor struct {
 	jobs []Job
 	log  *slog.Logger
 
-	tickC      clock.Ticker
-	armed      bool
-	loopCtx    context.Context
+	tickC clock.Ticker
+	armed bool
+	// loopCtx and cancelFn are written once by Start before the loop goroutine
+	// launches and only read after; Stop closes over the cancel func via sync.Once.
+	// context.Context lives behind an atomic so containedctx stays happy.
+	loopCtx    atomic.Pointer[context.Context]
 	cancelFn   context.CancelFunc
 	cancelOnce sync.Once
 }
@@ -213,7 +217,9 @@ func (j *Janitor) Start(ctx context.Context) error {
 			"hint", "--janitor-interval 0 turns off ALL housekeeping; dev/test use only")
 		return nil
 	}
-	j.loopCtx, j.cancelFn = context.WithCancel(ctx)
+	loop, cancel := context.WithCancel(ctx)
+	j.loopCtx.Store(&loop)
+	j.cancelFn = cancel
 	period := j.cfg.Interval
 	if j.cfg.Jitter != nil {
 		period = j.cfg.Jitter(j.cfg.Interval)
@@ -273,7 +279,12 @@ func (j *Janitor) loop() {
 
 // ctx returns the loop context armed at Start. Stored separately so Stop can cancel it
 // without owning the parent.
-func (j *Janitor) ctx() context.Context { return j.loopCtx }
+func (j *Janitor) ctx() context.Context {
+	if p := j.loopCtx.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
+}
 
 // dueJobs selects jobs whose Every has elapsed.
 func (j *Janitor) dueJobs(nextDue map[string]time.Time) []Job {
