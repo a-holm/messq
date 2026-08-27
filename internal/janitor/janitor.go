@@ -67,8 +67,12 @@ type Budget struct {
 
 // Expired reports whether this slice's wall share is spent. The deadline binds
 // unconditionally — an unlimited ROW allowance never lifts the wall-clock cap, or one
-// hogging job could hold the writer forever.
+// hogging job could hold the writer forever. A ZERO deadline (never produced by New
+// or Start; hand-armed test budgets) means "no wall bound".
 func (b *Budget) Expired() bool {
+	if b.deadline.IsZero() {
+		return false
+	}
 	return !b.clk.Now().Before(b.deadline)
 }
 

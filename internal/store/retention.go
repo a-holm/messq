@@ -61,6 +61,7 @@ type RetentionResult struct {
 	FreedBytes   int64 // bytes reclaimed by the deletes
 	BlockedCount int64 // candidates pinned by delivery rows (skipped)
 	BlockedBytes int64 // size behind the pinned candidates
+	More         bool  // at least one saturated window still violates a limit
 }
 
 // RetentionCmd is one writer command. Batch bounds the per-stream deletion window;
@@ -115,7 +116,7 @@ func (c RetentionCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ R
 	}
 	for _, cfg := range cfgs {
 		res.Streams++
-		del, freed, blockedN, blockedB, evs, sweepErr := c.sweepOne(ctx, tx, nowMS, cfg)
+		del, freed, blockedN, blockedB, moreStream, evs, sweepErr := c.sweepOne(ctx, tx, nowMS, cfg)
 		if sweepErr != nil {
 			return nil, nil, sweepErr
 		}
@@ -123,6 +124,7 @@ func (c RetentionCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (_ R
 		res.FreedBytes += freed
 		res.BlockedCount += blockedN
 		res.BlockedBytes += blockedB
+		res.More = res.More || moreStream
 		events = append(events, evs...)
 	}
 	return res, events, nil
@@ -224,11 +226,12 @@ func (c RetentionCmd) candidatesFor(ctx context.Context, tx *sql.Tx,
 }
 
 // sweepOne enforces one stream's policy inside the shared transaction and returns the
-// aggregate deltas, the skipped-blocked accounting, and any audit carriers committed
-// on this stream's behalf.
+// aggregate deltas, the skipped-blocked accounting, whether this stream's window
+// saturated with a limit still violated (More), and any audit carriers committed on
+// the stream's behalf.
 func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 	cfg retentionStreamCfg) (del int64, freed int64, blockedN int64, blockedB int64,
-	evs []obs.Event, rerr error,
+	more bool, evs []obs.Event, rerr error,
 ) {
 	batch := c.Batch
 	if batch <= 0 {
@@ -240,7 +243,7 @@ func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 	}
 	cands, noop, err := c.candidatesFor(ctx, tx, cfg, batch*2+maxBlameHolders)
 	if err != nil {
-		return 0, 0, 0, 0, nil, err
+		return 0, 0, 0, 0, false, nil, err
 	}
 
 	var plan queue.EvictionPlan
@@ -250,7 +253,7 @@ func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 	case queue.RetentionWorkQueue:
 		if noop {
 			// reason=no_consumers: interest-based reaping needs interest to exist.
-			return 0, 0, 0, 0, nil, nil
+			return 0, 0, 0, 0, false, nil, nil
 		}
 		plan = planWorkqueue(cands, batch)
 	default:
@@ -261,14 +264,14 @@ func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 
 	del, freed, delErr := c.applyDelete(ctx, tx, cfg.name, plan.Seqs)
 	if delErr != nil {
-		return 0, 0, 0, 0, nil, delErr
+		return 0, 0, 0, 0, false, nil, delErr
 	}
 
 	// The watermark only advances when something actually left below it.
 	highDel := plan.HighestDeletedSeq
 	if del > 0 && highDel > 0 {
 		if uErr := updateWatermarks(ctx, tx, cfg.name, highDel, nowMS, del, freed); uErr != nil {
-			return 0, 0, 0, 0, nil, uErr
+			return 0, 0, 0, 0, false, nil, uErr
 		}
 	}
 
@@ -278,12 +281,19 @@ func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 	// plan is exactly what retention.blocked exists to name (G2).
 	postMsgs := view.Msgs - del
 	postBytes := view.Bytes - freed
+
+	// More only when THIS window saturated AND reality still violates — a window
+	// that came back short means nothing deletable remains in reach and next tick's
+	// probe would be wasted work.
+	more = plan.More || (del == int64(batch) &&
+		queue.StillViolating(postMsgs, postBytes, view))
+
 	stillBlocked := plan.BlockedCount > 0 && queue.StillViolating(postMsgs, postBytes, view)
 
 	if del > 0 {
 		evExpire, eErr := emitExpireEvent(ctx, tx, nowMS, cfg, del, freed, postMsgs, postBytes)
 		if eErr != nil {
-			return 0, 0, 0, 0, nil, eErr
+			return 0, 0, 0, 0, false, nil, eErr
 		}
 		evs = append(evs, evExpire)
 	}
@@ -291,11 +301,11 @@ func (c RetentionCmd) sweepOne(ctx context.Context, tx *sql.Tx, nowMS int64,
 		evBlock, bErr := c.emitBlockedEvent(ctx, tx, nowMS, cfg,
 			plan.HighestBlockedSeq, plan.BlockedBytes)
 		if bErr != nil {
-			return 0, 0, 0, 0, nil, bErr
+			return 0, 0, 0, 0, false, nil, bErr
 		}
 		evs = append(evs, evBlock)
 	}
-	return del, freed, plan.BlockedCount, plan.BlockedBytes, evs, nil
+	return del, freed, plan.BlockedCount, plan.BlockedBytes, more, evs, nil
 }
 
 // applyDelete runs THE guarded delete via retentionDeleteBatch.
