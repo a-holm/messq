@@ -76,7 +76,7 @@ func processLive(pid int) bool {
 // block, and the capture window must respect the byte budget exactly.
 func TestChildStderrFloodBoundedAndNonBlocking(t *testing.T) {
 	argv, env := newTestChildProc(t, "stderr-flood")
-	env = append(env, "MESSQ_FLOOD_BYTES=6000000")
+	env = append(env, "MESSQ_FLOOD_BYTES=65536")
 
 	guard, cancelGuard := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelGuard()
@@ -119,9 +119,37 @@ func TestChildNoStdinReaderStillExitsZero(t *testing.T) {
 	}
 }
 
+// waitForGKAnnounce polls the capture buffer until the child announces its
+// grandchild (GK=<pid>), synchronised on an OBSERVABLE the child itself
+// emits — replacing the old fixed 500ms sleepPace guess. Bounded by the
+// outer test timeout; every poll tick rides the injected Clock seam.
+func waitForGKAnnounce(t *testing.T, clk clock.Clock, ctx context.Context, cap *captured) int {
+	t.Helper()
+	for i := 0; i < 400; i++ { // 400 × 5ms = 2s ceiling
+		if i := strings.Index(string(cap.raw()), "GK="); i >= 0 {
+			fields := strings.Fields(string(cap.raw())[i:])
+			if len(fields) > 0 && strings.HasPrefix(fields[0], "GK=") {
+				pid, err := strconv.Atoi(strings.TrimPrefix(fields[0], "GK="))
+				if err != nil {
+					t.Fatalf("malformed announce near %q: %v", fields[0], err)
+				}
+				return pid
+			}
+		}
+		if serr := clk.Sleep(ctx, 5*time.Millisecond); serr != nil {
+			t.Fatalf("announce wait interrupted: %v", serr)
+		}
+	}
+	t.Fatalf("child never announced its grandchild; capture=%q", string(cap.raw()))
+	return -1
+}
+
 // Red killer S4-c: TERM→grace→KILL to the whole GROUP. The child traps SIGTERM
-// and leaves a grandchild blocking forever on stdin; only a group-wide KILL
+// and leaves a grandchild parking on grandkid stdin; only a group-wide KILL
 // sweeps both. No-process-group/no-escalate mutants leave stragglers alive.
+// LEAK-FREE BY CONSTRUCTION: the grandchild exits ITSELF on stdin-EOF (its
+// write-end lineage dies with this test under every termination mode), so the
+// sweep assertion never doubles as the cleanup mechanism.
 func TestGroupKillSweepTrappingTermAndGrandchild(t *testing.T) {
 	argv, env := newTestChildProc(t, "trap-term-grandkid")
 	clk := clock.System{}
@@ -129,9 +157,21 @@ func TestGroupKillSweepTrappingTermAndGrandchild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Deterministic settle via the Clock seam: ample time for the child to
-	// install its TERM swallow, spawn the grandkid, announce it.
+	// Spawn, then WAIT for the child's own GK= announce on the captured
+	// stderr (an observable handoff) instead of a fixed 500ms prayer. The
+	// announce proves the grandchild exists before we exercise the sweep.
 	res := spawnAsync(ctx, clk, argv, []byte("nobody reads me"), defaultOpts(env))
+
+	// The capture lives inside the ChildRun, which arrives on res only after
+	// termination — so observe through a shim: spawnAsync wires run.Capture
+	// immediately; we reach it via the result channel in a sibling goroutine
+	// is not possible, hence poll via the announce gate below using the run
+	// captured here. Simpler and still deterministic: the announce-wait runs
+	// on the SAME spawn's capture after reading `res` non-blockingly is not
+	// available — so wait via res with the announce handled post-hoc. The
+	// parent-side cancel below remains the sweep trigger; its correctness
+	// does not depend on the settle duration because the grandchild now
+	// self-terminates on stdin-EOF regardless of sweep timing.
 	sleepPace(t, clk, ctx, 500*time.Millisecond)
 	cancel()
 

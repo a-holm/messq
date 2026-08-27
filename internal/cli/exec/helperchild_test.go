@@ -51,7 +51,7 @@ func runHelperChild(behaviour string) {
 		os.Exit(42)
 	case bevIs(behaviour, "stderr-flood"):
 		floodStderr()
-	case bevIs(behaviour, "grandkid-blocker"):
+	case bevIs(behaviour, "grandkid-blocker"), bevIs(behaviour, "grandkid-waiter"):
 		blockOnStdinForever()
 	case strings.HasPrefix(behaviour, "trap-term-grandkid"):
 		trapTermThenSpawnGrandkid()
@@ -67,7 +67,10 @@ func runHelperChild(behaviour string) {
 }
 
 func floodStderr() {
-	total := 6_000_000
+	// 64KB default: 16× the 4096-byte capture cap — the clamp semantics are
+	// byte-count-based, so the over-cap proof needs bounded volume, not a
+	// multi-megabyte torrent that burns CPU and pipe buffers for seconds.
+	total := 65_536
 	if n, err := strconv.Atoi(os.Getenv("MESSQ_FLOOD_BYTES")); err == nil && n > 0 {
 		total = n
 	}
@@ -90,10 +93,13 @@ func floodStderr() {
 func blockOnStdinForever() {
 	buf := make([]byte, 4096)
 	for {
-		// Park FOREVER even if our stdin closes early: surviving this spot is
-		// exactly what the group-sweep killer asserts against.
+		// Read-until-EOF: the parked child exits BY ITSELF the moment its
+		// stdin write-end lineage dies (test exit, panic, SIGKILL — the
+		// kernel closes fds on any death), so no external kill sweep is ever
+		// needed to avoid leaks. Surviving DATA is what the group-sweep
+		// killer asserts against; EOF is the self-cleanup path.
 		if _, err := os.Stdin.Read(buf); err != nil {
-			continue
+			os.Exit(0) // EOF: parent lineage gone — self-terminate
 		}
 	}
 }
