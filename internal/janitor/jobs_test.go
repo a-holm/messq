@@ -3,11 +3,16 @@
 package janitor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/a-holm/messq/internal/clock"
 
 	"github.com/a-holm/messq/internal/store"
 )
@@ -122,12 +127,12 @@ func TestDedupJobSweepsRotatingWindowsOfStreams(t *testing.T) {
 func TestCheckpointJobOnlyFiresAboveWalBound(t *testing.T) {
 	t.Run("idle below the bound", func(t *testing.T) {
 		fw := &fakeSolo{}
-		j := CheckpointJob{W: fw, WalMaxBytes: 100, WalBytes: func() (int64, error) { return 99, nil }}
+		j := CheckpointJob{W: fw, WalMaxBytes: 100, WalBytes: func() (int64, error) { return 20, nil }}
 		if _, err := j.Run(context.Background(), armedBudget(t, 1000)); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		if fw.checkpoints != 0 {
-			t.Fatalf("submitted %d checkpoints below --wal-max-bytes", fw.checkpoints)
+			t.Fatalf("submitted %d checkpoints while the WAL sits in its lower half", fw.checkpoints)
 		}
 	})
 	t.Run("TRUNCATE above the bound", func(t *testing.T) {
@@ -259,4 +264,85 @@ func (f *fakeSolo) Do(_ context.Context, cmd store.Cmd) (store.Result, error) {
 // discardLogger silences the vacuum self-disable warning in the assertion above.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// ---- slice-9 policy alignment (issue body §job table) -----------------------------
+
+func TestCheckpointJobHalfBoundUsesPassive(t *testing.T) {
+	fw := &fakeSolo{}
+	j := CheckpointJob{
+		W:           fw,
+		WalMaxBytes: 256,
+		WalBytes:    func() (int64, error) { return 129, nil }, // > max/2, < max
+	}
+	if _, err := j.Run(context.Background(), armedBudget(t, 1000)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fw.checkpoints != 1 || fw.lastMode != store.CheckpointPassive {
+		t.Fatalf("(checkpoints,mode)=(%d,%q), want (1,PASSIVE) between the bounds",
+			fw.checkpoints, fw.lastMode)
+	}
+}
+
+func TestVacuumJobOnlyFiresAboveFreelistThreshold(t *testing.T) {
+	submissions := 0
+	j := VacuumJob{
+		W: soloFunc(func(_ context.Context, _ store.Cmd) (store.Result, error) {
+			submissions++
+			return store.VacuumResult{}, nil
+		}),
+		Pages:         2000,
+		FreelistPages: 10_000,
+		Freelist:      func() (int64, error) { return 100, nil }, // below threshold
+		FreelistAfter: func() (int64, error) { return 100, nil },
+		Log:           discardLogger(),
+	}
+	if _, err := j.Run(context.Background(), armedBudget(t, 1000)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if submissions != 0 {
+		t.Fatalf("submitted %d vacuum commands under the freelist threshold", submissions)
+	}
+}
+
+func TestStatsJobEmitsConsumerLagRateLimited(t *testing.T) {
+	fc := clock.NewFake(time.UnixMilli(1_700_000_000_000))
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	samples := []LagSample{
+		{Stream: "orders", Consumer: "slow", Lag: 900},
+		{Stream: "orders", Consumer: "fast", Lag: 5},
+	}
+	j := NewStatsJob(func() ([]LagSample, error) { return samples, nil },
+		StatsConfig{Threshold: 100, Interval: time.Minute, Log: log}, fc)
+
+	b := armedBudget(t, 1000)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ { // three rapid ticks inside one report interval
+		res, err := j.Run(ctx, b)
+		if err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+		if res.Rows != 1 { // only the ONE consumer past the threshold counts as work
+			t.Fatalf("tick %d rows=%d, want exactly the single lagging consumer", i, res.Rows)
+		}
+	}
+	out := buf.String()
+	if strings.Count(out, "consumer.lag") != 1 {
+		t.Fatalf("consumer.lag emitted %d times within its interval, want 1:\n%s",
+			strings.Count(out, "consumer.lag"), out)
+	}
+	if !strings.Contains(out, "slow") || strings.Contains(out, "fast") {
+		t.Fatalf("lag row named wrong consumer(s):\n%s", out)
+	}
+
+	// Once the interval rolls over, the next lagging consumer reports again.
+	fc.Advance(time.Minute)
+	buf.Reset()
+	if _, err := j.Run(ctx, b); err != nil {
+		t.Fatalf("after interval: %v", err)
+	}
+	if strings.Count(buf.String(), "consumer.lag") != 1 {
+		t.Fatalf("interval rollover did not re-report:\n%s", buf.String())
+	}
 }

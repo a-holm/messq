@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/a-holm/messq/internal/clock"
+
 	"github.com/a-holm/messq/internal/store"
 )
 
@@ -231,8 +233,8 @@ type SoloSubmitter interface {
 	Do(ctx context.Context, cmd store.Cmd) (store.Result, error)
 }
 
-// CheckpointJob passes the WAL down when it grows past --wal-max-bytes: PASSIVE under
-// normal load is wasted fsyncs, so below the bound the job does nothing at all.
+// CheckpointJob follows the issue's two-tier policy: PASSIVE when the WAL sits in
+// its upper half, TRUNCATE above --wal-max-bytes itself, and nothing while small.
 type CheckpointJob struct {
 	W           SoloSubmitter
 	WalMaxBytes int64
@@ -245,19 +247,25 @@ func (j *CheckpointJob) Name() string { return "checkpoint" }
 // Every implements Job: checking a byte gauge is cheap enough for every tick.
 func (j *CheckpointJob) Every() time.Duration { return 0 }
 
-// Run checkpoints TRUNCATE when the WAL exceeds the bound.
+// Run checkpoints at most once per tick, tier chosen from the WAL gauge.
 func (j *CheckpointJob) Run(ctx context.Context, _ *Budget) (Result, error) {
 	wal, err := j.WalBytes()
 	if err != nil {
-		return Result{}, err // a failed stat keeps yesterday's number logic honest: skip this tick
+		return Result{}, err // a failed gauge skips this tick rather than guessing
 	}
-	if wal < j.WalMaxBytes {
-		return Result{}, nil
+	switch {
+	case wal <= 0 || wal*2 <= j.WalMaxBytes:
+		return Result{}, nil // healthy lower half: no writer round-trip
+	default:
+		mode := store.CheckpointPassive
+		if wal > j.WalMaxBytes {
+			mode = store.CheckpointTruncate
+		}
+		if _, subErr := j.W.Do(ctx, store.CheckpointCmd{Mode: mode}); subErr != nil {
+			return Result{}, subErr
+		}
+		return Result{Rows: wal}, nil // rows≈"work acknowledged"; bytes meaningful? none
 	}
-	if _, subErr := j.W.Do(ctx, store.CheckpointCmd{Mode: store.CheckpointTruncate}); subErr != nil {
-		return Result{}, subErr
-	}
-	return Result{}, nil
 }
 
 // VacuumStateRead reads the freelist page count around a step.
@@ -270,6 +278,7 @@ type freelistFn func() (int64, error)
 type VacuumJob struct {
 	W             SoloSubmitter
 	Pages         int        // pages offered per step (--vacuum-pages-per-tick default lives in serve wiring)
+	FreelistPages int64      // --vacuum-freelist-pages: act only when freelist_count exceeds it
 	Freelist      freelistFn // before submission: current freelist_count
 	FreelistAfter freelistFn
 
@@ -293,8 +302,8 @@ func (j *VacuumJob) Run(ctx context.Context, _ *Budget) (Result, error) {
 	if pErr != nil {
 		return Result{}, pErr
 	}
-	if before == 0 {
-		return Result{}, nil // nothing to give back: zero-cost idle path
+	if before <= j.FreelistPages { // below threshold: freelist has nothing worth reclaiming
+		return Result{}, nil
 	}
 	if _, sErr := j.W.Do(ctx, store.VacuumCmd{Pages: j.Pages}); sErr != nil {
 		return Result{}, sErr
@@ -313,4 +322,78 @@ func (j *VacuumJob) Run(ctx context.Context, _ *Budget) (Result, error) {
 		}
 	}
 	return Result{}, nil
+}
+
+// ---- stats ----------------------------------------------------------------------
+
+// LagSample is one consumer's distance from the stream head.
+type LagSample struct {
+	Stream   string
+	Consumer string
+	Lag      int64 // messages behind cursor_seq; S15's I11 gauge input
+}
+
+// LagSampler reads the (stream, consumer, lag) triples through a read-only seam.
+type LagSampler func() ([]LagSample, error)
+
+// StatsConfig configures the stats job.
+type StatsConfig struct {
+	Threshold int64         // --lag-report-threshold: emit only past this lag
+	Interval  time.Duration // --lag-report-interval: at most one report per period
+	Log       *slog.Logger
+}
+
+// StatsJob refreshes #21's gauge inputs and emits the reserved consumer.lag advisory,
+// rate-limited to one report per interval. Housekeeping itself never writes event
+// rows (G7) — the log line and the scrape-time collector ARE the surface.
+type StatsJob struct {
+	sample    LagSampler
+	cfg       StatsConfig
+	clk       clock.Clock // limiter's seam; tests pin it to the fake clock
+	lastLogMS int64       // clock-seam state for the limiter; -1 = never logged
+	log       *slog.Logger
+}
+
+// NewStatsJob wires the adapter with an explicit clock for deterministic limiting.
+func NewStatsJob(sample LagSampler, cfg StatsConfig, clk clock.Clock) *StatsJob {
+	if cfg.Interval <= 0 {
+		cfg.Interval = time.Minute
+	}
+	if cfg.Log == nil {
+		cfg.Log = slog.Default()
+	}
+	return &StatsJob{sample: sample, cfg: cfg, lastLogMS: -1, log: cfg.Log, clk: clk}
+}
+
+// Name implements Job.
+func (j *StatsJob) Name() string { return "stats" }
+
+// Every implements Job.
+func (j *StatsJob) Every() time.Duration { return 0 }
+
+// Run samples once and reports the filtered worst offenders at most once per period.
+func (j *StatsJob) Run(ctx context.Context, _ *Budget) (Result, error) {
+	samples, err := j.sample()
+	if err != nil {
+		return Result{}, err
+	}
+	past := int64(0)
+	for _, s := range samples {
+		if s.Lag >= j.cfg.Threshold {
+			past++
+		}
+	}
+	now := j.clk.Now().UnixMilli()
+	if j.lastLogMS >= 0 && now-j.lastLogMS < j.cfg.Interval.Milliseconds() {
+		return Result{Rows: past}, nil // limiter window open: sample, don't spam
+	}
+	for _, s := range samples {
+		if s.Lag >= j.cfg.Threshold {
+			j.log.Info("consumer.lag", "stream", s.Stream, "consumer", s.Consumer, "lag", s.Lag)
+		}
+	}
+	if past > 0 {
+		j.lastLogMS = now
+	}
+	return Result{Rows: past}, nil
 }
