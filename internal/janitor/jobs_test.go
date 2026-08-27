@@ -361,6 +361,12 @@ func (s *spyMetrics) ObserveJob(name string, _ time.Duration) {
 	s.mu.Unlock()
 }
 
+func (s *spyMetrics) count(name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.observed[name]
+}
+
 // The scheduler must hand every completed Run to the injected Metrics seam exactly
 // once, labelled by the job's closed-set name — the wire shape behind
 // messq_janitor_duration_seconds{job} (#21's projection keeps its cardinality).
@@ -386,12 +392,22 @@ func TestJanitorObservesEveryRunDuration(t *testing.T) {
 		}
 	})
 
-	diskPump(fc, func() bool { return drainer.count() >= 2 && spy.observed["retention"] >= 2 })
+	diskPump(fc, func() bool { return drainer.count() >= 2 && spy.count("retention") >= 2 })
 	if !waitFor(func() bool { return drainer.count() >= 2 }) {
 		t.Fatalf("drainer never reached two runs (%d)", drainer.count())
 	}
-	if !waitFor(func() bool { return spy.observed["retention"] == 2 }) {
-		t.Fatalf("metrics saw %v, want one observation per completed retention Run",
-			spy.observed)
+
+	// Quiesce BEFORE counting: extra ticks may legitimately land under load, so an
+	// exact mid-flight comparison would flake exactly like a fixed-count probe. Once
+	// Stop has taken effect no further Run can start, and ObserveJob fires in the
+	// same goroutine right after each Run returns — the two counters MUST agree.
+	if err := j.Stop(context.Background()); err != nil {
+		t.Logf("stop janitor: %v", err)
+	}
+	if !waitFor(func() bool {
+		return spy.count("retention") == drainer.count()
+	}) {
+		t.Fatalf("metrics saw %d observations but the job ran %d times: every completed Run must be observed",
+			spy.count("retention"), drainer.count())
 	}
 }
