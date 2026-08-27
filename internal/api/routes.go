@@ -91,6 +91,10 @@ func (*Server) routes() []Route {
 			rolesAdmin, true, "",
 		},
 		{
+			http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}/pending", "pending_list",
+			false, rolesAdmin, false, "",
+		},
+		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true,
 			rolesConsumeAndAdmin, false, "",
 		},
@@ -228,6 +232,8 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 		return s.handleResumeConsumer
 	case "seek_consumer":
 		return s.handleSeekConsumer
+	case "pending_list":
+		return s.handlePendingList
 	case "ack":
 		return s.handleSettle(queue.VerbAck)
 	case "nak":

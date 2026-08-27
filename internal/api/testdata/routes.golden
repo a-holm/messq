@@ -23,6 +23,7 @@ DELETE /v1/streams/{stream}/consumers/{consumer} delete_consumer mutating
 POST /v1/streams/{stream}/consumers/{consumer}/pause pause_consumer mutating
 POST /v1/streams/{stream}/consumers/{consumer}/resume resume_consumer mutating
 POST /v1/streams/{stream}/consumers/{consumer}/seek seek_consumer mutating
+GET /v1/streams/{stream}/consumers/{consumer}/pending pending_list readonly
 POST /v1/streams/{stream}/consumers/{consumer}/fetch fetch_consumer mutating
 POST /v1/ack ack mutating
 POST /v1/nak nak mutating

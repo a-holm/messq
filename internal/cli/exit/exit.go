@@ -77,6 +77,13 @@ var ByWireCode = map[wirecode.Code]int{
 	wirecode.WouldLoseData:        Conflict,
 	wirecode.ReservedName:         Usage,
 	wirecode.BadRequest:           Usage,
+	wirecode.ConsumerExists:       Conflict,
+	wirecode.WouldChangeFilters:   Conflict,
+	wirecode.ConfirmRequired:      Conflict,
+	wirecode.ConfirmMismatch:      Conflict,
+	wirecode.DryRunUnsupported:    Usage,
+	wirecode.NotReady:             Unreachable, // 503-class: a retry loop sees the same daemon state
+	wirecode.NotImplemented:       Unreachable, // mounted-but-unbacked knobs answer like #21-before-injection
 	wirecode.BadSubject:           Usage,
 	wirecode.SubjectMismatch:      Usage,
 	wirecode.HeaderTooLarge:       Usage,

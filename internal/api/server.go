@@ -104,6 +104,10 @@ type Config struct {
 	// Metrics is the injected scrape handler (#21 drops promhttp in this slot); nil
 	// makes GET /metrics answer 503 not_implemented — never 404.
 	Metrics http.Handler
+
+	// PendingMaxLimit is --pending-max-limit (issue #15 §10, default 1000): the cap
+	// the pending listing clamps ?limit to while echoing the effective value.
+	PendingMaxLimit int
 }
 
 // The §9 defaults for zero Config fields.
@@ -124,6 +128,8 @@ const (
 	defaultMaxBatchBytes = int64(8 << 20)
 
 	defaultInfoCacheTTL = 5 * time.Second
+
+	defaultPendingMaxLimit = 1000
 )
 
 // New builds a Server around a live, already-recovered store. Zero Config fields take
@@ -201,6 +207,9 @@ func New(cfg Config) *Server {
 func (cfg *Config) fillInfoDefaults() {
 	if cfg.InfoCacheTTL <= 0 {
 		cfg.InfoCacheTTL = defaultInfoCacheTTL
+	}
+	if cfg.PendingMaxLimit <= 0 {
+		cfg.PendingMaxLimit = defaultPendingMaxLimit
 	}
 }
 
