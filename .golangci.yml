@@ -12,7 +12,7 @@ run:
   # driver is invisible to the linter, which is the one file that most needs linting.
   build-tags:
     - gatecheck
-  timeout: 10m
+  timeout: 20m
   # The sabotage matrix runs one lint per scratch copy of the tree, in parallel. The default
   # global file lock turns that into "parallel golangci-lint is running" instead of a result.
   allow-parallel-runners: true
