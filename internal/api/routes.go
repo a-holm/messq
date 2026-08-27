@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/a-holm/messq/internal/auth"
 	"github.com/a-holm/messq/internal/queue"
 )
 
@@ -16,42 +17,74 @@ import (
 // iterates it for contract coverage; a checked-in golden (testdata/routes.golden)
 // turns any add/rename/remove into a reviewed diff.
 type Route struct {
-	Method   string // "" on the catch-all, which answers every method
-	Pattern  string
-	Name     string
-	Mutating bool // true when the route can change stored state
+	Method  string // "" on the catch-all, which answers every method
+	Pattern string
+	Name    string
+	// Mutating is true when the route can change stored state; it gates #16's
+	// role-completeness test (every mutating route declares a non-empty set).
+	Mutating bool
+	// Roles is the declared role set (#16 enforces). Empty ⇒ unauthenticated; the
+	// consistency tests pin that to the two probes.
+	Roles auth.RoleSet
+	// DryRun declares that ?dry_run=1 is honoured here. Any other route answering a
+	// dry_run query parameter refuses with 400 dry_run_unsupported.
+	DryRun bool
+	// Confirm names the path value ?confirm= must equal verbatim ("stream" |
+	// "consumer"); "" means the route takes no name confirmation. Missing confirm
+	// yields confirm_required, a mismatched one confirm_mismatch.
+	Confirm string
 }
 
 // routes is the registry. Order is declaration order and part of the golden.
 func (*Server) routes() []Route {
 	return []Route{
-		{http.MethodGet, "/healthz", "healthz", false},
-		{http.MethodGet, "/readyz", "readyz", false},
-		{http.MethodGet, "/metrics", "metrics", false},
-		{http.MethodGet, "/v1/info", "info", false},
-		{http.MethodPost, "/v1/admin/log-level", "admin_log_level", true},
-		{http.MethodPost, "/v1/streams", "create_stream", true},
-		{http.MethodGet, "/v1/streams", "list_streams", false},
-		{http.MethodGet, "/v1/streams/{stream}", "get_stream", false},
-		{http.MethodPatch, "/v1/streams/{stream}", "update_stream", true},
-		{http.MethodDelete, "/v1/streams/{stream}", "delete_stream", true},
-		{http.MethodPost, "/v1/streams/{stream}/messages", "publish_message", true},
-		{http.MethodPost, "/v1/streams/{stream}/messages:batch", "publish_batch", true},
-		{http.MethodGet, "/v1/streams/{stream}/messages", "list_messages", false},
-		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}", "peek_message", false},
-		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}/data", "peek_message_data", false},
-		{http.MethodGet, "/v1/messages/{id}", "peek_by_id", false},
-		{http.MethodPost, "/v1/streams/{stream}/consumers", "create_consumer", true},
-		{http.MethodGet, "/v1/streams/{stream}/consumers", "list_consumers", false},
-		{http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}", "get_consumer", false},
-		{http.MethodPatch, "/v1/streams/{stream}/consumers/{consumer}", "update_consumer", true},
-		{http.MethodDelete, "/v1/streams/{stream}/consumers/{consumer}", "delete_consumer", true},
-		{http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true},
-		{http.MethodPost, "/v1/ack", "ack", true},
-		{http.MethodPost, "/v1/nak", "nak", true},
-		{http.MethodPost, "/v1/term", "term", true},
-		{http.MethodPost, "/v1/extend", "extend", true},
-		{"", "/", "catch_all", false},
+		{http.MethodGet, "/healthz", "healthz", false, rolesNone, false, ""},
+		{http.MethodGet, "/readyz", "readyz", false, rolesNone, false, ""},
+		{http.MethodGet, "/metrics", "metrics", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/info", "info", false, rolesAdmin, false, ""},
+		{http.MethodPost, "/v1/admin/log-level", "admin_log_level", true, rolesAdmin, false, ""},
+
+		{http.MethodPost, "/v1/streams", "create_stream", true, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams", "list_streams", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}", "get_stream", false, rolesAdmin, false, ""},
+		{http.MethodPatch, "/v1/streams/{stream}", "update_stream", true, rolesAdmin, false, ""}, // dry-run flips on with the narrowing Impact slice
+		{http.MethodDelete, "/v1/streams/{stream}", "delete_stream", true, rolesAdmin, false, "stream"},
+
+		{
+			http.MethodPost, "/v1/streams/{stream}/messages", "publish_message", true,
+			auth.RoleSet(1 << auth.RolePublish), false, "",
+		},
+		{
+			http.MethodPost, "/v1/streams/{stream}/messages:batch", "publish_batch", true,
+			auth.RoleSet(1 << auth.RolePublish), false, "",
+		},
+		{http.MethodGet, "/v1/streams/{stream}/messages", "list_messages", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}", "peek_message", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}/data", "peek_message_data", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/messages/{id}", "peek_by_id", false, rolesAdmin, false, ""},
+
+		{http.MethodPost, "/v1/streams/{stream}/consumers", "create_consumer", true, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}/consumers", "list_consumers", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}", "get_consumer", false, rolesAdmin, false, ""},
+		{
+			http.MethodPatch, "/v1/streams/{stream}/consumers/{consumer}", "update_consumer", true,
+			rolesAdmin, false, "",
+		},
+		{
+			http.MethodDelete, "/v1/streams/{stream}/consumers/{consumer}", "delete_consumer", true,
+			rolesAdmin, false, "consumer",
+		},
+		{
+			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true,
+			rolesConsumeAndAdmin, false, "",
+		},
+
+		{http.MethodPost, "/v1/ack", "ack", true, rolesConsumeAndAdmin, false, ""},
+		{http.MethodPost, "/v1/nak", "nak", true, rolesConsumeAndAdmin, false, ""},
+		{http.MethodPost, "/v1/term", "term", true, rolesConsumeAndAdmin, false, ""},
+		{http.MethodPost, "/v1/extend", "extend", true, rolesConsumeAndAdmin, false, ""},
+
+		{"", "/", "catch_all", false, rolesNone, false, ""},
 	}
 }
 

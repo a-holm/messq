@@ -115,6 +115,9 @@ var pinnedCodeStatus = []struct {
 	{CodeStreamFull, http.StatusInsufficientStorage},
 	{CodeNotReady, http.StatusServiceUnavailable},
 	{CodeNotImplemented, http.StatusServiceUnavailable},
+	{CodeConfirmRequired, http.StatusConflict},
+	{CodeConfirmMismatch, http.StatusConflict},
+	{CodeDryRunUnsupported, http.StatusBadRequest},
 }
 
 // pinnedStatusByCode indexes pinnedCodeStatus for the producer test; built once so the
@@ -242,6 +245,12 @@ func produce(c Code) error {
 	case CodeNotImplemented:
 		// The /metrics mount with no backing handler until #21 injects one.
 		return errs.WithCode(errors.New("no metrics handler is injected"), string(CodeNotImplemented))
+	case CodeConfirmRequired:
+		return &confirmRequiredError{kind: "stream", name: "orders", blast: "3 messages"}
+	case CodeConfirmMismatch:
+		return &confirmMismatchError{kind: "stream", got: "other", want: "orders"}
+	case CodeDryRunUnsupported:
+		return errs.WithCode(errors.New("this route does not preview"), string(CodeDryRunUnsupported))
 	default:
 		return nil
 	}

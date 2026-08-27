@@ -60,6 +60,9 @@ const (
 	CodeStreamFull           Code = "stream_full"
 	CodeNotReady             Code = "not_ready"
 	CodeNotImplemented       Code = "not_implemented"
+	CodeConfirmRequired      Code = "confirm_required"
+	CodeConfirmMismatch      Code = "confirm_mismatch"
+	CodeDryRunUnsupported    Code = "dry_run_unsupported"
 )
 
 // allCodes is the whole enum in declaration order. TestEveryCodeIsProduced iterates it;
@@ -99,6 +102,9 @@ var allCodes = []Code{
 	CodeStreamFull,
 	CodeNotReady,
 	CodeNotImplemented,
+	CodeConfirmRequired,
+	CodeConfirmMismatch,
+	CodeDryRunUnsupported,
 }
 
 // isCodeMember reports whether c is in the enum. Attached codes are typed constants at
@@ -212,6 +218,9 @@ var codeStatus = map[Code]int{
 	CodeStreamFull:           http.StatusInsufficientStorage,
 	CodeNotReady:             http.StatusServiceUnavailable,
 	CodeNotImplemented:       http.StatusServiceUnavailable,
+	CodeConfirmRequired:      http.StatusConflict,
+	CodeConfirmMismatch:      http.StatusConflict,
+	CodeDryRunUnsupported:    http.StatusBadRequest,
 }
 
 // retryAfterSeconds is the integer-second Retry-After every 503 carries (issue §4);
@@ -230,21 +239,27 @@ func retryAfterSeconds(c Code) int {
 // condition must win. An attached code from errs.WithCode wins over everything.
 func refineTyped(err error) (Code, bool) {
 	var (
-		existsErr    *store.StreamExistsError
-		immErr       *store.ImmutableFieldError
-		unsupErr     *unsupportedError
-		loseErr      *queue.WouldLoseDataError
-		mismatchErr  *queue.MismatchError
-		reservedHdrr *queue.ReservedHeaderError
-		tooLargeErr  *queue.TooLargeError
-		routerErr    routerError
-		busyErr      busyError
+		existsErr     *store.StreamExistsError
+		immErr        *store.ImmutableFieldError
+		unsupErr      *unsupportedError
+		loseErr       *queue.WouldLoseDataError
+		mismatchErr   *queue.MismatchError
+		reservedHdrr  *queue.ReservedHeaderError
+		tooLargeErr   *queue.TooLargeError
+		routerErr     routerError
+		busyErr       busyError
+		confirmReqErr *confirmRequiredError
+		confirmMisErr *confirmMismatchError
 	)
 	switch {
 	case errors.As(err, &routerErr):
 		return Code(routerErr), true
 	case errors.As(err, &busyErr):
 		return CodeBusy, true
+	case errors.As(err, &confirmReqErr):
+		return CodeConfirmRequired, true
+	case errors.As(err, &confirmMisErr):
+		return CodeConfirmMismatch, true
 	case errors.As(err, &existsErr):
 		return CodeStreamExists, true
 	case errors.Is(err, queue.ErrReservedName):

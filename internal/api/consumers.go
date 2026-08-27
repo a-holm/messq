@@ -4,6 +4,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -230,13 +231,26 @@ func (s *Server) handleDeleteConsumer(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	confirm := r.URL.Query().Get("confirm")
-	if confirm != consumer {
-		s.writeError(w, errs.E(errs.ErrConflict, "api.deleteConsumer",
-			"confirm parameter %q does not match consumer name %q", confirm, consumer),
-			"messq consumer rm "+stream+" "+consumer+" --confirm "+consumer)
+	if !s.checkDryRunGate(w, r) {
 		return
 	}
+
+	// Blast radius first: the delivery rows the delete drops, counted from memory of
+	// a read — pending plus in-flight is what stops being deliverable.
+	next := []string{"messq consumer rm " + stream + " " + consumer + " --confirm " + consumer}
+	if confirm := r.URL.Query().Get("confirm"); confirm == "" || confirm != consumer {
+		info, gErr := s.store.GetConsumer(r.Context(), stream, consumer)
+		if gErr != nil {
+			s.writeError(w, gErr)
+			return
+		}
+		blast := fmt.Sprintf("%d pending and %d in-flight message%s",
+			info.Pending, info.Inflight, plural(int(info.Pending+info.Inflight)))
+		if !s.confirmRefusal(w, "consumer", consumer, confirm, blast, next) {
+			return
+		}
+	}
+
 	res, err := s.store.DeleteConsumer(r.Context(), stream, consumer, actorAPI)
 	if err != nil {
 		s.writeError(w, err)

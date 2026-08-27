@@ -543,11 +543,12 @@ func TestDeleteStream(t *testing.T) {
 
 func TestDeleteStreamConfirmMismatch(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		path string
+		name     string
+		path     string
+		wantCode Code
 	}{
-		{"missing confirm", "/v1/streams/orders"},
-		{"wrong confirm", "/v1/streams/orders?confirm=shipments"},
+		{"missing confirm", "/v1/streams/orders", CodeConfirmRequired},
+		{"wrong confirm", "/v1/streams/orders?confirm=shipments", CodeConfirmMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, srv := newStreamsServer(t)
@@ -558,8 +559,8 @@ func TestDeleteStreamConfirmMismatch(t *testing.T) {
 				t.Fatalf("status = %d, want 409 (body %q)", rec.Code, rec.Body.String())
 			}
 			env := decodeError(t, rec)
-			if env.Code != "conflict" {
-				t.Errorf("code = %q, want conflict", env.Code)
+			if env.Code != string(tc.wantCode) {
+				t.Errorf("code = %q, want %s", env.Code, tc.wantCode)
 			}
 			assertTraceID(t, env.TraceID)
 			if _, err := st.GetStream(context.Background(), "orders"); err != nil {
