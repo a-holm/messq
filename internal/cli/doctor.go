@@ -102,21 +102,41 @@ func newDoctorCmd(env *Env) *cobra.Command {
 				return uierr.Usage("%s", pErr)
 			}
 
-			opts := doctor.RunOptions{
-				Addr:    cmd.Flags().Lookup("addr").Value.String(),
-				DataDir: doctorFlag(cmd, env.Getenv, "data-dir", "MESSQ_DATA_DIR"),
-				Clock:   seamClock{now: env.Now},
-			}
-
-			for _, spec := range []struct{ flag, messqEnv, label string }{
-				{"since", "MESSQ_DOCTOR_SINCE", "--since"},
-				{"idle-after", "MESSQ_DOCTOR_IDLE_AFTER", "--idle-after"},
-				{"backup-max-age", "MESSQ_BACKUP_MAX_AGE", "--backup-max-age"},
-			} {
-				raw := doctorFlag(cmd, env.Getenv, spec.flag, spec.messqEnv)
-				if _, dErr := parseDoctorDuration(raw, spec.label); dErr != nil {
-					return dErr
+			dur := func(flag, messqEnv, label string) time.Duration {
+				raw := doctorFlag(cmd, env.Getenv, flag, messqEnv)
+				d, dErr := parseDoctorDuration(raw, label)
+				if dErr != nil {
+					return -1 // sentinel: reported by the caller below
 				}
+				return d
+			}
+			var badUsage error
+			sinceDur := dur("since", "MESSQ_DOCTOR_SINCE", "--since")
+			if sinceDur < 0 {
+				badUsage = uierr.Usage("invalid --since %q",
+					doctorFlag(cmd, env.Getenv, "since", "MESSQ_DOCTOR_SINCE"))
+			}
+			idleDur := dur("idle-after", "MESSQ_DOCTOR_IDLE_AFTER", "--idle-after")
+			if idleDur < 0 {
+				badUsage = uierr.Usage("invalid --idle-after %q",
+					doctorFlag(cmd, env.Getenv, "idle-after", "MESSQ_DOCTOR_IDLE_AFTER"))
+			}
+			maxAgeDur := dur("backup-max-age", "MESSQ_BACKUP_MAX_AGE", "--backup-max-age")
+			if maxAgeDur < 0 {
+				badUsage = uierr.Usage("invalid --backup-max-age %q",
+					doctorFlag(cmd, env.Getenv, "backup-max-age", "MESSQ_BACKUP_MAX_AGE"))
+			}
+			if badUsage != nil {
+				return badUsage
+			}
+			opts := doctor.RunOptions{
+				Addr:         cmd.Flags().Lookup("addr").Value.String(),
+				DataDir:      doctorFlag(cmd, env.Getenv, "data-dir", "MESSQ_DATA_DIR"),
+				Clock:        seamClock{now: env.Now},
+				Since:        sinceDur,
+				IdleAfter:    idleDur,
+				BackupDir:    doctorFlag(cmd, env.Getenv, "backup-dir", "MESSQ_BACKUP_DIR"),
+				BackupMaxAge: maxAgeDur,
 			}
 
 			format := render.FormatTable

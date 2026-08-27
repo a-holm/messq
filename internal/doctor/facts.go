@@ -37,3 +37,16 @@ func humanBytes(n int64) string {
 }
 
 var _ = time.Second
+
+// Knobs returns the daemon runtime knobs doctor judges; zero means the source
+// did not publish them and consuming checks answer skip.
+func (s *Snapshot) Knobs() ListenerConfigFacts { return s.ServerKnobs }
+
+// DataDir returns the data directory path as known to storage facts, falling
+// back to "" so findings never invent a path they never saw.
+func (s *Snapshot) DataDir() string {
+	if s.Storage != nil {
+		return s.Storage.DataDir
+	}
+	return ""
+}

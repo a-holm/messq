@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/a-holm/messq/internal/clock"
 )
@@ -20,6 +21,14 @@ type RunOptions struct {
 	DataDir string
 	// Clock stamps the snapshot's Now; nil means clock.System{}.
 	Clock clock.Clock
+
+	// Window/IdleAfter drive event- and silence-based checks.
+	Since     time.Duration
+	IdleAfter time.Duration
+
+	// BackupDir/BackupMaxAge feed the backup.* family; empty dir disables it.
+	BackupDir    string
+	BackupMaxAge time.Duration
 }
 
 // Collect fills a Snapshot from the configured source. Offline refusals come
@@ -38,6 +47,8 @@ func Collect(ctx context.Context, o RunOptions) (*Snapshot, error) {
 		}
 		return snap, err
 	}
+	applyRunKnobs(ctx, &Snapshot{}, o)
+
 	addr := o.Addr
 	if addr == "" {
 		return nil, fmt.Errorf("no source: give --data-dir or a reachable --addr")
@@ -46,7 +57,23 @@ func Collect(ctx context.Context, o RunOptions) (*Snapshot, error) {
 	if err == nil {
 		snap.Now = clk.Now()
 	}
+	applyRunKnobs(ctx, snap, o)
 	return snap, err
+}
+
+// applyRunKnobs copies the operator's analysis settings onto any snapshot the
+// collectors produced so checks read thresholds from the Snapshot itself.
+func applyRunKnobs(_ context.Context, snap *Snapshot, o RunOptions) {
+	if snap == nil {
+		return
+	}
+	snap.Window = o.Since
+	snap.IdleAfter = o.IdleAfter
+	snap.BackupDir = o.BackupDir
+	snap.BackupMaxAge = o.BackupMaxAge
+	if snap.BackupDir != "" {
+		snap.Backups = collectBackupFacts(snap.BackupDir)
+	}
 }
 
 // FilterRegistry copies r keeping only checks selected by --only patterns and

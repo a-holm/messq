@@ -47,6 +47,10 @@ type StorageFacts struct {
 	// is #27's daemon runtime, which publishes this fact when it lands.
 	ReadonlyLatched bool
 	ReadonlyCause   string
+
+	// ReserveUnavailable reports fallocate-unsupported (the reserve side of
+	// #27); a live daemon publishes it, offline storage facts leave it false.
+	ReserveUnavailable bool
 }
 
 // DurabilityFacts is the pragma story. Offline, Synchronous reads back the

@@ -8,6 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	// The driver registration is borrowed from internal/store, exactly like
@@ -99,6 +104,17 @@ type Snapshot struct {
 	// Metrics arrives from /metrics in live mode; nil offline.
 	Metrics *MetricFacts
 
+	// Security holds permission + listener observations when collected.
+	Security *SecurityFacts
+	// ServerKnobs expose sweep/janitor/reserve configuration from a daemon
+	// that publishes them; zero values mean unknown.
+	ServerKnobs ListenerConfigFacts
+
+	// Backup family: dir configured plus its observed listing (bounded).
+	BackupDir    string
+	BackupMaxAge time.Duration
+	Backups      []BackupFile
+
 	// Events carries windowed event aggregates when collected.
 	Events EventStats
 
@@ -123,7 +139,25 @@ type MetricFacts struct {
 // EventStats carries bounded event aggregates in window terms.
 type EventStats struct {
 	RetentionMS int64 // --event-retention as configured; 0 = unknown here
+
+	DeadGrowthKnown bool             // DeadByOrigin is trustworthy
+	DeadByOrigin    map[string]int64 // origin stream -> new dead letters in window
+	RedriveCounts   map[string]int64 // origin stream -> dlq.redrive events in window
+	DLQDriftList    []DLQDrift       // template-drift reports when #12 lands facts
+
+	StartHistoryKnown bool // starts/unclean facts were collected
+	LastStartUnclean  bool
+	RecentStarts      int64 // server.start events inside the window
+	ClockJumpMS       int64 // backwards wall-clock jump recorded since start
 }
+
+// DLQDrift is one reported template mismatch.
+type DLQDrift struct {
+	Stream string
+	Diff   string
+}
+
+// Snapshot gains ops-family facts (knobs, security, backups).
 
 // ServerFacts is what the live collector learns from /v1/info.
 type ServerFacts struct {
@@ -235,8 +269,15 @@ func (o OfflineCollector) Collect(ctx context.Context) (*Snapshot, error) {
 	snap.Pending = collectPendingFacts(ctx, db)
 	collectPausedAges(ctx, db, snap)
 	collectSubjectSamples(ctx, db, snap)
+	collectEventAggregates(ctx, db, snap)
+
+	snap.Security = collectPermFacts(o.DataDir)
 	return snap, err
 }
+
+// collectOpsFacts covers the families that live OUTSIDE the database: backup
+// directory listings ride the filesystem directly and are wired per-run by
+// Collect when configured.
 
 // collectPendingFacts aggregates deliveries once, grouped per consumer pair;
 // the pending set is small by construction (D5) so the group scan stays cheap.
@@ -396,4 +437,167 @@ func metaString(ctx context.Context, db *sql.DB, key string) string {
 		return ""
 	}
 	return v
+}
+
+// collectEventAggregates fills the windowed ops facts from the events table:
+// dead/redrive counts per origin, daemon starts in window, and whether the
+// newest start followed an unclean shutdown. Everything is a bounded grouped
+// scan riding events_ts; failures degrade to "not collected".
+func collectEventAggregates(ctx context.Context, db *sql.DB, snap *Snapshot) {
+	snap.Events.DeadByOrigin = map[string]int64{}
+	snap.Events.RedriveCounts = map[string]int64{}
+
+	rows, qErr := db.QueryContext(ctx, `
+		SELECT event, COALESCE(stream, ''), COUNT(*)
+		  FROM events
+		 WHERE event IN ('msg.dead', 'dlq.redrive', 'server.start')
+		   AND ts >= ?
+		 GROUP BY event, stream`, sinceFloorMS(snap))
+	if qErr != nil {
+		return
+	}
+	defer func() {
+		if cErr := rows.Close(); cErr != nil {
+			_ = cErr // close-after-full-iteration wedge; nothing further to do
+		}
+	}()
+	sawAny := false
+	for rows.Next() {
+		var evName, stream string
+		var count int64
+		if sErr := rows.Scan(&evName, &stream, &count); sErr != nil {
+			return
+		}
+		sawAny = true
+		switch evName {
+		case "msg.dead":
+			snap.Events.DeadByOrigin[stream] += count
+		case "dlq.redrive":
+			snap.Events.RedriveCounts[stream] += count
+		case "server.start":
+			snap.Events.RecentStarts += count
+		}
+	}
+	if rErr := rows.Err(); rErr != nil {
+		return
+	}
+	snap.Events.DeadGrowthKnown = sawAny || true // empty table is truth too
+
+	row := db.QueryRowContext(ctx, `
+		SELECT event FROM events
+		 WHERE event IN ('server.start', 'recovery.unclean')
+		 ORDER BY id DESC LIMIT 1`)
+	var last string
+	if row.Scan(&last) == nil {
+		snap.Events.StartHistoryKnown = true
+		snap.Events.LastStartUnclean = last == "recovery.unclean"
+	}
+}
+
+// sinceFloorMS clamps the analysis window to what this snapshot knows: a wall
+// now plus one day lookback is enough for doctor's aggregates without any
+// whole-table scan. Precise --since clamping evidence lands with #27.
+func sinceFloorMS(snap *Snapshot) int64 {
+	if snap.Now.IsZero() {
+		return 0
+	}
+	return snap.Now.Add(-24 * time.Hour).UnixMilli()
+}
+
+// collectPermFacts stats the data dir, database and token file exactly as
+// #16's preflight would; zeroed mode means "could not stat".
+func collectPermFacts(dir string) *SecurityFacts {
+	sec := &SecurityFacts{}
+	if info, err := os.Stat(dir); err == nil {
+		sec.DataDirMode = uint32(info.Mode().Perm())
+	}
+	if info, err := os.Stat(filepath.Join(dir, "messq.db")); err == nil {
+		sec.DBFileMode = uint32(info.Mode().Perm())
+	}
+	for _, name := range []string{"token", "auth.json", "token.json"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err == nil {
+			sec.TokenFilePath = name
+			sec.TokenFileMode = uint32(info.Mode().Perm())
+			break
+		}
+	}
+	return sec
+}
+
+// maxBackupListingFiles caps the backup-dir walk so a runabout directory can
+// never make doctor slow or unbounded.
+const maxBackupListingFiles = 20
+
+// collectBackupFacts lists the newest snapshots in dir with their modes and
+// stamp visibility (name-shape based: .db file with .messq-backup provenance
+// markers is verified by `backup` itself at write time; the deep quick_check
+// re-run arrives with the disk-budget work and rides StampState "unknown").
+func collectBackupFacts(dir string) []BackupFile {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	type dated struct {
+		path string
+		mod  int64
+		mode uint32
+		size int64
+	}
+	var files []dated
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".db") {
+			continue
+		}
+		info, sErr := e.Info()
+		if sErr != nil {
+			continue
+		}
+		files = append(files, dated{
+			path: filepath.Join(dir, e.Name()),
+			mod:  info.ModTime().UnixMilli(),
+			mode: uint32(info.Mode().Perm()),
+			size: info.Size(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod > files[j].mod })
+	if len(files) > maxBackupListingFiles {
+		files = files[:maxBackupListingFiles]
+	}
+	out := make([]BackupFile, 0, len(files))
+	for _, f := range files {
+		stamp := "missing"
+		if probeStampMarker(f.path) {
+			stamp = "ok"
+		}
+		out = append(out, BackupFile{
+			Path:       f.path,
+			ModTimeMS:  f.mod,
+			Bytes:      f.size,
+			Mode:       f.mode,
+			StampState: stamp,
+		})
+	}
+	return out
+}
+
+// probeStampMarker does a cheap presence check of the snapshot_* key prefix by
+// reading the first pages' strings — full meta opens are the backup command's
+// job; here we only distinguish "stamped" from "plain SQLite file".
+func probeStampMarker(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if cErr := f.Close(); cErr != nil {
+			_ = cErr // read-only handle; close failure cannot corrupt anything
+		}
+	}()
+	var buf [4096]byte
+	n, rErr := io.ReadFull(f, buf[:])
+	if rErr != nil && rErr != io.ErrUnexpectedEOF && rErr != io.EOF {
+		return false
+	}
+	return strings.Contains(string(buf[:max(0, n)]), "snapshot_taken_at")
 }
