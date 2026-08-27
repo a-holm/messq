@@ -191,6 +191,14 @@ linters:
         linters:
           - forbidigo
 
+      # The hermetic helper-child battery (issue #25 §11.3) re-execs the test binary AS A
+      # CHILD PROCESS; its TestMain switch and failure exits are precisely where an exit
+      # becomes an exit. This mirrors the cmd/messq exemption above with the same rationale.
+      - path: internal/cli/exec/helperchild_test\.go
+        text: Only a command entry point may exit
+        linters:
+          - forbidigo
+
       # These packages write usage text and narration to the process's own stdout and stderr.
       # A failed write there cannot be reported (the reporting channel is the thing that
       # failed), so the error is genuinely dead. Everywhere else, including every write to a
