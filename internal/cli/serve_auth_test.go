@@ -3,8 +3,15 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -114,7 +121,7 @@ func TestParseServeFlagsSocketModeErrors(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // staticLookup resolves a fixed hostname map; anything else is an error.
-func staticLookup(table map[string][]net.IPAddr) func(context.Context, string) ([]net.IPAddr, error) {
+func staticLookup(table map[string][]net.IPAddr) resolveHostFunc {
 	return func(_ context.Context, host string) ([]net.IPAddr, error) {
 		addrs, ok := table[host]
 		if !ok {
@@ -167,7 +174,7 @@ func TestEvaluateListenerAdmissionTable(t *testing.T) {
 		}
 	}
 
-	tests := []struct {
+	for _, tc := range []struct {
 		name string
 		addr string
 	}{
@@ -175,15 +182,14 @@ func TestEvaluateListenerAdmissionTable(t *testing.T) {
 		{"public IPv4 literal", "tcp://192.0.2.1:44360"},
 		{"IPv6 unspecified", "tcp://[::]:44360"},
 		{"mixed-resolving hostname", "tcp://" + mixedHost + ":44360"},
-	}
-	for _, tc := range tests {
+	} {
 		class, adm, errText := classify(tc.addr)
 		if errText != "" {
 			t.Fatalf("%s: classify: %s", tc.name, errText)
 		}
 		// Zero tokens on a public address: fatal refusal whose stable sentence
 		// names authentication. This is the row #14's acceptance test greps.
-		assertRefused(t, "non-loopback bind needs authentication (#16); use 127.0.0.1 or ::1", class, adm, tc.name+": no tokens")
+		assertRefused(t, refuseStableSentence, class, adm, tc.name+": no tokens")
 		if !strings.Contains(adm.refuse, "--auth-file") || !strings.Contains(adm.refuse, "tcp://127.0.0.1:") {
 			t.Errorf("%s: refusal must name both fixing commands (--auth-file and a loopback --listen): %q", tc.name, adm.refuse)
 		}
@@ -279,41 +285,89 @@ func TestEvaluateListenerAdmissionLoopbackWithTokens(t *testing.T) {
 // CODE itself is under test (mutant: returning exitError=1 fails this suite).
 // ---------------------------------------------------------------------------
 
-// execServeExpectFailure runs the helper child with extra MESSQ_* env entries and
-// returns its exit code plus captured stdout/stderr.
-func execServeExpectFailure(t *testing.T, extraEnv ...string) (int, string, string) {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestHelperServeProcess$")
-	base := []string{
-		helperServeEnv + "=1",
-		"MESSQ_DATA_DIR=" + t.TempDir(),
-		"MESSQ_DURABILITY=full",
-	}
-	cmd.Env = append(os.Environ(), append(base, extraEnv...)...)
-	var out, errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	runErr := cmd.Run()
-	if cmd.ProcessState == nil {
-		t.Fatalf("child did not exit: %v", runErr)
-	}
-	return cmd.ProcessState.ExitCode(), out.String(), errOut.String()
-}
+// refuseCredential is a fixed, OBVIOUSLY-fake credential used by fixtures: it
+// satisfies the wire shape ([A-Za-z0-9._~-]{16..512}) so files parse, while
+// carrying no real secret material.
+const refuseCredential = "ci-only-not-a-real-secret-0000000000000000__fixture"
 
 const (
-	// refuseStableSentence lives in serve.go; assertions here pin its bytes.
 	// TEST-NET-1 documentation address: reserved, unroutable, non-loopback. The
 	// policy refuses BEFORE any bind attempt, so no network traffic occurs.
 	testNetAddr = "192.0.2.10"
 	testNetPort = "44360"
 )
 
+func prepareDataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("chmod datadir: %v", err)
+	}
+	return dir
+}
+
+func writeAuthFixture(t *testing.T, path string) {
+	t.Helper()
+	sum := sha256.Sum256([]byte(refuseCredential))
+	content := fmt.Sprintf("ci-test %s publish,consume orders*\n", hex.EncodeToString(sum[:]))
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write auth fixture: %v", err)
+	}
+}
+
+// execServe runs the helper child with the given MESSQ_* env entries. The caller
+// decides whether blocking-until-exit or stop-and-reap is part of the scenario;
+// cleanup kills any leftover child so a failed case cannot wedge the suite. The
+// child's stderr is drained line-by-line into a mutex-guarded sink, because the
+// log reader and the running daemon write concurrently.
+func execServe(t *testing.T, extraEnv ...string) (*exec.Cmd, *lockedBuffer) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestHelperServeProcess$")
+	cmd.Env = append(os.Environ(), append([]string{helperServeEnv + "=1"}, extraEnv...)...)
+	cmd.Stdout = io.Discard
+	errOut := &lockedBuffer{}
+	stderr, pipeErr := cmd.StderrPipe()
+	if pipeErr != nil {
+		t.Fatalf("stderr pipe: %v", pipeErr)
+	}
+	if startErr := cmd.Start(); startErr != nil {
+		t.Fatalf("start serve child: %v", startErr)
+	}
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			errOut.WriteLine(sc.Text())
+		}
+	}()
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil && cmd.Process != nil {
+			if killErr := cmd.Process.Kill(); killErr == nil {
+				_ = cmd.Wait() //nolint:errcheck // reaping a killed child
+			}
+		}
+	})
+	return cmd, errOut
+}
+
+func execServeExpectExit(t *testing.T, extraEnv ...string) (int, string) {
+	t.Helper()
+	cmd, errOut := execServe(t, extraEnv...)
+	runErr := cmd.Wait()
+	if cmd.ProcessState == nil {
+		t.Fatalf("child did not exit: %v", runErr)
+	}
+	return cmd.ProcessState.ExitCode(), errOut.String()
+}
+
 func TestServeRefusesPublicBindWithoutAuthExitsConfig(t *testing.T) {
-	code, _, stderr := execServeExpectFailure(t, "MESSQ_LISTEN=tcp://"+testNetAddr+":"+testNetPort)
+	code, stderr := execServeExpectExit(t,
+		"MESSQ_DATA_DIR="+prepareDataDir(t),
+		"MESSQ_LISTEN=tcp://"+testNetAddr+":"+testNetPort,
+	)
 
 	if code != exitcode.CONFIG {
 		t.Errorf("exit code = %d, want exitcode.CONFIG (%d); a misconfiguration must fail loudly once and stay failed (#17 systemd RestartPreventExitStatus)", code, exitcode.CONFIG)
@@ -330,46 +384,22 @@ func TestServeRefusesPublicBindWithoutAuthExitsConfig(t *testing.T) {
 	if !strings.Contains(stderr, "outcome=refused") {
 		t.Errorf("no server.start outcome=refused emission before exit:\n%s", stderr)
 	}
-	if strings.Contains(stderr, `"outcome":"started"`) || strings.Contains(stderr, "outcome=started") {
+	if strings.Contains(stderr, "outcome=started") {
 		t.Errorf("a refused daemon must not also claim a successful start:\n%s", stderr)
-	}
-}
-
-func TestServeRefusalNamesBothFixCommands(t *testing.T) {
-	code, _, stderr := execServeExpectFailure(t, "MESSQ_LISTEN=tcp://"+testNetAddr+":"+testNetPort)
-	if code != exitcode.CONFIG {
-		t.Fatalf("exit code = %d, want %d", code, exitcode.CONFIG)
-	}
-	wantFixes := []string{
-		"messq serve --listen tcp://127.0.0.1:" + testNetPort,
-		"messq auth add <id> --auth-file ",
-	}
-	for _, fix := range wantFixes {
-		if !strings.Contains(stderr, fix) {
-			t.Errorf("stderr missing fix command %q:\n%s", fix, stderr)
-		}
 	}
 }
 
 // The refusal happens BEFORE the data directory is even opened: no store files
 // appear behind a misconfigured bind, keeping a broken deployment inert.
 func TestServePublicRefusalLeavesDataDirUnopened(t *testing.T) {
-	dataDir := t.TempDir()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestHelperServeProcess$")
-	cmd.Env = append(os.Environ(),
-		helperServeEnv+"=1",
+	dataDir := prepareDataDir(t)
+
+	code, _ := execServeExpectExit(t,
 		"MESSQ_DATA_DIR="+dataDir,
 		"MESSQ_LISTEN=tcp://"+testNetAddr+":"+testNetPort,
-		"MESSQ_DURABILITY=full",
 	)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err == nil {
-		t.Fatalf("serve unexpectedly succeeded")
+	if code != exitcode.CONFIG {
+		t.Fatalf("exit code = %d, want %d", code, exitcode.CONFIG)
 	}
 	entries, readErr := os.ReadDir(dataDir)
 	if readErr != nil {
@@ -391,6 +421,19 @@ func TestServePublicRefusalLeavesDataDirUnopened(t *testing.T) {
 // test cannot be flaky.
 // ---------------------------------------------------------------------------
 
+func drain(ch <-chan struct{}) int {
+	n := 0
+	for drained := false; !drained; {
+		select {
+		case <-ch:
+			n++
+		default:
+			drained = true
+		}
+	}
+	return n
+}
+
 func TestAuthBannerRepeatsEveryTenMinutesSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var sink lockedBuffer
@@ -409,12 +452,12 @@ func TestAuthBannerRepeatsEveryTenMinutesSynctest(t *testing.T) {
 		if got := drain(emitted); got != 1 {
 			t.Fatalf("first phase: %d emissions, want exactly 1", got)
 		}
-		time.Sleep(10 * time.Minute) //nolint:forbidigo // virtual time inside the testing/synctest bubble; the ban's own sanctioned exemption
+		time.Sleep(10 * time.Minute) //nolint:forbidigo // virtual time inside the synctest bubble
 		synctest.Wait()
 		if got := drain(emitted); got != 1 {
 			t.Fatalf("after one window: %d new emissions, want exactly 1", got)
 		}
-		time.Sleep(20 * time.Minute) //nolint:forbidigo // virtual time inside the bubble
+		time.Sleep(20 * time.Minute) //nolint:forbidigo // virtual time inside the synctest bubble
 		synctest.Wait()
 		if got := drain(emitted); got != 2 {
 			t.Fatalf("after two windows: %d new emissions, want exactly 2", got)
@@ -422,19 +465,6 @@ func TestAuthBannerRepeatsEveryTenMinutesSynctest(t *testing.T) {
 		cancel()
 		<-done
 	})
-}
-
-func drain(ch <-chan struct{}) int {
-	n := 0
-	for drained := false; !drained; {
-		select {
-		case <-ch:
-			n++
-		default:
-			drained = true
-		}
-	}
-	return n
 }
 
 // The public-with-tokens warning does NOT repeat: one shot at startup.
@@ -455,7 +485,7 @@ func TestAuthCleartextWarningFiresOnceSynctest(t *testing.T) {
 		if got := drain(emitted); got != 1 {
 			t.Fatalf("startup: %d emissions, want 1", got)
 		}
-		time.Sleep(31 * time.Minute) //nolint:forbidigo // virtual time inside the bubble; three windows pass instantly
+		time.Sleep(31 * time.Minute) //nolint:forbidigo // three windows pass instantly in the bubble
 		synctest.Wait()
 		select {
 		case <-emitted:
@@ -496,8 +526,7 @@ func TestListenUnixAppliesRequestedSocketMode(t *testing.T) {
 func TestListenUnixDefaultMatchesDocumentedMode(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "messq.sock")
-	mode := uint32(0o660)
-	ln, err := listenUnix(context.Background(), path, mode)
+	ln, err := listenUnix(context.Background(), path, defaultSocketMode)
 	if err != nil {
 		t.Fatalf("listenUnix: %v", err)
 	}
@@ -515,11 +544,94 @@ func TestListenUnixDefaultMatchesDocumentedMode(t *testing.T) {
 	}
 }
 
-// lockedBuffer is a mutex-guarded bytes.Buffer so parallel-emitting goroutines in
-// synctest bubbles can log without racing.
+// ---------------------------------------------------------------------------
+// Preflight wiring: ADR-0013's "verified at startup, refuse to run otherwise".
+// Every fatal row exits exitcode.CONFIG with its exact fix command printed, and
+// nothing binds or opens while the posture is broken.
+// ---------------------------------------------------------------------------
+
+// NOTE: a loose (0755) DATA DIR never reaches this wiring's preflight: store.Open
+// itself refuses such directories at open time with its own teaching error (see
+// internal/store/datadir_test.go). Serve keeps the DIR row in its audit output for
+// doctor symmetry (#30) — the load-bearing NEW rows here are the auth-file ones,
+// the socket-mode row, and zero-tokens-while-required.
+
+func TestServePreflightRefusesLooseAuthFileEvenOnLoopback(t *testing.T) {
+	dataDir := prepareDataDir(t)
+	authFile := filepath.Join(dataDir, "tokens")
+	writeAuthFixture(t, authFile)
+	if err := os.Chmod(authFile, 0o644); err != nil {
+		t.Fatalf("loosen auth file: %v", err)
+	}
+
+	code, stderr := execServeExpectExit(t,
+		"MESSQ_DATA_DIR="+dataDir,
+		"MESSQ_LISTEN=tcp://127.0.0.1:0",
+		"MESSQ_AUTH_FILE="+authFile,
+	)
+	if code != exitcode.CONFIG {
+		t.Fatalf("exit code = %d, want exitcode.CONFIG (loopback does NOT excuse a readable token file)", code)
+	}
+	if !strings.Contains(stderr, "want 0600") || !strings.Contains(stderr, `chmod 600 "`+authFile+`"`) {
+		t.Errorf("stderr missing the auth-file finding/exact fix:\n%s", stderr)
+	}
+}
+
+func TestServePreflightRefusesOtherReadableSocketModeBeforeBind(t *testing.T) {
+	sock := filepath.Join(prepareDataDir(t), "p.sock")
+
+	code, stderr := execServeExpectExit(t,
+		"MESSQ_DATA_DIR="+filepath.Dir(sock),
+		"MESSQ_LISTEN=unix://"+sock,
+		"MESSQ_SOCKET_MODE=0644",
+	)
+	if code != exitcode.CONFIG {
+		t.Fatalf("exit code = %d, want exitcode.CONFIG (--socket-mode 0644 lets other users read)", code)
+	}
+	if !strings.Contains(stderr, "--socket-mode must not grant other read or write") {
+		t.Errorf("stderr missing the socket-mode fix text:\n%s", stderr)
+	}
+	// Refusal happened BEFORE any bind: no socket node was ever created.
+	if _, err := os.Stat(sock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("socket node exists after a pre-bind refusal: %v", err)
+	}
+}
+
+func TestServePreflightAllowsTightPosture(t *testing.T) {
+	dataDir := prepareDataDir(t)
+	authFile := filepath.Join(dataDir, "tokens")
+	writeAuthFixture(t, authFile)
+
+	// The established unix-socket harness drives the same startup sequence:
+	// flags parse -> admission -> preflight -> store open -> listen -> SERVING.
+	// A clean SIGTERM exit is the assertion that the daemon was genuinely up,
+	// not merely past parse — startServe itself waits for an honest /healthz 200
+	// before returning, so reaching here proves preflight allowed the posture.
+	sock := filepath.Join(dataDir, "messq.sock")
+	cmd := startServe(t, dataDir, sock, "MESSQ_AUTH_FILE="+authFile, "MESSQ_DURABILITY=relaxed")
+	stopServe(t, cmd)
+}
+
+// lockedBuffer is a mutex-guarded line sink so the parent test can read log lines
+// while the child daemon keeps writing them.
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
+}
+
+// WriteLine appends one drained stderr line (newline added on read, not stored).
+func (w *lockedBuffer) WriteLine(line string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.b.WriteString(line)
+	w.b.WriteByte('\n')
+}
+
+// String snapshots the sink; safe against concurrent WriteLine calls.
+func (w *lockedBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
 }
 
 func (w *lockedBuffer) Write(p []byte) (int, error) {

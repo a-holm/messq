@@ -617,6 +617,42 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		}
 	}()
 
+	// ADR-0013: the filesystem posture is verified at startup and the daemon
+	// refuses to run otherwise. The audit runs after store.Open so the rows can
+	// observe the REAL db/-wal/-shm modes the store created (umask-proof 0600),
+	// and before listen() so a refused posture never binds. Fatal findings exit
+	// exitcode.CONFIG with their exact fix commands; warn findings narrate.
+	preflight := auth.Preflight(auth.Options{
+		DataDir:     cfg.dataDir,
+		AuthFile:    cfg.authFile,
+		RequireAuth: class == auth.ClassPublic,
+		SocketMode:  os.FileMode(cfg.socketMode),
+		UID:         os.Getuid(),
+	})
+	fatalCount := 0
+	for _, f := range preflight {
+		if f.Level == auth.LevelFatal {
+			fatalCount++
+		}
+	}
+	if fatalCount > 0 {
+		fmt.Fprintf(stderr, "messq serve: refusing to start with %d misconfiguration(s):\n", fatalCount)
+		for _, f := range preflight {
+			if f.Level != auth.LevelFatal {
+				continue
+			}
+			fmt.Fprintf(stderr, "  %s: %s\n", f.What, f.Detail)
+			if f.Fix != "" {
+				fmt.Fprintf(stderr, "  %s\n", f.Fix)
+			}
+		}
+		logRefusedStartup(logger, cfg.listen, "preflight refused startup")
+		return exitcode.CONFIG
+	}
+	for _, f := range preflight {
+		logger.Warn("server.preflight", "what", f.What, "detail", f.Detail, "fix", f.Fix)
+	}
+
 	ln, err := listen(ctx, cfg.listen, cfg.socketMode)
 	if err != nil {
 		fmt.Fprintf(stderr, "messq: %v\n", err)
