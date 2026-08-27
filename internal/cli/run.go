@@ -220,6 +220,7 @@ func assemble(root *cobra.Command, env *Env) {
 		newVerifyCmd(env),
 		newAuthCmd(env),
 		newBackupCmd(env),
+		newDoctorCmd(env),
 	)
 }
 

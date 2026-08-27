@@ -56,6 +56,27 @@ type Snapshot struct {
 
 	// Restored is non-nil when the data directory carries restore provenance.
 	Restored *RestoredProvenance
+
+	// Server carries /v1/info facts in live mode; nil offline.
+	Server *ServerFacts
+	// Unreachable is "" when live collection succeeded or the source is
+	// offline; otherwise it records WHY no daemon answered. It feeds
+	// server.unreachable — an unreachable daemon is a finding, never a
+	// transport failure escaping to exit 6 (§10).
+	Unreachable string
+	// CollectErrors records partial collection failures (a family endpoint
+	// failing while Info succeeded). Checks missing exactly that data emit
+	// SevSkipped naming it; the run never dies over one bad endpoint.
+	CollectErrors []string
+}
+
+// ServerFacts is what the live collector learns from /v1/info.
+type ServerFacts struct {
+	Version        string
+	NodeID         string
+	DurabilityMode string // "full" | "relaxed" — the daemon's configured mode
+	Synchronous    int    // pragma read-back from a live pooled connection (#15)
+	UptimeMS       int64
 }
 
 // OfflineCollector collects from a data directory via a read-only open — no
@@ -78,6 +99,12 @@ func (o OfflineCollector) Collect(ctx context.Context) (*Snapshot, error) {
 			err = fmt.Errorf("close %s: %w", o.DataDir, closeErr)
 		}
 	}()
+	// Force the lazy driver to actually open NOW so every later failure keeps
+	// the data directory in its message — a refusal that cannot name the path
+	// it refused teaches nothing.
+	if pingErr := db.PingContext(ctx); pingErr != nil {
+		return nil, fmt.Errorf("open %s read-only: %w", o.DataDir, pingErr)
+	}
 
 	snap := &Snapshot{Source: SourceDataDir}
 

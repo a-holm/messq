@@ -261,8 +261,10 @@ func WriteHuman(w io.Writer, rep Report, opts HumanOpts) error {
 
 	header := "messq doctor"
 	var parts []string
-	if rep.Target.Version != "" || rep.Target.Addr != "" {
+	if rep.Target.Version != "" {
 		parts = append(parts, fmt.Sprintf("daemon %s at %s", rep.Target.Version, rep.Target.Addr))
+	} else if rep.Target.Addr != "" {
+		parts = append(parts, fmt.Sprintf("no daemon at %s", rep.Target.Addr))
 	}
 	if rep.Target.DataDir != "" {
 		parts = append(parts, "data-dir "+rep.Target.DataDir)
