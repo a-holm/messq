@@ -3,8 +3,12 @@
 package exec
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,11 +44,17 @@ func runHelperChild(behaviour string) {
 		os.Exit(65)
 	case bevIs(behaviour, "exit77"):
 		os.Exit(77)
+	case bevIs(behaviour, "exit137"):
+		os.Exit(137)
 	case bevIs(behaviour, "exit-other"):
 		fmt.Fprint(os.Stderr, "mystery failure mode")
 		os.Exit(42)
-	case bevIs(behaviour, "exit137"):
-		os.Exit(137)
+	case bevIs(behaviour, "stderr-flood"):
+		floodStderr()
+	case bevIs(behaviour, "grandkid-blocker"):
+		blockOnStdinForever()
+	case strings.HasPrefix(behaviour, "trap-term-grandkid"):
+		trapTermThenSpawnGrandkid()
 	case bevIs(behaviour, "kill-self-term"):
 		if err := unix.Kill(os.Getpid(), unix.SIGTERM); err != nil {
 			os.Exit(9)
@@ -56,8 +66,97 @@ func runHelperChild(behaviour string) {
 	}
 }
 
-// bevIs matches optional parameters ("exit0@pfx") against a base name; kept
-// trivial today but lets richer behaviours pass arguments without new env vars.
+func floodStderr() {
+	total := 6_000_000
+	if n, err := strconv.Atoi(os.Getenv("MESSQ_FLOOD_BYTES")); err == nil && n > 0 {
+		total = n
+	}
+	chunk := make([]byte, 4096)
+	for i := range chunk {
+		chunk[i] = byte('a' + i%26)
+	}
+	written := 0
+	for written < total {
+		end := minInt(len(chunk), total-written)
+		n, err := os.Stderr.Write(chunk[:end])
+		written += n
+		if err != nil {
+			os.Exit(8) // capture closed early: parent broke the drain contract
+		}
+	}
+	os.Exit(7)
+}
+
+func blockOnStdinForever() {
+	buf := make([]byte, 4096)
+	for {
+		// Park FOREVER even if our stdin closes early: surviving this spot is
+		// exactly what the group-sweep killer asserts against.
+		if _, err := os.Stdin.Read(buf); err != nil {
+			continue
+		}
+	}
+}
+
+// trapTermThenSpawnGrandkid installs the SIGTERM swallow BEFORE anything else,
+// re-execs a grandchild that inherits stderr and blocks on stdin forever,
+// announces its pid as GK=<pid>, then waits for KILL inside its own body.
+func trapTermThenSpawnGrandkid() {
+	swallow := make(chan os.Signal, 4)
+	signal.Notify(swallow, unix.SIGTERM)
+
+	exe, err := os.Executable()
+	fatalIf(err != nil, "exec path")
+	ctxAll := context.Background()
+	cmd := exec.CommandContext(ctxAll, exe)
+	cmd.Env = append(os.Environ(), envTestChild+"=grandkid-blocker")
+	cmd.Stderr = os.Stderr
+	stdinGK, err := cmd.StdinPipe()
+	fatalIf(err != nil, "grandkid stdin pipe")
+	err = cmd.Start()
+	fatalIf(err != nil, "start grandkid")
+	fmt.Fprintf(os.Stderr,
+		"TRAP=%d PGRP=%d GK=%d GKPGRP=%d\n",
+		os.Getpid(), unix.Getpgrp(), cmd.Process.Pid, gkpgrpOf(cmd.Process.Pid))
+	_ = stdinGK.Close() //nolint:errcheck // the grandkid parks forever regardless of this close
+
+	<-make(chan struct{}) // park until SIGKILL sweeps the group
+}
+
+func gkpgrpOf(pid int) int {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return -1
+	}
+	s := string(raw)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return -1
+	}
+	fields := strings.Fields(s[i+2:])
+	if len(fields) >= 3 {
+		if n, err := strconv.Atoi(fields[2]); err == nil { // after "state": ppid pgrp sid
+			return n
+		}
+	}
+	return -1
+}
+
+func minInt(a, b int) int {
+	if b < a {
+		return b
+	}
+	return a
+}
+
+func fatalIf(cond bool, what string) {
+	if cond {
+		fmt.Fprintln(os.Stderr, "helper-child fatal:", what)
+		os.Exit(98)
+	}
+}
+
+// bevIs matches behaviours; future parameterised ones can switch here.
 func bevIs(behaviour, base string) bool { return behaviour == base }
 
 // newTestChildProc returns the argv/env pair that re-execs the test binary as
