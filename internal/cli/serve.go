@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,8 +18,10 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/api"
+	"github.com/a-holm/messq/internal/auth"
 	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/clock"
+	"github.com/a-holm/messq/internal/exitcode"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
@@ -49,6 +52,8 @@ var serveFlagNames = map[string]struct{}{
 	"--max-request-header-bytes": {},
 	"--max-conns":                {},
 	"--writer-submit-timeout":    {},
+	"--auth-file":                {},
+	"--socket-mode":              {},
 }
 
 // serveConfig is the fully resolved serve configuration, one field per §8 flag. It is
@@ -80,6 +85,15 @@ type serveConfig struct {
 	maxRequestHeaderBytes int64
 	maxConns              int
 	writerSubmitTimeout   time.Duration
+
+	// authFile is the --auth-file path (issue #16): a 0600 file of SHA-256-hashed
+	// bearer tokens. Empty means loopback trust only. The file is DATA, not
+	// configuration (D8): it reloads on SIGHUP while flags do not.
+	authFile string
+	// socketMode is --socket-mode: the mode applied to a freshly bound Unix socket
+	// immediately after Listen returns (the node does not exist earlier). Default
+	// and documented value is 0660 (ADR-0013).
+	socketMode uint32
 }
 
 // storeOptions maps the serve configuration onto the store's Options. The process-wide
@@ -213,6 +227,12 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	if cfg.writerSubmitTimeout, err = time.ParseDuration(resolve("--writer-submit-timeout", "MESSQ_WRITER_SUBMIT_TIMEOUT", "5s")); err != nil {
 		return serveConfig{}, fmt.Errorf("--writer-submit-timeout: %w", err)
 	}
+	cfg.authFile = resolve("--auth-file", "MESSQ_AUTH_FILE", "")
+	mode, merr := parseSocketMode(resolve("--socket-mode", "MESSQ_SOCKET_MODE", "0660"))
+	if merr != nil {
+		return serveConfig{}, merr
+	}
+	cfg.socketMode = mode
 
 	if cfg.maxMsgSizeCeiling <= 0 {
 		return serveConfig{}, errors.New("--max-msg-size-ceiling must be positive")
@@ -289,18 +309,180 @@ func parseByteSize(s string) (int64, error) {
 	return n, nil
 }
 
-// listen creates the daemon listener from a --listen address. Two schemes exist:
-// unix://PATH (a Unix socket, chmod 0660) and tcp://HOST:PORT (loopback only — a
-// non-loopback bind is refused as a fatal startup error until #16 lands authentication).
-func listen(ctx context.Context, addr string) (net.Listener, error) {
+// defaultSocketMode is the documented --socket-mode default (ADR-0013): group-
+// writable so the messq group reaches the daemon.
+const defaultSocketMode = uint32(0o660)
+
+// parseSocketMode validates a --socket-mode value: plain octal permission bits,
+// non-zero. Setuid/setgid/sticky are refused — a socket node has no use for them,
+// and their presence is an operator slip worth teaching about.
+func parseSocketMode(s string) (uint32, error) {
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil {
+		return 0, fmt.Errorf("--socket-mode %q must be octal permission bits (e.g. 0660)", s)
+	}
+	if v == 0 {
+		return 0, errors.New("--socket-mode must not be 0000; leave --listen on tcp://127.0.0.1 instead of closing the socket")
+	}
+	if v > 0o777 {
+		return 0, fmt.Errorf("--socket-mode %04o carries setuid/setgid/sticky bits; want plain permission bits like 0660", v)
+	}
+	return uint32(v), nil
+}
+
+// The #16 listener-policy banners. Both name the boundary that protects the
+// deployment today and the flag that tightens it.
+const (
+	bannerLoopbackUnauth  = "unauthenticated loopback listener: any local process can read and write every stream (#16); provide --auth-file to require bearer tokens"
+	bannerPublicCleartext = "serving cleartext HTTP on a public address: bearer tokens from --auth-file are the only boundary until native TLS lands (#40)"
+)
+
+// refuseStableSentence is the sentence merged #7 emits for an unauthenticated
+// public bind. Issue #16's wiring keeps it byte-for-byte so cross-lane acceptance
+// tests can pin it verbatim.
+const refuseStableSentence = "non-loopback bind needs authentication (#16); use 127.0.0.1 or ::1"
+
+// listenerAdmission is the decision of the issue #16 §7 policy table for one
+// --listen address with n tokens loaded: refuse to start, warn once, and/or keep
+// warning every window for as long as the process runs.
+type listenerAdmission struct {
+	refuse     string // non-empty: fatal startup text; everything else is moot
+	warnBanner string // non-empty: WARN once at startup
+	repeatWarn bool   // re-emit warnBanner every 10 minutes while running
+}
+
+// resolveHostFunc is the resolver shape [evaluateListenerAdmission] takes so tests
+// can stub hostname resolution without DNS. An alias keeps it assignable to
+// internal/auth's lookupIP parameter type.
+type resolveHostFunc = func(ctx context.Context, host string) ([]net.IPAddr, error)
+
+// serveLookupIP is the resolver [evaluateListenerAdmission] uses in production;
+// a package variable purely because Classify takes the lookup function as data.
+var serveLookupIP resolveHostFunc = net.DefaultResolver.LookupIPAddr
+
+// evaluateListenerAdmission classifies addr via internal/auth.Classify and applies
+// the closed table:
+//
+//	unix                  -> start silently (filesystem permissions are the ACL)
+//	loopback,  0 tokens   -> start, warn now AND every 10 minutes
+//	loopback, >0 tokens   -> start silently
+//	public,    0 tokens   -> REFUSE: stable sentence + both fixing commands
+//	public,   >0 tokens   -> start, warn once about cleartext HTTP
+//
+// Hostnames resolving to ANY non-loopback address classify as public (the safe
+// direction). A refused row is exitcode.CONFIG at the caller.
+func evaluateListenerAdmission(ctx context.Context, addr string, tokens int, lookup resolveHostFunc) (auth.Class, listenerAdmission, error) {
+	class, err := auth.Classify(ctx, addr, lookup)
+	if err != nil {
+		return 0, listenerAdmission{}, fmt.Errorf("bad --listen %q: %w", addr, err)
+	}
+	switch class {
+	case auth.ClassUnix:
+		return class, listenerAdmission{}, nil
+	case auth.ClassLoopback:
+		if tokens == 0 {
+			return class, listenerAdmission{warnBanner: bannerLoopbackUnauth, repeatWarn: true}, nil
+		}
+		return class, listenerAdmission{}, nil
+	case auth.ClassPublic:
+		if tokens == 0 {
+			return class, listenerAdmission{refuse: publicRefusal(addr)}, nil
+		}
+		return class, listenerAdmission{warnBanner: bannerPublicCleartext}, nil
+	default:
+		return class, listenerAdmission{}, fmt.Errorf("unclassified --listen %q", addr)
+	}
+}
+
+// publicRefusal renders the fatal startup text for a public bind without tokens:
+// the stable #7 sentence first, then exactly the two commands that fix the
+// deployment — listen loopback instead, or provide credentials.
+func publicRefusal(addr string) string {
+	hostport := strings.TrimPrefix(addr, "tcp://")
+	port := ""
+	if _, p, splitErr := net.SplitHostPort(hostport); splitErr == nil {
+		port = p
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "refusing to bind %q: %s\n", hostport, refuseStableSentence)
+	fmt.Fprintln(&b, "fix one of these and start again:")
+	fmt.Fprintf(&b, "  messq serve --listen tcp://127.0.0.1:%s          # keep the daemon loopback-local\n", port)
+	fmt.Fprintf(&b, "  messq auth add <id> --auth-file <path>           # require bearer credentials (#16)")
+	return b.String()
+}
+
+// logRefusedStartup emits the refused row of server.start before a fatal exit so a
+// refusal is exactly as greppable as a start (issue #16 §4): same event name,
+// outcome=refused, plus the reason.
+func logRefusedStartup(logger *slog.Logger, addr, reason string) {
+	logger.Error("server.start",
+		"outcome", "refused",
+		"reason", reason,
+		"listen", addr,
+		"version", buildinfo.Get().Version,
+	)
+}
+
+// loadAuthTokenCount reads and parses an --auth-file far enough to know how many
+// tokens it holds. A non-zero error is always a misconfiguration: callers refuse
+// startup rather than treat the file as empty.
+func loadAuthTokenCount(path string) (int, *auth.File, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("cannot read --auth-file %q: %w", path, err)
+	}
+	file, err := auth.Parse(path, bytes.NewReader(data))
+	if err != nil {
+		return 0, nil, fmt.Errorf("--auth-file %q is not usable: %w", path, err)
+	}
+	return len(file.Tokens), file, nil
+}
+
+// authBannerWindow is how often the unauthenticated-loopback warning repeats.
+// Measured in wall-clock terms but driven through the Clock seam so tests run it
+// inside a testing/synctest bubble at zero cost.
+const authBannerWindow = 10 * time.Minute
+
+// warnLoop emits banner once immediately, then — exactly when class is loopback —
+// once per window until ctx ends. Every emission also lands on emitted so tests
+// can count them deterministically; production passes a never-drained channel
+// whose drops are harmless duplicates. Public-class processes do not repeat: the
+// one-shot cleartext warning is all they get.
+func warnLoop(ctx context.Context, logger *slog.Logger, clk clock.Clock, class auth.Class, banner string, every time.Duration, emitted chan<- struct{}) {
+	emit := func() {
+		logger.Warn(banner, "listener_class", class.String())
+		select {
+		case emitted <- struct{}{}:
+		default:
+		}
+	}
+	emit()
+	if class != auth.ClassLoopback {
+		return
+	}
+	ticker := clk.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C():
+			emit()
+		}
+	}
+}
+
+// listen creates the daemon listener from a --listen address. Whether the address
+// is ALLOWED to bind was already decided by [evaluateListenerAdmission]; this
+// function only binds. unix://PATH applies socketMode to the node immediately after
+// Listen returns — the filesystem node does not exist earlier (issue #16 §4) — and
+// the preflight audit asserts the final mode.
+func listen(ctx context.Context, addr string, socketMode uint32) (net.Listener, error) {
 	switch {
 	case strings.HasPrefix(addr, "unix://"):
-		return listenUnix(ctx, strings.TrimPrefix(addr, "unix://"))
+		return listenUnix(ctx, strings.TrimPrefix(addr, "unix://"), socketMode)
 	case strings.HasPrefix(addr, "tcp://"):
 		hostport := strings.TrimPrefix(addr, "tcp://")
-		if err := refuseNonLoopback(ctx, hostport); err != nil {
-			return nil, err
-		}
 		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", hostport)
 		if err != nil {
 			return nil, fmt.Errorf("listen on %s: %w", hostport, err)
@@ -311,13 +493,13 @@ func listen(ctx context.Context, addr string) (net.Listener, error) {
 	}
 }
 
-// listenUnix binds a Unix socket at path and fixes its mode to 0660. A crashed previous
+// listenUnix binds a Unix socket at path and fixes its mode to socketMode. A crashed previous
 // run leaves a stale file where the socket path used to be; that path is removed only
 // when it is genuinely stale (nothing answers a connect), never a live daemon's socket.
-func listenUnix(ctx context.Context, path string) (net.Listener, error) {
+func listenUnix(ctx context.Context, path string, socketMode uint32) (net.Listener, error) {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
 	if err == nil {
-		if chErr := chmodSocket(path); chErr != nil {
+		if chErr := chmodSocket(path, socketMode); chErr != nil {
 			return nil, errors.Join(fmt.Errorf("chmod socket %s: %w", path, chErr), ln.Close())
 		}
 		return ln, nil
@@ -336,17 +518,17 @@ func listenUnix(ctx context.Context, path string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
-	if chErr := chmodSocket(path); chErr != nil {
+	if chErr := chmodSocket(path, socketMode); chErr != nil {
 		return nil, errors.Join(fmt.Errorf("chmod socket %s: %w", path, chErr), ln.Close())
 	}
 	return ln, nil
 }
 
-// chmodSocket fixes a freshly bound Unix socket to 0660: group-writable so the messq
-// group can reach the daemon (ADR-0013/0003). 0660 is the documented socket mode, not
-// an accidental widening.
-func chmodSocket(path string) error {
-	return os.Chmod(path, 0o660) //nolint:gosec // 0660 is the documented socket mode (ADR-0013/0003)
+// chmodSocket applies the requested mode to a freshly bound Unix socket. 0660 is
+// the documented default — group-writable so the messq group can reach the daemon
+// (ADR-0013/0003) — and any operator-requested mode is honoured verbatim.
+func chmodSocket(path string, socketMode uint32) error {
+	return os.Chmod(path, os.FileMode(socketMode).Perm())
 }
 
 // socketIsStale reports whether nothing is listening at a Unix socket path: a failed
@@ -366,32 +548,19 @@ func socketIsStale(ctx context.Context, path string) (bool, error) {
 // refuseNonLoopback rejects a TCP host:port that is not loopback-only. It is the
 // enforcement of ADR-0013's "a non-loopback bind without authentication is a fatal
 // startup error". An empty host (all interfaces) is refused outright, as is any
-// resolved address that is not a loopback address.
+// resolved address that is not a loopback address. The classification lives in ONE
+// function across the codebase (internal/auth.Classify); this wrapper carries only
+// the refusal sentence.
 func refuseNonLoopback(ctx context.Context, hostport string) error {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
+	if _, _, err := net.SplitHostPort(hostport); err != nil {
 		return fmt.Errorf("invalid --listen tcp address %q: %w", hostport, err)
 	}
-	if host == "" {
-		return fmt.Errorf("refusing to bind %q: non-loopback bind needs authentication (#16); use 127.0.0.1 or ::1", hostport)
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			return fmt.Errorf("refusing to bind %q: non-loopback bind needs authentication (#16); use 127.0.0.1 or ::1", hostport)
-		}
-		return nil
-	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	class, err := auth.Classify(ctx, "tcp://"+hostport, net.DefaultResolver.LookupIPAddr)
 	if err != nil {
-		return fmt.Errorf("resolve %q: %w", host, err)
+		return err
 	}
-	if len(addrs) == 0 {
-		return fmt.Errorf("refusing to bind %q: resolves to no addresses", hostport)
-	}
-	for _, addr := range addrs {
-		if !addr.IP.IsLoopback() {
-			return fmt.Errorf("refusing to bind %q: non-loopback bind needs authentication (#16); use 127.0.0.1 or ::1", hostport)
-		}
+	if class == auth.ClassPublic {
+		return fmt.Errorf("refusing to bind %q: %s", hostport, refuseStableSentence)
 	}
 	return nil
 }
@@ -409,6 +578,29 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Issue #16 §7: the listener policy runs FIRST — a misconfigured or unauthenticated
+	// public bind refuses before the store is even opened, emits server.start
+	// outcome=refused as greppably as starts are, and exits exitcode.CONFIG.
+	tokens := 0
+	if cfg.authFile != "" {
+		n, _, loadErr := loadAuthTokenCount(cfg.authFile)
+		if loadErr != nil {
+			fmt.Fprintf(stderr, "messq: %v\n", loadErr)
+			logRefusedStartup(logger, cfg.listen, loadErr.Error())
+			return exitcode.CONFIG
+		}
+		tokens = n
+	}
+	class, adm, admitErr := evaluateListenerAdmission(ctx, cfg.listen, tokens, serveLookupIP)
+	if admitErr != nil {
+		return usageError(stderr, admitErr.Error())
+	}
+	if adm.refuse != "" {
+		fmt.Fprintf(stderr, "%s\n", adm.refuse)
+		logRefusedStartup(logger, cfg.listen, refuseStableSentence)
+		return exitcode.CONFIG
+	}
+
 	clk := clock.System{}
 	opt := cfg.storeOptions()
 	opt.Clock = clk
@@ -425,7 +617,7 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		}
 	}()
 
-	ln, err := listen(ctx, cfg.listen)
+	ln, err := listen(ctx, cfg.listen, cfg.socketMode)
 	if err != nil {
 		fmt.Fprintf(stderr, "messq: %v\n", err)
 		return exitError
@@ -435,6 +627,13 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 			fmt.Fprintf(stderr, "messq: close listener: %v\n", closeErr)
 		}
 	}()
+
+	// The policy table's warning banner(s). warnLoop emits once immediately and —
+	// for unauthenticated loopback only — once per authBannerWindow on the Clock
+	// seam until shutdown. Unix sockets never warn: their permissions ARE the ACL.
+	if adm.warnBanner != "" {
+		go warnLoop(ctx, logger, clk, class, adm.warnBanner, authBannerWindow, make(chan struct{}, 1))
+	}
 
 	// Startup narration (§8). db_bytes and streams are best-effort here.
 	dbBytes, _, sizeErr := st.Sizes()

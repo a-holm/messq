@@ -293,7 +293,7 @@ func TestListenUnixSocket(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "messq.sock")
 
-	ln, err := listen(context.Background(), "unix://"+sock)
+	ln, err := listen(context.Background(), "unix://"+sock, defaultSocketMode)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestListenStaleSocket(t *testing.T) {
 		t.Fatalf("plant stale file: %v", err)
 	}
 
-	ln, err := listen(context.Background(), "unix://"+sock)
+	ln, err := listen(context.Background(), "unix://"+sock, defaultSocketMode)
 	if err != nil {
 		t.Fatalf("listen over stale path: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestListenStaleSocket(t *testing.T) {
 }
 
 func TestListenLoopbackTCP(t *testing.T) {
-	ln, err := listen(context.Background(), "tcp://127.0.0.1:0")
+	ln, err := listen(context.Background(), "tcp://127.0.0.1:0", defaultSocketMode)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -361,25 +361,25 @@ func TestListenLoopbackTCP(t *testing.T) {
 }
 
 func TestListenRefusesNonLoopback(t *testing.T) {
-	for _, addr := range []string{
-		"tcp://0.0.0.0:1234",
-		"tcp://192.0.2.1:1234",
-		"tcp://:1234",
-	} {
-		t.Run(addr, func(t *testing.T) {
-			ln, err := listen(context.Background(), addr)
-			if err == nil {
-				if closeErr := ln.Close(); closeErr != nil {
-					t.Logf("close: %v", closeErr)
-				}
-				t.Fatalf("listen(%q) succeeded, want a refusal", addr)
-			}
-		})
-	}
+	// Superseded by #16: refusing an unauthenticated public bind moved UP to
+	// [evaluateListenerAdmission]/runServe (which exits exitcode.CONFIG before
+	// anything opens — see TestServeRefusesPublicBindWithoutAuthExitsConfig).
+	// listen() is now bind-only so an ADMITTED public address (tokens loaded)
+	// can still bind. What must never come back is a refusal hidden inside the
+	// bind call: that would break the policy table's single home.
+	t.Run("binds public when admission allowed it", func(t *testing.T) {
+		ln, err := listen(context.Background(), "tcp://127.0.0.1:0", defaultSocketMode)
+		if err != nil {
+			t.Fatalf("listen loopback: %v", err)
+		}
+		if closeErr := ln.Close(); closeErr != nil {
+			t.Logf("close: %v", closeErr)
+		}
+	})
 }
 
 func TestListenUnsupportedScheme(t *testing.T) {
-	if _, err := listen(context.Background(), "http://127.0.0.1:8080"); err == nil {
+	if _, err := listen(context.Background(), "http://127.0.0.1:8080", defaultSocketMode); err == nil {
 		t.Fatal("listen(http://...) succeeded, want an unsupported-scheme error")
 	}
 }
