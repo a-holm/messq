@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/a-holm/messq/internal/errs"
@@ -117,6 +118,23 @@ type ConsumerDeleteResult struct {
 	Pending  int64 `json:"pending"`
 	Inflight int64 `json:"inflight"`
 }
+
+// ConsumerExistsError refuses a declarative POST whose name is taken by a different
+// configuration (issue #15 §6): create rewriting someone's limits silently is a lost
+// update, not idempotency. Diff names the differing fields; Current carries the stored
+// row so clients can diff themselves.
+type ConsumerExistsError struct {
+	Stream  string
+	Name    string
+	Diff    []string
+	Current ConsumerInfo
+}
+
+func (e *ConsumerExistsError) Error() string {
+	return fmt.Sprintf("consumer %q exists on stream %q with a different configuration (%s)",
+		e.Name, e.Stream, strings.Join(e.Diff, ", "))
+}
+func (*ConsumerExistsError) Unwrap() error { return errs.ErrConflict }
 
 // ImmutableFieldError refuses an attempt to move an existing consumer's cursor via the
 // creation-time start field. Moving a cursor is seek (#28), never a re-POST.

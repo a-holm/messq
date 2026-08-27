@@ -117,6 +117,8 @@ var pinnedCodeStatus = []struct {
 	{CodeNotImplemented, http.StatusServiceUnavailable},
 	{CodeConfirmRequired, http.StatusConflict},
 	{CodeConfirmMismatch, http.StatusConflict},
+	{CodeConsumerExists, http.StatusConflict},
+	{CodeWouldChangeFilters, http.StatusConflict},
 	{CodeDryRunUnsupported, http.StatusBadRequest},
 }
 
@@ -251,6 +253,13 @@ func produce(c Code) error {
 		return &confirmMismatchError{kind: "stream", got: "other", want: "orders"}
 	case CodeDryRunUnsupported:
 		return errs.WithCode(errors.New("this route does not preview"), string(CodeDryRunUnsupported))
+	case CodeConsumerExists:
+		return &store.ConsumerExistsError{
+			Stream: "orders", Name: "worker",
+			Diff: []string{"ack_wait_ms"}, Current: store.ConsumerInfo{Name: "worker", AckWaitMS: 30000},
+		}
+	case CodeWouldChangeFilters:
+		return &consumerFilterChangeError{stream: "orders", consumer: "worker"}
 	default:
 		return nil
 	}

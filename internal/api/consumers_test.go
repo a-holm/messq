@@ -47,29 +47,74 @@ func TestCreateConsumerRoute(t *testing.T) {
 		t.Fatalf("defaults = %+v, want dlq/30000/5", info)
 	}
 
-	// Idempotent re-create → 200, no second event.
+	// Idempotent re-create → 200 changed:false, no second event.
 	rec = doJSON(t, h, "POST", "/v1/streams/orders/consumers", `{"name":"worker","start":"new"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("idempotent status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
 
-	// Differing config → applied as update → 200.
+	// Differing config on a taken name → 409 consumer_exists (#15 §6): a create that
+	// silently rewrites someone's limits is a lost update, not idempotency. The
+	// sparse PATCH route owns changes.
 	rec = doJSON(t, h, "POST", "/v1/streams/orders/consumers", `{"name":"worker","start":"new","ack_wait_ms":60000}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("update status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	info = decodeConsumer(t, rec.Body.Bytes())
-	if info.AckWaitMS != 60000 {
-		t.Fatalf("ack_wait_ms = %d, want 60000", info.AckWaitMS)
-	}
-
-	// Differing start → 409 immutable_field.
-	rec = doJSON(t, h, "POST", "/v1/streams/orders/consumers", `{"name":"worker","start":"seq:3"}`)
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("immutable status = %d, want 409 (%s)", rec.Code, rec.Body)
+		t.Fatalf("different-config status = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
 	var env Envelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("not an envelope: %v", err)
+	}
+	if env.Error.Code != "consumer_exists" {
+		t.Fatalf("code = %q, want consumer_exists", env.Error.Code)
+	}
+
+	// The sparse PATCH applies the same change and it lands.
+	patchRec := doJSON(t, h, "PATCH", "/v1/streams/orders/consumers/worker", `{"ack_wait_ms":60000}`)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200 (%s)", patchRec.Code, patchRec.Body)
+	}
+	info = decodeConsumer(t, patchRec.Body.Bytes())
+	if info.AckWaitMS != 60000 {
+		t.Fatalf("ack_wait_ms after PATCH = %d, want 60000", info.AckWaitMS)
+	}
+
+	// Differing start on an otherwise-different document → 409 consumer_exists: the
+	// declarative doc does not match, and the next hints at the PATCH/seek pair. (An
+	// identical-config POST with a different start still reaches the store's
+	// immutable_field check — the seek-only cursor move stays its own refusal.)
+	rec = doJSON(t, h, "POST", "/v1/streams/orders/consumers", `{"name":"worker","start":"seq:3"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("differing start status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if env.Error.Code != "consumer_exists" {
+		t.Fatalf("code = %q, want consumer_exists", env.Error.Code)
+	}
+}
+
+func TestCreateConsumerIdenticalExceptStartIsImmutableField(t *testing.T) {
+	st, srv := newConsumersServer(t)
+	h := srv.Handler()
+
+	// Create with explicit ack_wait so a later identical body is achievable.
+	rec := doJSON(t, h, "POST", "/v1/streams/orders/consumers",
+		`{"name":"mover","start":"new","ack_wait_ms":45000}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d (%s)", rec.Code, rec.Body)
+	}
+	_ = st
+
+	// Identical config, different start: configs compare equal, so the request
+	// reaches the store command, which refuses the cursor move as immutable.
+	rec2 := doJSON(t, h, "POST", "/v1/streams/orders/consumers",
+		`{"name":"mover","start":"seq:9","ack_wait_ms":45000}`)
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (%s)", rec2.Code, rec2.Body)
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec2.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 	if env.Error.Code != "immutable_field" {

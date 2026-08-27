@@ -117,10 +117,12 @@ func (r consumerPatchRequest) patch() store.ConsumerPatch {
 }
 
 // createConsumerResponse wraps the created/updated consumer plus the warnings the
-// validation produced, so #24 can surface them before it grows its own path.
+// validation produced, so #24 can surface them before it grows its own path. Changed
+// reports whether THIS request altered stored state (declarative-upsert contract).
 type createConsumerResponse struct {
 	store.ConsumerInfo
 	Warnings queue.Warnings `json:"warnings,omitempty"`
+	Changed  bool           `json:"changed"`
 }
 
 func (s *Server) handleCreateConsumer(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +151,15 @@ func (s *Server) handleCreateConsumer(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := req.config(stream)
 
+	// Declarative upsert (issue §6): a taken name with a DIFFERENT configuration is
+	// refused here, so the store never sees an update through POST. An identical
+	// document still flows into the store command, whose identical-recreate fast path
+	// writes nothing and emits no event — and whose immutable-start check runs even
+	// when the rest of the document matches (moving a cursor belongs to seek).
+	if refused := s.consumerExistsRefusal(w, r, stream, cfg); refused {
+		return
+	}
+
 	res, err := s.store.CreateConsumer(r.Context(), stream, cfg, start, actorAPI)
 	if err != nil {
 		var imm *store.ImmutableFieldError
@@ -161,9 +172,13 @@ func (s *Server) handleCreateConsumer(w http.ResponseWriter, r *http.Request) {
 	}
 	status := http.StatusCreated
 	if !res.Created {
-		status = http.StatusOK // idempotent re-create or update
+		status = http.StatusOK // identical re-create: no event written by the engine
 	}
-	s.writeJSON(w, status, createConsumerResponse{ConsumerInfo: res.Info, Warnings: res.Warnings})
+	s.writeJSON(w, status, createConsumerResponse{
+		ConsumerInfo: res.Info,
+		Warnings:     res.Warnings,
+		Changed:      res.Created || res.Updated,
+	})
 }
 
 func (s *Server) handleListConsumers(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +227,19 @@ func (s *Server) handleUpdateConsumer(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSONInto(w, r, s.cfg.MaxRequestBytes, &req); err != nil {
 		s.writeError(w, err)
 		return
+	}
+	// Filters gate (#15/#9): re-scoping filters strands outstanding rows against the
+	// old patterns' semantics unless the caller names the permission explicitly.
+	if req.Filters != nil {
+		cur, gErr := s.store.GetConsumer(r.Context(), stream, consumer)
+		if gErr != nil {
+			s.writeError(w, gErr)
+			return
+		}
+		if !s.checkFilterChangeRefusal(w, stream, consumer,
+			cur.Filters, *req.Filters, r.URL.Query().Get("allow_filter_change") == "1") {
+			return
+		}
 	}
 	info, err := s.store.UpdateConsumer(r.Context(), stream, consumer, req.patch(), actorAPI)
 	if err != nil {
@@ -262,4 +290,62 @@ func (s *Server) handleDeleteConsumer(w http.ResponseWriter, r *http.Request) {
 // deleteConsumerResponse wraps the deletion receipt under a single "deleted" key.
 type deleteConsumerResponse struct {
 	Deleted store.ConsumerDeleteResult `json:"deleted"`
+}
+
+// handlePauseConsumer pauses one consumer idempotently; in-flight rows keep their
+// claim-time deadlines (documented, NOT frozen), so the response carries a finding
+// naming their count and earliest deadline when any exist.
+func (s *Server) handlePauseConsumer(w http.ResponseWriter, r *http.Request) {
+	s.handleSetPausedRoute(w, r, true)
+}
+
+// handleResumeConsumer resumes one paused consumer idempotently.
+func (s *Server) handleResumeConsumer(w http.ResponseWriter, r *http.Request) {
+	s.handleSetPausedRoute(w, r, false)
+}
+
+// pauseResumeResponse echoes the state change plus the deadline finding.
+type pauseResumeResponse struct {
+	Stream   string    `json:"stream"`
+	Name     string    `json:"name"`
+	Paused   bool      `json:"paused"`
+	Changed  bool      `json:"changed"`
+	Findings []finding `json:"findings,omitempty"`
+}
+
+func (s *Server) handleSetPausedRoute(w http.ResponseWriter, r *http.Request, wantPaused bool) {
+	stream, consumer := r.PathValue("stream"), r.PathValue("consumer")
+	if err := queue.ValidateExistingStreamName(stream); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if err := queue.ValidateConsumerName(consumer); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	cur, err := s.store.GetConsumer(r.Context(), stream, consumer)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if cur.Paused == wantPaused {
+		// Idempotent no-op: no writer command, no event, changed:false.
+		s.writeJSON(w, http.StatusOK, pauseResumeResponse{
+			Stream: stream, Name: consumer, Paused: wantPaused, Changed: false,
+		})
+		return
+	}
+	var findings []finding
+	if wantPaused && cur.Inflight > 0 {
+		findings = s.pauseFindings(stream, consumer, cur.Inflight, 0)
+	}
+	info, err := s.store.SetPaused(r.Context(), stream, consumer, wantPaused, actorAPI)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, pauseResumeResponse{
+		Stream: stream, Name: consumer, Paused: info.Paused, Changed: true, Findings: findings,
+	})
 }

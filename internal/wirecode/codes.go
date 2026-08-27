@@ -57,6 +57,11 @@ const (
 	NotReady       Code = "not_ready"       // 503 + Retry-After before recovery completes
 	NotImplemented Code = "not_implemented" // 503 from a mount whose backing handler is nil
 
+	// Issue #15 consumer control plane: declarative-upsert refusal and the filter-
+	// change permission a sparse PATCH must name to rewrite filters.
+	ConsumerExists     Code = "consumer_exists"      // 409: taken name, different config
+	WouldChangeFilters Code = "would_change_filters" // 409: ?allow_filter_change=1 missing
+
 	// Issue #15 destructive-verb contracts: the confirm handshake and the dry-run gate.
 	ConfirmRequired   Code = "confirm_required"    // 409: name confirmation missing
 	ConfirmMismatch   Code = "confirm_mismatch"    // 409: ?confirm= names something else
@@ -148,6 +153,8 @@ var Table = map[Code]Entry{
 	TooManyWaiters:       {Status: 503},
 	NotReady:             {Status: 503},
 	NotImplemented:       {Status: 503},
+	ConsumerExists:       {Status: 409},
+	WouldChangeFilters:   {Status: 409},
 	ConfirmRequired:      {Status: 409},
 	ConfirmMismatch:      {Status: 409},
 	DryRunUnsupported:    {Status: 400},

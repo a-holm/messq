@@ -60,6 +60,8 @@ const (
 	CodeStreamFull           Code = "stream_full"
 	CodeNotReady             Code = "not_ready"
 	CodeNotImplemented       Code = "not_implemented"
+	CodeConsumerExists       Code = "consumer_exists"
+	CodeWouldChangeFilters   Code = "would_change_filters"
 	CodeConfirmRequired      Code = "confirm_required"
 	CodeConfirmMismatch      Code = "confirm_mismatch"
 	CodeDryRunUnsupported    Code = "dry_run_unsupported"
@@ -105,6 +107,8 @@ var allCodes = []Code{
 	CodeConfirmRequired,
 	CodeConfirmMismatch,
 	CodeDryRunUnsupported,
+	CodeConsumerExists,
+	CodeWouldChangeFilters,
 }
 
 // isCodeMember reports whether c is in the enum. Attached codes are typed constants at
@@ -218,6 +222,8 @@ var codeStatus = map[Code]int{
 	CodeStreamFull:           http.StatusInsufficientStorage,
 	CodeNotReady:             http.StatusServiceUnavailable,
 	CodeNotImplemented:       http.StatusServiceUnavailable,
+	CodeConsumerExists:       http.StatusConflict,
+	CodeWouldChangeFilters:   http.StatusConflict,
 	CodeConfirmRequired:      http.StatusConflict,
 	CodeConfirmMismatch:      http.StatusConflict,
 	CodeDryRunUnsupported:    http.StatusBadRequest,
@@ -239,17 +245,19 @@ func retryAfterSeconds(c Code) int {
 // condition must win. An attached code from errs.WithCode wins over everything.
 func refineTyped(err error) (Code, bool) {
 	var (
-		existsErr     *store.StreamExistsError
-		immErr        *store.ImmutableFieldError
-		unsupErr      *unsupportedError
-		loseErr       *queue.WouldLoseDataError
-		mismatchErr   *queue.MismatchError
-		reservedHdrr  *queue.ReservedHeaderError
-		tooLargeErr   *queue.TooLargeError
-		routerErr     routerError
-		busyErr       busyError
-		confirmReqErr *confirmRequiredError
-		confirmMisErr *confirmMismatchError
+		existsErr       *store.StreamExistsError
+		immErr          *store.ImmutableFieldError
+		unsupErr        *unsupportedError
+		loseErr         *queue.WouldLoseDataError
+		mismatchErr     *queue.MismatchError
+		reservedHdrr    *queue.ReservedHeaderError
+		tooLargeErr     *queue.TooLargeError
+		routerErr       routerError
+		busyErr         busyError
+		confirmReqErr   *confirmRequiredError
+		confirmMisErr   *confirmMismatchError
+		existsConsErr   *store.ConsumerExistsError
+		filterChangeErr *consumerFilterChangeError
 	)
 	switch {
 	case errors.As(err, &routerErr):
@@ -260,6 +268,10 @@ func refineTyped(err error) (Code, bool) {
 		return CodeConfirmRequired, true
 	case errors.As(err, &confirmMisErr):
 		return CodeConfirmMismatch, true
+	case errors.As(err, &existsConsErr):
+		return CodeConsumerExists, true
+	case errors.As(err, &filterChangeErr):
+		return CodeWouldChangeFilters, true
 	case errors.As(err, &existsErr):
 		return CodeStreamExists, true
 	case errors.Is(err, queue.ErrReservedName):

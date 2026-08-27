@@ -75,6 +75,14 @@ func (*Server) routes() []Route {
 			rolesAdmin, false, "consumer",
 		},
 		{
+			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/pause", "pause_consumer", true,
+			rolesAdmin, false, "",
+		},
+		{
+			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/resume", "resume_consumer", true,
+			rolesAdmin, false, "",
+		},
+		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true,
 			rolesConsumeAndAdmin, false, "",
 		},
@@ -204,6 +212,10 @@ func (s *Server) routeHandler(name string) http.HandlerFunc {
 		return s.handleDeleteConsumer
 	case "fetch_consumer":
 		return s.handleFetchConsumer
+	case "pause_consumer":
+		return s.handlePauseConsumer
+	case "resume_consumer":
+		return s.handleResumeConsumer
 	case "ack":
 		return s.handleSettle(queue.VerbAck)
 	case "nak":
