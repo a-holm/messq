@@ -59,6 +59,7 @@ const (
 	CodeDiskFull             Code = "disk_full"
 	CodeStreamFull           Code = "stream_full"
 	CodeNotReady             Code = "not_ready"
+	CodeNotImplemented       Code = "not_implemented"
 )
 
 // allCodes is the whole enum in declaration order. TestEveryCodeIsProduced iterates it;
@@ -97,6 +98,7 @@ var allCodes = []Code{
 	CodeDiskFull,
 	CodeStreamFull,
 	CodeNotReady,
+	CodeNotImplemented,
 }
 
 // isCodeMember reports whether c is in the enum. Attached codes are typed constants at
@@ -209,6 +211,7 @@ var codeStatus = map[Code]int{
 	CodeDiskFull:             http.StatusInsufficientStorage,
 	CodeStreamFull:           http.StatusInsufficientStorage,
 	CodeNotReady:             http.StatusServiceUnavailable,
+	CodeNotImplemented:       http.StatusServiceUnavailable,
 }
 
 // retryAfterSeconds is the integer-second Retry-After every 503 carries (issue §4);

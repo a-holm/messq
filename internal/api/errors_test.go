@@ -114,6 +114,7 @@ var pinnedCodeStatus = []struct {
 	{CodeDiskFull, http.StatusInsufficientStorage},
 	{CodeStreamFull, http.StatusInsufficientStorage},
 	{CodeNotReady, http.StatusServiceUnavailable},
+	{CodeNotImplemented, http.StatusServiceUnavailable},
 }
 
 // pinnedStatusByCode indexes pinnedCodeStatus for the producer test; built once so the
@@ -238,6 +239,9 @@ func produce(c Code) error {
 	case CodeNotReady:
 		// The probes' producing path: readiness refused while recovery completes.
 		return errs.WithCode(errors.New("recovery has not completed"), string(CodeNotReady))
+	case CodeNotImplemented:
+		// The /metrics mount with no backing handler until #21 injects one.
+		return errs.WithCode(errors.New("no metrics handler is injected"), string(CodeNotImplemented))
 	default:
 		return nil
 	}

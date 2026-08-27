@@ -96,6 +96,14 @@ type Config struct {
 	// InfoCacheTTL is --info-cache (default 5s): how long the syscall-backed fields of
 	// /v1/info (file sizes, free disk, counts) may be reused between requests.
 	InfoCacheTTL time.Duration
+
+	// LevelSetter backs POST /v1/admin/log-level (#19 supplies the real implementation);
+	// nil means the knob is not wired and the endpoint answers not_implemented.
+	LevelSetter LevelSetter
+
+	// Metrics is the injected scrape handler (#21 drops promhttp in this slot); nil
+	// makes GET /metrics answer 503 not_implemented — never 404.
+	Metrics http.Handler
 }
 
 // The §9 defaults for zero Config fields.
