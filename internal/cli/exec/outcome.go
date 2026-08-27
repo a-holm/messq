@@ -50,10 +50,11 @@ const (
 // Result is one classified child end: what the Worker should do, what actually
 // happened to the process, and the operator-facing sentence.
 type Result struct {
-	Outcome  Outcome
-	ExitCode int            // -1 when the child was killed by a signal
-	Signal   syscall.Signal // 0 when the child exited normally
-	Reason   string         // sanitised stderr or the classifier's sentence
+	Outcome   Outcome
+	ExitCode  int            // -1 when the child was killed by a signal
+	Signal    syscall.Signal // 0 when the child exited normally
+	Reason    string         // sanitised stderr or the classifier's sentence
+	Truncated bool           // the capture window had to drop bytes
 }
 
 // joinReason glues a prefix onto captured stderr exactly once, with ": "

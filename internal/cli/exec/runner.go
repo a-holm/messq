@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/a-holm/messq/internal/cli/render"
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/pkg/client"
 )
@@ -45,7 +46,10 @@ type RunnerOptions struct {
 	StderrBytes   int
 	StderrMode    StderrMode
 	Stdout        io.Writer
-	AfterBuildEnv []string // documented test seam ONLY (see above)
+	AfterBuildEnv []string      // documented test seam ONLY (see above)
+	Out           io.Writer     // --output destination; nil disables rendering
+	Mode          render.Format // resolved output face for records/summary
+	Hints         *HintPrinter  // one-time exit-code explainer (G9)
 }
 
 // Runner is the client.Worker handler factory: ONE message in, ONE child out,
@@ -204,34 +208,88 @@ func (r *Runner) Handle(ctx context.Context, m *client.Delivered) error {
 		return client.Permanent(fmt.Errorf("--exec configuration unusable: %w", envErr))
 	}
 
+	runStart := clk.Now()
 	run, runErr := runChild(tctx, clk, argv, m.Body, childOpts)
 	if runErr != nil && run == nil {
-		return r.spawnFailure("could not start " + strings.Join(argv, " ") + ": " + runErr.Error())
+		durMS := clk.Since(runStart).Milliseconds()
+		sent := spawnSentence(argv, runErr.Error())
+		r.spawnStreak.Add(1)
+		if r.Opts.Out != nil {
+			rec := Record{
+				TS:     clk.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+				Stream: m.Stream, Consumer: m.Consumer, Seq: m.Seq,
+				MsgID: m.ID, Subject: m.Subject,
+				Attempt: m.Attempt, MaxDeliver: m.MaxDeliver,
+				ExitCode: -1, Outcome: OutcomeNak.String(),
+				DurationMS: durMS, RetryInMS: spawnRetryDelay.Milliseconds(),
+				Reason: sent, TraceID: m.TraceID,
+			}
+			if e := r.emitter(); e != nil {
+				_ = e.Emit(rec) //nolint:errcheck // rendering failures never redirect settles
+			}
+			if r.Opts.Hints != nil {
+				r.Opts.Hints.PrintOnce()
+			}
+		}
+		return client.RetryAfter(spawnRetryDelay, errors.New(sent))
 	}
 
 	kind, detail := r.resolveTerminalCause(ctx, tctx)
 	reason := SanitizeStderr(run.Capture.raw(), r.Opts.StderrBytes, r.Opts.StderrMode)
-
 	res := Classify(run.State, kind, detail, reason)
+	res.Truncated = run.Capture.truncated()
 
-	// The direct child SURVIVED a cancelled context = WaitDelay/KILL machinery
-	// worked; nothing settlement-worthy can ride a dead token regardless of
-	// what the last breath printed, so early-out keeps the table clean.
+	durMS := clk.Since(runStart).Milliseconds()
+	var retryMS int64
 	switch res.Outcome {
 	case OutcomeAck:
 		r.spawnStreak.Store(0)
-		return nil
 	case OutcomeTerm:
 		r.spawnStreak.Store(0)
-		return client.Permanent(errors.New(res.Reason))
 	case OutcomeNak:
 		r.spawnStreak.Store(0)
+	case OutcomeAbandon:
+	default: // unreachable; exhaustive switch satisfies the closed set
+		return abandonError("unrouted classifier result")
+	}
+
+	if r.Opts.Out != nil {
+		rec := recordFromResult(m, res, durMS, retryMS, clk.Now())
+		if e := r.emitter(); e != nil {
+			_ = e.Emit(rec) //nolint:errcheck // rendering failures never redirect settles
+		}
+		if r.Opts.Hints != nil && (res.ExitCode != 0 || res.Signal != 0) {
+			r.Opts.Hints.PrintOnce()
+		}
+	}
+
+	switch res.Outcome {
+	case OutcomeAck:
+		return nil
+	case OutcomeTerm:
+		return client.Permanent(errors.New(res.Reason))
+	case OutcomeNak:
 		return errors.New(res.Reason)
 	case OutcomeAbandon:
 		return abandonError("token fenced while child ran")
-	default:
+	default: // unreachable; exhaustive switch satisfies the closed set
 		return abandonError("unrouted classifier result")
 	}
+}
+
+// spawnFailure keeps the §3 spawn-failure shape helper free-standing so both
+// Handle and future flag-lane breakers share one sentence.
+func spawnSentence(argv []string, cause string) string {
+	return "could not start " + strings.Join(argv, " ") + ": " + cause
+}
+
+// emitter builds a throwaway emitter per message; a per-run Emitter lives with
+// the sub-command once #24's tree owns the output writer.
+func (r *Runner) emitter() *Emitter {
+	if r.Opts.Out == nil {
+		return nil
+	}
+	return NewEmitter(r.Opts.Out, r.Opts.Mode)
 }
 
 // spawnFailure feeds the consecutive-failure counter and shapes the §3
