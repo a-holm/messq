@@ -296,6 +296,31 @@ func TestSelectBlame(t *testing.T) {
 	})
 }
 
+func TestStillViolating(t *testing.T) {
+	v := RetentionView{MaxMsgs: 10, MaxBytes: 1000, Msgs: 12, Bytes: 1200}
+	t.Run("both limits broken", func(t *testing.T) {
+		if !StillViolating(11, 900, v) {
+			t.Fatal("msgs above max must violate")
+		}
+	})
+	t.Run("byte limit alone broken", func(t *testing.T) {
+		if !StillViolating(5, 1100, v) {
+			t.Fatal("bytes above max with slack msgs must still violate")
+		}
+	})
+	t.Run("exactly at the limit is compliant", func(t *testing.T) {
+		if StillViolating(10, 1000, v) {
+			t.Fatal("boundary equality is compliance, not violation")
+		}
+	})
+	t.Run("unlimited limits never violate", func(t *testing.T) {
+		open := RetentionView{}
+		if StillViolating(1<<40, 1<<40, open) {
+			t.Fatal("0 = unlimited: nothing can violate it")
+		}
+	})
+}
+
 func TestDetectClockJump(t *testing.T) {
 	const tol = time.Minute
 

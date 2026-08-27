@@ -139,6 +139,18 @@ func violatesAfter(n int, freed int64, v RetentionView) bool {
 	return v.MaxBytes > 0 && bytes > v.MaxBytes
 }
 
+// StillViolating reports whether a post-sweep stat snapshot (msgs/bytes as they WILL
+// be once the sweep's actual deletions land) still breaks one of the view's active
+// limits. The store's retention sweep calls it with REAL deletions — the guarded
+// statement has the final word about what survived, not the plan — so blocked events
+// fire only when enforcement is genuinely obstructed.
+func StillViolating(msgs, bytes int64, v RetentionView) bool {
+	if v.MaxMsgs > 0 && msgs > v.MaxMsgs {
+		return true
+	}
+	return v.MaxBytes > 0 && bytes > v.MaxBytes
+}
+
 // Holder names one delivery row pinning a candidate, as the blame query returns it.
 // Paused consumers ride through unchanged: pausing is not abandoning (#27 §6), so
 // selection treats them like anyone else.
