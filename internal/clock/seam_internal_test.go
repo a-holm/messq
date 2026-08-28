@@ -31,6 +31,9 @@ var wallClockCallers = map[string]string{
 	"pkg/client/clock.go": "the client-side mirror of this seam (issue #22): pkg/client is public and " +
 		"layers.sh forbids it importing internal/clock, so it defines its own Clock interface over " +
 		"the same two calls; tests inject fakes or run under testing/synctest",
+	"internal/cli/serve_auth_test.go": "issue #16's token-rotation test runs inside a testing/synctest bubble: " +
+		"time.Sleep advances VIRTUAL time (every goroutine in the bubble waits together), so the " +
+		"rotation windows pass instantly without touching the real wall clock",
 }
 
 // skipDirs are not source. testdata holds fixtures, which are inputs to the sabotage matrix and

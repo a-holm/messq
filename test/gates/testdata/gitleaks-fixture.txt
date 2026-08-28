@@ -1,0 +1,11 @@
+SPDX-License-Identifier: Apache-2.0
+
+Fixture credential for the messq-bearer-credential gitleaks rule.
+
+The line below MATCHES the rule's shape on purpose — it is what CI would flag:
+
+msq1_fixture-token_NOT-A-REAL-CREDENTIAL-only-shape
+
+When you see it in review, nothing needs rotating: every character above is
+published documentation. A REAL credential anywhere in git history means rotate
+first (delete the id's auth-file line, re-add), clean second.

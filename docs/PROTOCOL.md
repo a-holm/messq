@@ -22,9 +22,49 @@ messq serve --data-dir /var/lib/messq [--listen unix:///run/messq/messq.sock]
   serves loopback TCP instead. Every request is identical on both listeners — same
   routes, same bodies, same codes.
 - The daemon refuses to start on a non-loopback TCP address unless an auth file is
-  configured (issue #16 pins the refusal; until then only loopback listeners exist).
+  configured (`--auth-file`); the refusal exits `EX_CONFIG` (78) before binding and is
+  logged as `server.start outcome=refused`. Loopback TCP without an auth file starts with a
+  warning banner that repeats every ten minutes. A Unix socket needs no credential — its
+  filesystem permissions are the whole local story (PLAN D12).
 - Bodies are JSON (`application/json`). Publish takes a raw request body so
   `curl --data-binary @file` works.
+
+## Authentication
+
+Credentials are strings of the form:
+
+```
+msq1_<id>_<secret>
+```
+
+- `<id>` matches `[a-z0-9][a-z0-9._-]{1,63}` and is NOT secret: it appears in logs,
+  events.actor and listings as `tok:<id>`.
+- `<secret>` is any opaque string over `[A-Za-z0-9._~-]` between 16 and 512 bytes;
+  messq mints 256-bit Crockford-base32 secrets with `messq auth add`.
+- The stored digest covers the WHOLE presented string including prefix and id, so
+  renaming an id invalidates its credentials by design.
+- `messq auth hash` accepts one credential on stdin (one trailing LF/CRLF stripped)
+  and prints the digest form stored in the token file. `echo $cred` and
+  `printf '%s' $cred` therefore hash identically here; two trailing newlines do not.
+
+Tokens are declared in a 0600 auth-file whose four-field lines are documented by
+`messq auth ls`; roles are plain sets of publish/consume/admin scoped to stream
+patterns with no hierarchy or implication table. Requests present the credential as
+
+```
+Authorization: Bearer <credential>
+```
+
+The 401 response for every cause (no header, malformed shape, unknown id, wrong
+secret) is byte-identical — no oracle distinguishes them — and carries
+`WWW-Authenticate: Bearer realm="messq"`. Client-side contract frozen here for
+the CLI lanes (#22/#23): `--token-file` names a file whose ENTIRE trimmed content
+is one credential, `MESSQ_TOKEN` is accepted at a documented `/proc/<pid>/environ`
+cost, 401 and 403 map to CLI exit 7, and a credential never rides a redirect.
+
+When the bearer middleware lands on both listeners it is enforced per-route via the
+route registry's role declarations; until that lane ships, this section pins the
+SHAPES (credential grammar, header, digest form) so early clients cannot drift.
 
 ## Error envelope
 
