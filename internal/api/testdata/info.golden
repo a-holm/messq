@@ -13,7 +13,7 @@
   "go_version": "<go-version>",
   "listeners": [],
   "node_id": "<ulid>",
-  "schema_version": 3,
+  "schema_version": 4,
   "started_at_ms": "<ts>",
   "state": "ready",
   "synchronous": 2,
