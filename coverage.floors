@@ -28,5 +28,6 @@ internal/cli/flagx                 95.0    issue #24: one parser per concept, sh
 internal/cli/exit                  95.0    issue #23: the exit-code contract is a pure table
 internal/cli/conf                  95.0    issue #23: three-layer resolution is a pure precedence engine
 internal/cli/render                90.0    issue #23: the output contract and its sanitiser
+internal/cli/exec                  90.0    issue #25: exec pure core (words/reason/outcome/env) and child safety
 internal/cli/uierr                 90.0    issue #23: teaching errors and the no-invented-text rule
 internal/cli                       70.0    issue #24: the View contract and command faces; raised as bodies land

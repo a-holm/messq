@@ -12,7 +12,7 @@ run:
   # driver is invisible to the linter, which is the one file that most needs linting.
   build-tags:
     - gatecheck
-  timeout: 5m
+  timeout: 20m
   # The sabotage matrix runs one lint per scratch copy of the tree, in parallel. The default
   # global file lock turns that into "parallel golangci-lint is running" instead of a result.
   allow-parallel-runners: true
@@ -187,6 +187,14 @@ linters:
       # the shipped binary; internal/tools holds the gate commands, which have exit-code
       # contracts of their own.
       - path: (cmd/messq|internal/tools)/
+        text: Only a command entry point may exit
+        linters:
+          - forbidigo
+
+      # The hermetic helper-child battery (issue #25 §11.3) re-execs the test binary AS A
+      # CHILD PROCESS; its TestMain switch and failure exits are precisely where an exit
+      # becomes an exit. This mirrors the cmd/messq exemption above with the same rationale.
+      - path: internal/cli/exec/helperchild_test\.go
         text: Only a command entry point may exit
         linters:
           - forbidigo

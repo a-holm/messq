@@ -210,6 +210,24 @@ fi
 cli_http_reason="D14/issue #22: the CLI renders pkg/client; its own files must never import net/http."
 forbid_imports prod internal/cli "$cli_http_reason" net/http
 
+# Issue #25: internal/cli/exec is a USER of client.Worker, never a second transport
+# (G1). Direct-import net/http like its parent; store/api/queue/obs/model stay out of
+# reach even through tests, so a helper test cannot smuggle daemon machinery in.
+exec_http_reason="Issue #25 G1/D14: internal/cli/exec runs processes and returns outcomes; all durability belongs to pkg/client's Worker."
+forbid_imports prod internal/cli/exec "$exec_http_reason" net/http
+forbid_deps test internal/cli/exec "$exec_http_reason" \
+	"$module/internal/store" "$module/internal/api" "$module/internal/queue" \
+	"$module/internal/obs" "$module/internal/model"
+
+# Issue #25 G10 (PLAN.md section 10): "--exec is CLI-side only; the daemon has no
+# exec capability." One-hop ban like the os rules above; internal/testutil/crash is
+# the sanctioned home of process control inside the tree, outside these packages.
+daemon_exec_reason="Issue #25 G10: the daemon has no exec capability."
+forbid_imports prod internal/api "$daemon_exec_reason" os/exec
+forbid_imports prod internal/store "$daemon_exec_reason" os/exec
+forbid_imports prod internal/queue "$daemon_exec_reason" os/exec
+forbid_imports prod internal/obs "$daemon_exec_reason" os/exec
+
 if ((status == 0)); then
 	echo "layers: dependency directions hold"
 fi

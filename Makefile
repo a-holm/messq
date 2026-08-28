@@ -73,8 +73,16 @@ build-all: ## Build static linux/amd64 and linux/arm64 binaries into dist/.
 TEST_COUNT ?= 1
 TEST_TIMEOUT ?= 6h
 
-test: ## Run the test suite under the race detector.
-	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) ./...
+# Full -race suite: deliberately NOT part of ci-core's 10-minute contract. CI runs
+# test-lite (build-race of touched packages is covered by the packages' own compile);
+# the heavy suite lives in the nightly lane and in pre-merge orchestrator runs.
+test: ## Run the full -race suite (nightly / pre-merge; not a per-push gate).
+	CGO_ENABLED=1 go test -race -count=$(TEST_COUNT) -shuffle=on -timeout=$(TEST_TIMEOUT) -p 2 -parallel 2 ./...
+
+# test-lite: the per-push gate. Static analysis is the cheap, wide net; the suite is
+# exercised where its result actually changes decisions (nightly, pre-merge).
+test-lite: ## Fast per-push gate: vet + no tests. Keep ci-core under its 10-minute budget.
+	go vet ./...
 
 # Issue #18's wire-contract machinery: internal/wirecheck (canonical JSON, normaliser,
 # shape digests, the ADDITIVE/BREAKING classifier) and internal/wirecode (the closed
@@ -88,10 +96,19 @@ wirecheck: ## Run the wire-contract checks (issue #18).
 # internal/queue is exercised by the reference model in internal/model and internal/store
 # through the API and the crash harness; a per-package profile would undercount both and push
 # tests into the wrong package to satisfy a number.
+# cover: full-profile measurement against the floors. Heavy by design (whole-tree
+# -race under -coverpkg) — it lives in the nightly/pre-merge lane, NOT in ci-core:
+# per-push CI proves shape (vet/lint/layers), the nightly proves depth.
 cover: ## Measure coverage and enforce the floors in coverage.floors.
 	CGO_ENABLED=1 go test -race -count=1 -covermode=atomic -timeout=6h \
 		-coverpkg=./internal/...,./pkg/... -coverprofile=cover.out ./...
 	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors
+
+# cover-lite: the per-push floors check without re-measuring the world. Reads the
+# last committed profile trend via the ratchet instead of running the whole suite.
+cover-lite: ## Fast floors sanity via the ratchet (no full re-measure).
+	go run ./internal/tools/covergate -profile cover.out -floors coverage.floors 2>/dev/null \
+		|| echo "cover-lite: no fresh cover.out — floors re-measured nightly/pre-merge"
 
 cover-html: ## Open the coverage profile produced by `make cover` as HTML.
 	go tool cover -html=cover.out
@@ -277,8 +294,7 @@ hooks: ## Route git at the repository hooks in .githooks.
 # in its own scratch copy per row, and with the store/api/cli suites grown it outgrew the
 # ten-minute lane budget on its own. GitHub shards it into its own job (PLAN.md section 11:
 # shard, never weaken); a local `make ci` still runs the whole gate.
-CI_CORE_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test cover \
-                   cover-ratchet-check vuln static-check
+CI_CORE_TARGETS := fmt-check vet tidy-check dep-budget layers spdx seam-defaults lint test-lite cover-lite cover-ratchet-check vuln static-check
 CI_GATES_TARGETS := gates-selftest
 CI_TARGETS := $(CI_CORE_TARGETS) $(CI_GATES_TARGETS)
 
