@@ -121,8 +121,9 @@ func TestChildNoStdinReaderStillExitsZero(t *testing.T) {
 
 // waitForGKAnnounce polls the capture buffer until the child announces its
 // grandchild (GK=<pid>), synchronised on an OBSERVABLE the child itself
-// emits — replacing the old fixed 500ms sleepPace guess. Bounded by the
-// outer test timeout; every poll tick rides the injected Clock seam.
+// emits. Bounded: 400 × 5ms = 2s ceiling; every poll tick rides the
+// injected Clock seam. (Currently called from the S4-c post-mortem path;
+// kept for the upcoming runner-level announce gates.)
 func waitForGKAnnounce(t *testing.T, clk clock.Clock, ctx context.Context, cap *captured) int {
 	t.Helper()
 	for i := 0; i < 400; i++ { // 400 × 5ms = 2s ceiling
@@ -157,21 +158,10 @@ func TestGroupKillSweepTrappingTermAndGrandchild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Spawn, then WAIT for the child's own GK= announce on the captured
-	// stderr (an observable handoff) instead of a fixed 500ms prayer. The
-	// announce proves the grandchild exists before we exercise the sweep.
+	// Settle: bounded Clock-seam slice. The grandkid-waiter child is
+	// leak-free regardless of this duration (EOF→exit), so the settle is a
+	// mere "give the trap time to install" pacing, not a correctness prayer.
 	res := spawnAsync(ctx, clk, argv, []byte("nobody reads me"), defaultOpts(env))
-
-	// The capture lives inside the ChildRun, which arrives on res only after
-	// termination — so observe through a shim: spawnAsync wires run.Capture
-	// immediately; we reach it via the result channel in a sibling goroutine
-	// is not possible, hence poll via the announce gate below using the run
-	// captured here. Simpler and still deterministic: the announce-wait runs
-	// on the SAME spawn's capture after reading `res` non-blockingly is not
-	// available — so wait via res with the announce handled post-hoc. The
-	// parent-side cancel below remains the sweep trigger; its correctness
-	// does not depend on the settle duration because the grandchild now
-	// self-terminates on stdin-EOF regardless of sweep timing.
 	sleepPace(t, clk, ctx, 500*time.Millisecond)
 	cancel()
 
@@ -192,10 +182,7 @@ func TestGroupKillSweepTrappingTermAndGrandchild(t *testing.T) {
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "GK=") {
 		t.Fatalf("malformed announce near %q", raw[max(0, i-16):])
 	}
-	gk, cerr := strconv.Atoi(strings.TrimPrefix(fields[0], "GK="))
-	if cerr != nil {
-		t.Fatalf("cannot parse grandchild pid from %q: %v", fields[0], cerr)
-	}
+	gk := waitForGKAnnounce(t, clk, context.Background(), run.Capture)
 
 	if processLive(gk) && run.GroupLed() {
 		st, _ := os.ReadFile("/proc/" + strconv.Itoa(gk) + "/stat") //nolint:errcheck // diagnostic only
