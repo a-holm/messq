@@ -78,7 +78,7 @@ table|stream_stats|CREATE TABLE stream_stats (
   stream TEXT PRIMARY KEY REFERENCES streams(name) ON DELETE CASCADE,
   msgs   INTEGER NOT NULL,
   bytes  INTEGER NOT NULL
-) STRICT
+, expired_seq INTEGER NOT NULL DEFAULT 0, expired_at INTEGER NOT NULL DEFAULT 0) STRICT
 table|streams|CREATE TABLE streams (
   name            TEXT PRIMARY KEY,
   subjects        TEXT    NOT NULL,               -- JSON array of accepted publish patterns

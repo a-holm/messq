@@ -102,6 +102,7 @@ func Registry() []Check {
 		{PDLQ5, "P-DLQ5 no double-death", true, "", checkP_DLQ5},
 		{PID1, "P-ID1 unique id outside a DLQ", true, pid1Query, nil},
 		{I10, "log = state", true, "", checkI10},
+		{V7, "stream_stats equals scan", true, "", checkV7},
 	}
 }
 

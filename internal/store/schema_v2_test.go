@@ -8,9 +8,10 @@ import (
 )
 
 // TestSchemaV2HasStreamStats pins migration 0002: the stream counters table exists,
-// is strict, starts empty, and the ladder reports version 2. The table is what keeps
-// GET /v1/streams/{s} constant-time (issue §5): msgs/bytes are maintained by every
-// insert instead of counted per request.
+// is strict, starts empty, and the ladder reports the current version. The table is
+// what keeps GET /v1/streams/{s} constant-time (issue §5): msgs/bytes are maintained
+// by every insert instead of counted per request. 0004 (#27) later ALTERed on the
+// expired_seq/expired_at watermarks; the version pin tracks the whole ladder.
 func TestSchemaV2HasStreamStats(t *testing.T) {
 	ctx := context.Background()
 	dir := testDataDir(t)
@@ -23,8 +24,8 @@ func TestSchemaV2HasStreamStats(t *testing.T) {
 			t.Logf("close store: %v", cerr)
 		}
 	}()
-	if got := st.SchemaVersion(); got != 3 {
-		t.Fatalf("SchemaVersion() = %d, want 3", got)
+	if got := st.SchemaVersion(); got != 4 {
+		t.Fatalf("SchemaVersion() = %d, want 4", got)
 	}
 	var n int
 	if err := st.ro.QueryRowContext(ctx,

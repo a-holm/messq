@@ -159,6 +159,13 @@ func (s DLQSink) Dead(ctx context.Context, tx *sql.Tx, d queue.DeadCtx, now time
 		// record origin_missing, and do NOT leave a DLQ copy behind.
 		return s.deadEvent(ctx, tx, d, nowMS, DeadOutcomeOriginMissing, "", 0, 0, false, false)
 	}
+	// stream_stats maintenance in the SAME transaction as the copy (#27 slice 2, G3):
+	// an uncounted copy is drift, and drift silently disables discard=new.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE stream_stats SET msgs = msgs + 1, bytes = bytes + ? WHERE stream = ?`,
+		size, dlq); err != nil {
+		return obs.Event{}, fmt.Errorf("dead-letter stats update for %q: %w", dlq, err)
+	}
 	if s.budget != nil {
 		s.budget.Take(size)
 	}
@@ -223,6 +230,14 @@ func (s DLQSink) ensureDLQStream(ctx context.Context, tx *sql.Tx, dlq, origin st
 		`INSERT INTO stream_seq (stream, next) VALUES (?, 1) ON CONFLICT (stream) DO NOTHING`,
 		dlq); err != nil {
 		return fmt.Errorf("dead-letter seed seq of %q: %w", dlq, err)
+	}
+	// The counters row rides along with creation (#27 slice 2): a DLQ without one would
+	// be invisible to discard=new's exact check and fail verify's V7 after the first copy.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO stream_stats (stream, msgs, bytes) VALUES (?, 0, 0)
+		 ON CONFLICT (stream) DO NOTHING`,
+		dlq); err != nil {
+		return fmt.Errorf("dead-letter seed stats of %q: %w", dlq, err)
 	}
 	if created == 0 {
 		return nil // the DLQ already existed (second death, or operator-created); no create event
