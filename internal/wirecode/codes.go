@@ -51,6 +51,22 @@ const (
 	StreamFull   Code = "stream_full"
 	DiskFull     Code = "disk_full" // emittable today; #17 continues with degraded-writes semantics
 
+	// Issue #15 additions: probe states and the admin knobs. not_ready is the 503 the
+	// probes return while recovery has not completed; not_implemented is mounted today
+	// as the /metrics placeholder response until #21 injects the scraper.
+	NotReady       Code = "not_ready"       // 503 + Retry-After before recovery completes
+	NotImplemented Code = "not_implemented" // 503 from a mount whose backing handler is nil
+
+	// Issue #15 consumer control plane: declarative-upsert refusal and the filter-
+	// change permission a sparse PATCH must name to rewrite filters.
+	ConsumerExists     Code = "consumer_exists"      // 409: taken name, different config
+	WouldChangeFilters Code = "would_change_filters" // 409: ?allow_filter_change=1 missing
+
+	// Issue #15 destructive-verb contracts: the confirm handshake and the dry-run gate.
+	ConfirmRequired   Code = "confirm_required"    // 409: name confirmation missing
+	ConfirmMismatch   Code = "confirm_mismatch"    // 409: ?confirm= names something else
+	DryRunUnsupported Code = "dry_run_unsupported" // 400: ?dry_run=1 on a route that does not preview
+
 	// Live-surface router and backpressure codes the #18 review drift probe caught
 	// living only in the API's private map: method_not_allowed is the router's 405,
 	// extend_capped the settle-extend cap, unsupported_media_type the non-JSON
@@ -135,6 +151,13 @@ var Table = map[Code]Entry{
 	CommitUnknown:        {Status: 503},
 	Busy:                 {Status: 503},
 	TooManyWaiters:       {Status: 503},
+	NotReady:             {Status: 503},
+	NotImplemented:       {Status: 503},
+	ConsumerExists:       {Status: 409},
+	WouldChangeFilters:   {Status: 409},
+	ConfirmRequired:      {Status: 409},
+	ConfirmMismatch:      {Status: 409},
+	DryRunUnsupported:    {Status: 400},
 
 	RateLimited: {Status: 429, Kind: Reserved, Owner: "#39"},
 

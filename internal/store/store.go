@@ -617,6 +617,20 @@ func (s *Store) RO() *sql.DB {
 	return s.ro
 }
 
+// LatchedReadOnly reports whether the writer engine latched the process read-only
+// after an unrecoverable storage fault (#6 fsyncgate). It is a plain boolean read over
+// the same state the write path consults before every command, so the HTTP probes (#15)
+// can mirror readiness from memory without touching SQL.
+func (s *Store) LatchedReadOnly() bool {
+	s.mu.Lock()
+	w := s.writer
+	s.mu.Unlock()
+	if w == nil {
+		return false // no engine: runSolo path only fails on its own transaction errors
+	}
+	return w.latched.Load() != nil
+}
+
 // SchemaVersion returns the applied schema version this Open established (ReadOnly: the
 // version found on disk).
 func (s *Store) SchemaVersion() int {

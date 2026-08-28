@@ -1,10 +1,11 @@
 409
 {
   "error": {
-    "code": "conflict",
-    "message": "confirm parameter \"wrong-name\" does not match stream name \"orders\"",
+    "code": "confirm_mismatch",
+    "message": "confirm parameter \"wrong-name\" does not match the stream name \"orders\"",
     "next": [
-      "messq stream rm orders --confirm orders"
+      "messq stream rm orders --confirm orders",
+      "messq stream purge orders --dry-run   # if only the messages should go"
     ],
     "trace_id": "<trace-id>"
   }

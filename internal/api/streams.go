@@ -4,10 +4,10 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/a-holm/messq/internal/errs"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
 )
@@ -100,9 +100,11 @@ type streamUpdateResponse struct {
 }
 
 // deleteStreamResponse wraps the deletion receipt under a single "deleted" key, the shape
-// the issue pins for DELETE.
+// the issue pins for DELETE, plus structured findings (a surviving DLQ is the one this
+// route owns).
 type deleteStreamResponse struct {
-	Deleted store.DeleteResult `json:"deleted"`
+	Deleted  store.DeleteResult `json:"deleted"`
+	Findings []finding          `json:"findings,omitempty"`
 }
 
 func (s *Server) handleCreateStream(w http.ResponseWriter, r *http.Request) {
@@ -191,16 +193,74 @@ func (s *Server) handleDeleteStream(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	confirm := r.URL.Query().Get("confirm")
+	if !s.checkDryRunGate(w, r) {
+		return
+	}
 
-	res, err := s.store.DeleteStream(r.Context(), name, confirm, actorAPI)
-	if err != nil {
-		if errors.Is(err, errs.ErrConflict) {
-			s.writeError(w, err, "messq stream rm "+name+" --confirm "+name)
+	// The blast radius comes from the read pool BEFORE the refusal: a confirm_required
+	// that says "removes messages" without numbers is not a teaching error.
+	next := []string{
+		"messq stream rm " + name + " --confirm " + name,
+		"messq stream purge " + name + " --dry-run   # if only the messages should go",
+	}
+	if confirm := r.URL.Query().Get("confirm"); confirm == "" || confirm != name {
+		info, gErr := s.store.GetStream(r.Context(), name)
+		if gErr != nil {
+			s.writeError(w, gErr) // absent stream: not_found beats any confirm code
 			return
 		}
+		consumers, cErr := s.store.ListConsumers(r.Context(), name)
+		if cErr != nil {
+			consumers = nil
+			s.logger.Warn("delete stream: count consumers", "err", cErr)
+		}
+		blast := fmt.Sprintf("%d message", info.Msgs)
+		if info.Msgs == 1 {
+			blast = "1 message" // plural honesty down to the last unit
+		} else if info.Msgs >= 0 {
+			blast = fmt.Sprintf("%d messages", info.Msgs)
+		}
+		if info.Bytes > 0 {
+			blast += fmt.Sprintf(" (%d bytes)", info.Bytes)
+		}
+		blast += fmt.Sprintf(" and %d consumer%s", len(consumers), plural(len(consumers)))
+		if !s.confirmRefusal(w, "stream", name, confirm, blast, next) {
+			return
+		}
+	}
+
+	res, err := s.store.DeleteStream(r.Context(), name, name, actorAPI)
+	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, deleteStreamResponse{Deleted: res})
+	resp := deleteStreamResponse{Deleted: res}
+	// The evidence of failure must outlive the thing that failed: name the surviving
+	// DLQ, its depth, and how to remove it when the operator means that too.
+	dlq := name + ".dlq"
+	if dlqInfo, dlqErr := s.store.GetStream(r.Context(), dlq); dlqErr == nil {
+		resp.Findings = []finding{{
+			Level: "warn",
+			Code:  "surviving_dlq",
+			Message: fmt.Sprintf("dead-letter stream %s survives with %d messages; "+
+				"messq stream rm %s --confirm %s removes it too",
+				dlq, dlqInfo.Msgs, dlq, dlq),
+		}}
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// finding is one structured warning attached to a success response — never prose in an
+// error, because the operation DID succeed (#9's findings shape).
+type finding struct {
+	Level   string `json:"level"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

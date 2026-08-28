@@ -438,12 +438,16 @@ func normalizeValue(v any) any {
 		m := make(map[string]any, len(x))
 		for k, val := range x {
 			switch k {
-			case "published_at", "created_at", "uptime_ms":
+			case "published_at", "created_at", "uptime_ms", "started_at_ms":
 				m[k] = "<ts>"
-			case "db_bytes":
-				m[k] = "<db-bytes>"
+			case "db_bytes", "wal_bytes", "disk_free_bytes":
+				// File sizes and free disk move with the machine and the environment;
+				// the shape is the contract, the number is not.
+				m[k] = "<bytes>"
 			case "version":
 				m[k] = "<version>"
+			case "go_version":
+				m[k] = "<go-version>"
 			case "id", "node_id":
 				m[k] = "<ulid>"
 			case "trace_id":

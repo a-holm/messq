@@ -29,8 +29,12 @@ work) for systemd's `RestartPreventExitStatus`, and an interrupt exits
 | `busy` | 6 | `unreachable` |
 | `commit_unknown` | 1 | `error` |
 | `config_error` | 2 | `usage` |
+| `confirm_mismatch` | 4 | `conflict` |
+| `confirm_required` | 4 | `conflict` |
 | `conflict` | 4 | `conflict` |
+| `consumer_exists` | 4 | `conflict` |
 | `disk_full` | 4 | `conflict` |
+| `dry_run_unsupported` | 2 | `usage` |
 | `extend_capped` | 4 | `conflict` |
 | `flow_control` | 4 | `conflict` |
 | `forbidden` | 7 | `permission` |
@@ -41,6 +45,8 @@ work) for systemd's `RestartPreventExitStatus`, and an interrupt exits
 | `locked` | 4 | `conflict` |
 | `method_not_allowed` | 1 | `error` |
 | `not_found` | 3 | `not_found` |
+| `not_implemented` | 6 | `unreachable` |
+| `not_ready` | 6 | `unreachable` |
 | `paused` | 4 | `conflict` |
 | `rate_limited` | 4 | `conflict` |
 | `read_only` | 1 | `error` |
@@ -58,6 +64,7 @@ work) for systemd's `RestartPreventExitStatus`, and an interrupt exits
 | `unavailable` | 6 | `unreachable` |
 | `unsupported` | 2 | `usage` |
 | `unsupported_media_type` | 2 | `usage` |
+| `would_change_filters` | 4 | `conflict` |
 | `would_lose_data` | 4 | `conflict` |
 
 ## Daemon sentinel mapping (internal/errs)

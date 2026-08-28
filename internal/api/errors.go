@@ -58,6 +58,13 @@ const (
 	CodeShuttingDown         Code = "shutting_down"
 	CodeDiskFull             Code = "disk_full"
 	CodeStreamFull           Code = "stream_full"
+	CodeNotReady             Code = "not_ready"
+	CodeNotImplemented       Code = "not_implemented"
+	CodeConsumerExists       Code = "consumer_exists"
+	CodeWouldChangeFilters   Code = "would_change_filters"
+	CodeConfirmRequired      Code = "confirm_required"
+	CodeConfirmMismatch      Code = "confirm_mismatch"
+	CodeDryRunUnsupported    Code = "dry_run_unsupported"
 )
 
 // allCodes is the whole enum in declaration order. TestEveryCodeIsProduced iterates it;
@@ -95,6 +102,13 @@ var allCodes = []Code{
 	CodeShuttingDown,
 	CodeDiskFull,
 	CodeStreamFull,
+	CodeNotReady,
+	CodeNotImplemented,
+	CodeConfirmRequired,
+	CodeConfirmMismatch,
+	CodeDryRunUnsupported,
+	CodeConsumerExists,
+	CodeWouldChangeFilters,
 }
 
 // isCodeMember reports whether c is in the enum. Attached codes are typed constants at
@@ -206,6 +220,13 @@ var codeStatus = map[Code]int{
 	CodeShuttingDown:         http.StatusServiceUnavailable,
 	CodeDiskFull:             http.StatusInsufficientStorage,
 	CodeStreamFull:           http.StatusInsufficientStorage,
+	CodeNotReady:             http.StatusServiceUnavailable,
+	CodeNotImplemented:       http.StatusServiceUnavailable,
+	CodeConsumerExists:       http.StatusConflict,
+	CodeWouldChangeFilters:   http.StatusConflict,
+	CodeConfirmRequired:      http.StatusConflict,
+	CodeConfirmMismatch:      http.StatusConflict,
+	CodeDryRunUnsupported:    http.StatusBadRequest,
 }
 
 // retryAfterSeconds is the integer-second Retry-After every 503 carries (issue §4);
@@ -224,21 +245,33 @@ func retryAfterSeconds(c Code) int {
 // condition must win. An attached code from errs.WithCode wins over everything.
 func refineTyped(err error) (Code, bool) {
 	var (
-		existsErr    *store.StreamExistsError
-		immErr       *store.ImmutableFieldError
-		unsupErr     *unsupportedError
-		loseErr      *queue.WouldLoseDataError
-		mismatchErr  *queue.MismatchError
-		reservedHdrr *queue.ReservedHeaderError
-		tooLargeErr  *queue.TooLargeError
-		routerErr    routerError
-		busyErr      busyError
+		existsErr       *store.StreamExistsError
+		immErr          *store.ImmutableFieldError
+		unsupErr        *unsupportedError
+		loseErr         *queue.WouldLoseDataError
+		mismatchErr     *queue.MismatchError
+		reservedHdrr    *queue.ReservedHeaderError
+		tooLargeErr     *queue.TooLargeError
+		routerErr       routerError
+		busyErr         busyError
+		confirmReqErr   *confirmRequiredError
+		confirmMisErr   *confirmMismatchError
+		existsConsErr   *store.ConsumerExistsError
+		filterChangeErr *consumerFilterChangeError
 	)
 	switch {
 	case errors.As(err, &routerErr):
 		return Code(routerErr), true
 	case errors.As(err, &busyErr):
 		return CodeBusy, true
+	case errors.As(err, &confirmReqErr):
+		return CodeConfirmRequired, true
+	case errors.As(err, &confirmMisErr):
+		return CodeConfirmMismatch, true
+	case errors.As(err, &existsConsErr):
+		return CodeConsumerExists, true
+	case errors.As(err, &filterChangeErr):
+		return CodeWouldChangeFilters, true
 	case errors.As(err, &existsErr):
 		return CodeStreamExists, true
 	case errors.Is(err, queue.ErrReservedName):
@@ -312,10 +345,14 @@ func (s *Server) writeError(w http.ResponseWriter, err error, next ...string) {
 }
 
 // writeEnvelope writes a fully-formed error body. next is always present (empty array,
-// never null) so clients parse one shape.
+// never null) so clients parse one shape. Any body carrying a 503-class code gets the
+// standard Retry-After automatically, so the probes' not_ready needs no special case.
 func (s *Server) writeEnvelope(w http.ResponseWriter, status int, body ErrorBody) {
 	if body.Next == nil {
 		body.Next = []string{}
+	}
+	if ra := retryAfterSeconds(body.Code); ra > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(ra))
 	}
 	s.writeJSON(w, status, Envelope{Error: body})
 }

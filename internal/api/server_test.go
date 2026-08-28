@@ -131,7 +131,11 @@ func TestInfoJSONKeys(t *testing.T) {
 	}
 	slices.Sort(got)
 
-	want := []string{"db_bytes", "durability", "node_id", "synchronous", "uptime_ms", "version"}
+	want := []string{
+		"commit", "counts", "db_bytes", "degraded", "disk_free_bytes",
+		"durability", "go_version", "listeners", "node_id", "schema_version",
+		"started_at_ms", "state", "synchronous", "uptime_ms", "version", "wal_bytes",
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("info JSON keys = %v, want %v", got, want)
 	}
