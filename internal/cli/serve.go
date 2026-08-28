@@ -22,8 +22,18 @@ import (
 	"github.com/a-holm/messq/internal/buildinfo"
 	"github.com/a-holm/messq/internal/clock"
 	"github.com/a-holm/messq/internal/exitcode"
+	"github.com/a-holm/messq/internal/janitor"
 	"github.com/a-holm/messq/internal/queue"
 	"github.com/a-holm/messq/internal/store"
+)
+
+// Housekeeping constants the §8 flag layer feeds into the janitor (#27): A1's fair-
+// share window sizes for the two row-bound jobs and the hysteresis multiplier queue
+// itself defaults to when one is not spelled out.
+const (
+	defaultRetentionBatch = 512
+	defaultDedupLimit     = 32
+	defaultDiskRecover    = 1.25
 )
 
 // serveFlagNames is the closed §8 flag set for `messq serve`. Every flag takes a value;
@@ -54,6 +64,17 @@ var serveFlagNames = map[string]struct{}{
 	"--writer-submit-timeout":    {},
 	"--auth-file":                {},
 	"--socket-mode":              {},
+	// Issue #27 §8 housekeeping + disk-safety flags.
+	"--janitor-interval":      {},
+	"--event-retention":       {},
+	"--event-max-rows":        {},
+	"--wal-max-bytes":         {},
+	"--min-free-bytes":        {},
+	"--disk-reserve-bytes":    {},
+	"--vacuum-freelist-pages": {},
+	"--vacuum-pages-per-tick": {},
+	"--lag-report-threshold":  {},
+	"--lag-report-interval":   {},
 }
 
 // serveConfig is the fully resolved serve configuration, one field per §8 flag. It is
@@ -94,6 +115,18 @@ type serveConfig struct {
 	// immediately after Listen returns (the node does not exist earlier). Default
 	// and documented value is 0660 (ADR-0013).
 	socketMode uint32
+
+	// Issue #27 §8 housekeeping and disk-safety rows of the closed flag set.
+	janitorInterval     time.Duration // --janitor-interval; 0 disables all housekeeping jobs (dev-only)
+	eventRetention      time.Duration // --event-retention
+	eventMaxRows        int64         // --event-max-rows
+	walMaxBytes         int64         // --wal-max-bytes
+	minFreeBytes        int64         // --min-free-bytes
+	diskReserveBytes    int64         // --disk-reserve-bytes
+	vacuumFreelistPages int64         // --vacuum-freelist-pages
+	vacuumPagesPerTick  int64         // --vacuum-pages-per-tick
+	lagReportThreshold  int64         // --lag-report-threshold
+	lagReportInterval   time.Duration // --lag-report-interval
 }
 
 // storeOptions maps the serve configuration onto the store's Options. The process-wide
@@ -234,6 +267,67 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	}
 	cfg.socketMode = mode
 
+	// Issue #27 §8: housekeeping cadence and the disk-safety bounds. The interval is
+	// the one flag where 0 is a legal value — it disarms every bounded job (documented
+	// dev-only); the disk monitor keeps sampling regardless. Every byte/page bound
+	// must be strictly positive because zero would silently unbound a collection
+	// PLAN §5.2 I11 says cannot exist unbounded.
+	if cfg.janitorInterval, err = time.ParseDuration(resolve("--janitor-interval", "MESSQ_JANITOR_INTERVAL", "60s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--janitor-interval: %w", err)
+	}
+	if cfg.janitorInterval < 0 {
+		return serveConfig{}, errors.New("--janitor-interval must be 0 (disable) or positive")
+	}
+	if cfg.eventRetention, err = time.ParseDuration(resolve("--event-retention", "MESSQ_EVENT_RETENTION", "72h")); err != nil {
+		return serveConfig{}, fmt.Errorf("--event-retention: %w", err)
+	}
+	if cfg.eventRetention <= 0 {
+		return serveConfig{}, errors.New("--event-retention must be positive")
+	}
+	if cfg.eventMaxRows, err = parseI64(resolve("--event-max-rows", "MESSQ_EVENT_MAX_ROWS", "1000000"), "--event-max-rows"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.walMaxBytes, err = parseByteSize(resolve("--wal-max-bytes", "MESSQ_WAL_MAX_BYTES", "256MiB")); err != nil {
+		return serveConfig{}, fmt.Errorf("--wal-max-bytes: %w", err)
+	}
+	if cfg.minFreeBytes, err = parseByteSize(resolve("--min-free-bytes", "MESSQ_MIN_FREE_BYTES", "256MiB")); err != nil {
+		return serveConfig{}, fmt.Errorf("--min-free-bytes: %w", err)
+	}
+	if cfg.diskReserveBytes, err = parseByteSize(resolve("--disk-reserve-bytes", "MESSQ_DISK_RESERVE_BYTES", "64MiB")); err != nil {
+		return serveConfig{}, fmt.Errorf("--disk-reserve-bytes: %w", err)
+	}
+	if cfg.vacuumFreelistPages, err = parseI64(resolve("--vacuum-freelist-pages", "MESSQ_VACUUM_FREELIST_PAGES", "10000"), "--vacuum-freelist-pages"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.vacuumPagesPerTick, err = parseI64(resolve("--vacuum-pages-per-tick", "MESSQ_VACUUM_PAGES_PER_TICK", "2000"), "--vacuum-pages-per-tick"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.lagReportThreshold, err = parseI64(resolve("--lag-report-threshold", "MESSQ_LAG_REPORT_THRESHOLD", "10000"), "--lag-report-threshold"); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.lagReportInterval, err = time.ParseDuration(resolve("--lag-report-interval", "MESSQ_LAG_REPORT_INTERVAL", "60s")); err != nil {
+		return serveConfig{}, fmt.Errorf("--lag-report-interval: %w", err)
+	}
+	if cfg.lagReportInterval <= 0 {
+		return serveConfig{}, errors.New("--lag-report-interval must be positive")
+	}
+
+	for _, bound := range []struct {
+		name string
+		v    int64
+	}{
+		{"--wal-max-bytes", cfg.walMaxBytes},
+		{"--min-free-bytes", cfg.minFreeBytes},
+		{"--disk-reserve-bytes", cfg.diskReserveBytes},
+		{"--vacuum-freelist-pages", cfg.vacuumFreelistPages},
+		{"--vacuum-pages-per-tick", cfg.vacuumPagesPerTick},
+		{"--lag-report-threshold", cfg.lagReportThreshold},
+	} {
+		if bound.v <= 0 {
+			return serveConfig{}, fmt.Errorf("%s must be positive", bound.name)
+		}
+	}
+
 	if cfg.maxMsgSizeCeiling <= 0 {
 		return serveConfig{}, errors.New("--max-msg-size-ceiling must be positive")
 	}
@@ -251,6 +345,19 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	}
 
 	return cfg, nil
+}
+
+// parseI64 parses a decimal int64 flag value and refuses non-positive values: these
+// bounds size hard collections, and a zero would silently unbound one.
+func parseI64(s, name string) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer %q", name, s)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return n, nil
 }
 
 // parsePositiveInt parses a decimal flag value and refuses zero and negatives: a limit of
@@ -703,6 +810,17 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		"max_request_bytes", cfg.maxRequestBytes,
 		"max_conns", cfg.maxConns,
 		"writer_submit_timeout", cfg.writerSubmitTimeout.String(),
+		// #27 housekeeping + disk safety
+		"janitor_interval", cfg.janitorInterval.String(),
+		"event_retention", cfg.eventRetention.String(),
+		"event_max_rows", cfg.eventMaxRows,
+		"wal_max_bytes", cfg.walMaxBytes,
+		"min_free_bytes", cfg.minFreeBytes,
+		"disk_reserve_bytes", cfg.diskReserveBytes,
+		"vacuum_freelist_pages", cfg.vacuumFreelistPages,
+		"vacuum_pages_per_tick", cfg.vacuumPagesPerTick,
+		"lag_report_threshold", cfg.lagReportThreshold,
+		"lag_report_interval", cfg.lagReportInterval.String(),
 	)
 
 	srv := api.New(api.Config{
@@ -760,6 +878,99 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 			logger.Warn("sweeper did not stop within 2s")
 		}
 	}()
+
+	// The janitor (#27): ONE housekeeping goroutine running bounded jobs in canonical
+	// order — reaper finishes authorised deletions first, then retention starts new
+	// ones, then dedup/events trims, then checkpoint/vacuum as solo commands between
+	// commit windows, then stats. Stop cancels and never awaits; a cancelled ctx cuts
+	// the sweep between transactions, which is always valid because every batch is
+	// its own transaction. --janitor-interval 0 disarms the job list entirely while
+	// the disk monitor below keeps sampling (its component is deliberately separate).
+	walBytes := func() (int64, error) {
+		_, walSz, szErr := st.Sizes()
+		return walSz, szErr
+	}
+	freelist := func() (int64, error) {
+		var pages int64
+		if qErr := st.RO().QueryRowContext(ctx,
+			`PRAGMA freelist_count`).Scan(&pages); qErr != nil {
+			return 0, qErr
+		}
+		return pages, nil
+	}
+	lagSampler := func() ([]janitor.LagSample, error) { return janitor.SampleLag(ctx, st.RO()) }
+
+	janitorJobs := []janitor.Job{
+		janitor.NewReaperJob(st),
+		janitor.NewRetentionJob(st, defaultRetentionBatch),
+		janitor.NewDedupJobForStore(st, janitor.DedupCursor{Start: 0, Limit: defaultDedupLimit}),
+		janitor.NewEventsJob(st, janitor.TrimPolicy{
+			MaxAgeMs: cfg.eventRetention.Milliseconds(),
+			MaxRows:  cfg.eventMaxRows,
+		}),
+		&janitor.CheckpointJob{
+			W:           wr,
+			WalMaxBytes: cfg.walMaxBytes,
+			WalBytes:    walBytes,
+		},
+		&janitor.VacuumJob{
+			W:             wr,
+			Pages:         int(cfg.vacuumPagesPerTick),
+			FreelistPages: cfg.vacuumFreelistPages,
+			Freelist:      freelist,
+			FreelistAfter: freelist,
+			Log:           logger,
+		},
+		janitor.NewStatsJob(lagSampler, janitor.StatsConfig{
+			Threshold: cfg.lagReportThreshold,
+			Interval:  cfg.lagReportInterval,
+			Log:       logger,
+		}, clk),
+	}
+
+	diskMonitor := janitor.NewDiskMonitor(janitor.DiskMonitorConfig{
+		Path:     cfg.dataDir,
+		Policy:   queue.DiskPolicy{MinFree: cfg.minFreeBytes, Recover: defaultDiskRecover, Reserve: cfg.diskReserveBytes},
+		Probe:    janitor.StatfsProbe{},
+		Interval: time.Minute,
+		OnState:  nil, // /healthz degraded[] home is #15/Q4's unresolved ruling; logged below regardless
+		Log:      logger,
+	}, clk)
+	if err := diskMonitor.Start(context.Background()); err != nil {
+		fmt.Fprintf(stderr, "messq: start disk monitor: %v\n", err)
+		return exitError
+	}
+	defer func() {
+		if stopErr := diskMonitor.Stop(context.Background()); stopErr != nil {
+			logger.Warn("disk monitor stop", "err", stopErr)
+		}
+	}()
+
+	if cfg.janitorInterval > 0 {
+		jan, janErr := janitor.New(janitor.Config{
+			Interval: cfg.janitorInterval,
+			Budget:   time.Second / 4, // A1's 250ms tick budget, split fairly per due job
+			Clock:    clk,
+			Logger:   logger,
+			Jitter:   nil, // ±10% jitter lands with slice 10's bench round; deterministic for now
+		}, janitorJobs)
+		if janErr != nil {
+			fmt.Fprintf(stderr, "messq: build janitor: %v\n", janErr)
+			return exitError
+		}
+		if err := jan.Start(ctx); err != nil {
+			fmt.Fprintf(stderr, "messq: start janitor: %v\n", err)
+			return exitError
+		}
+		defer func() {
+			if stopErr := jan.Stop(context.Background()); stopErr != nil {
+				logger.Warn("janitor stop", "err", stopErr)
+			}
+		}()
+	} else {
+		logger.Warn("janitor.disabled",
+			"hint", "--janitor-interval 0 turns off ALL housekeeping jobs; dev/test use only")
+	}
 
 	if err := srv.Serve(ctx, ln); err != nil {
 		fmt.Fprintf(stderr, "messq: serve: %v\n", err)

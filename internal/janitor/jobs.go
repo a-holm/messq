@@ -4,6 +4,8 @@ package janitor
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -396,4 +398,79 @@ func (j *StatsJob) Run(ctx context.Context, _ *Budget) (Result, error) {
 		j.lastLogMS = now
 	}
 	return Result{Rows: past}, nil
+}
+
+// SampleLag reads every consumer's distance from its stream head through a read-only
+// pool handle, bounded so a giant namespace cannot blow the stats tick. This is the
+// read-only seam the serve layer injects into StatsJob; consumers created against an
+// empty stream see the stream_seq.next head without any special-casing here.
+func SampleLag(ctx context.Context, ro *sql.DB) (out []LagSample, rerr error) {
+	rows, qErr := ro.QueryContext(ctx, `
+		SELECT c.stream, c.name, coalesce(h.next, 0) - c.cursor_seq AS lag
+		  FROM consumers c
+		 LEFT JOIN stream_seq h ON h.stream = c.stream
+		 ORDER BY lag DESC
+		 LIMIT ?`, maxLagSamples)
+	if qErr != nil {
+		return nil, fmt.Errorf("sample consumer lag: %w", qErr)
+	}
+	defer func() {
+		if cErr := rows.Close(); cErr != nil && rerr == nil {
+			rerr = fmt.Errorf("close consumer lag rows: %w", cErr)
+		}
+	}()
+	out = make([]LagSample, 0, maxLagSamples)
+	for rows.Next() {
+		var s LagSample
+		if sErr := rows.Scan(&s.Stream, &s.Consumer, &s.Lag); sErr != nil {
+			return nil, fmt.Errorf("scan consumer lag: %w", sErr)
+		}
+		out = append(out, s)
+	}
+	if eErr := rows.Err(); eErr != nil {
+		return nil, fmt.Errorf("iterate consumer lag: %w", eErr)
+	}
+	return out, nil
+}
+
+const maxLagSamples = 1000
+
+// NewDedupJobForStore wires the dedup job straight onto a live store.
+func NewDedupJobForStore(st *store.Store, cur DedupCursor) *DedupJob {
+	names := func(ctx context.Context) ([]string, error) {
+		infos, err := st.ListStreams(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(infos))
+		for _, in := range infos {
+			out = append(out, in.Name)
+		}
+		return out, nil
+	}
+	return &DedupJob{
+		client: storeDedupClient{list: names, sweep: st.SweepDedup},
+		limit:  defaultDedupLimitIf(cur.Limit),
+		cursor: cur.Start,
+	}
+}
+
+func defaultDedupLimitIf(n int) int {
+	if n <= 0 {
+		return defaultDedupLimit
+	}
+	return n
+}
+
+type storeDedupClient struct {
+	list  func(context.Context) ([]string, error)
+	sweep func(context.Context, string) (int64, error)
+}
+
+func (c storeDedupClient) ListStreams(ctx context.Context) ([]string, error) {
+	return c.list(ctx)
+}
+
+func (c storeDedupClient) SweepDedup(ctx context.Context, stream string) (int64, error) {
+	return c.sweep(ctx, stream)
 }
