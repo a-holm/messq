@@ -314,7 +314,7 @@ func selectVictims(ctx context.Context, tx *sql.Tx, logger *slog.Logger, stream 
 		if sErr := rows.Scan(&v.seq, &v.subjectV, &v.bytes); sErr != nil {
 			return nil, sErr
 		}
-		if pat.Match(v.subjectV) {
+		if pat == nil || pat.Match(v.subjectV) { // keep-only purge: no pattern, every row is a candidate
 			out = append(out, v)
 		}
 	}
