@@ -219,6 +219,7 @@ func assemble(root *cobra.Command, env *Env) {
 		newServeCmd(env),
 		newVerifyCmd(env),
 		newAuthCmd(env),
+		newBackupCmd(env),
 	)
 }
 
