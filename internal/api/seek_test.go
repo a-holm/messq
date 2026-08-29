@@ -121,15 +121,24 @@ func TestSeekClampsReportedNotSilent(t *testing.T) {
 	}
 
 	code, resp := postSeek(t, handler, "orders", "w2", "?dry_run=1", `{"to":"seq:0"}`)
-	if code != http.StatusOK {
-		t.Fatalf("status = %d", code)
+	// #28 discipline: a raw seq:0 folds below first_seq (1). Creation-time starts
+	// clamp with a warning, but the SEEK verb refuses a below-floor target with a
+	// 400 bad_request envelope rather than silently skipping live data — the
+	// operator asked for a cursor that does not exist, and "silently jump to the
+	// floor" would hide that. Assert the refusal's exact wire shape.
+	if code == http.StatusOK {
+		t.Fatalf("below-floor seek must be refused (400), got 200: %v", resp)
 	}
-	im := impactOf(t, resp)
-	if im["clamped"] != true {
-		t.Errorf("seq:0 clamp not reported: %v", im)
+	eb, hasErr := resp["error"].(map[string]any)
+	if !hasErr {
+		t.Fatalf("error envelope missing on refusal: %v", resp)
 	}
-	if im["cursor_after"] != float64(1) {
-		t.Errorf("cursor_after = %v, want 1 (the first valid seq)", im["cursor_after"])
+	if eb["code"] != "bad_request" {
+		t.Errorf("refusal code = %v, want bad_request", eb["code"])
+	}
+	msg, _ := eb["message"].(string)
+	if !strings.Contains(msg, "below the stream's first_seq") {
+		t.Errorf("refusal message should name the first_seq floor, got %q", msg)
 	}
 }
 

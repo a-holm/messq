@@ -69,7 +69,7 @@ func (*Server) routes() []Route {
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/purge", "purge_stream", true,
-			rolesAdmin, true, "",
+			rolesAdmin, true, "stream",
 			true, obs.StreamPurge, // #28: drops messages in place
 		},
 
@@ -113,7 +113,7 @@ func (*Server) routes() []Route {
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/seek", "seek_consumer", true,
-			rolesAdmin, true, "",
+			rolesAdmin, true, "consumer",
 			true, obs.ConsumerSeek, // #28: re-delivers from the moved cursor
 		},
 		{
