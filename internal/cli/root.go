@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/buildinfo"
+	"github.com/a-holm/messq/internal/cli/complete"
 	"github.com/a-holm/messq/internal/cli/help"
 	"github.com/a-holm/messq/internal/clock"
 
@@ -151,6 +152,12 @@ func NewRoot(env *Env) *cobra.Command {
 	te := topicEnvAdaptor{env: env}
 	root.SetHelpCommand(help.NewHelpCommand(te, root))
 	root.AddCommand(help.NewTopicCommands(te)...)
+
+	// Issue #26 §3: cobra's default completion command is disabled (see
+	// CompletionOptions); this one ships only the shells we test, and the
+	// closed-enum flags complete from the same const blocks the commands validate.
+	complete.RegisterFlagCompletion(root)
+	root.AddCommand(complete.NewCompletionCommand())
 
 	return root
 }

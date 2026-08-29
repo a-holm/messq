@@ -60,6 +60,18 @@ func NewHelpCommand(env TopicEnv, root *cobra.Command) *cobra.Command {
 			strings.Join(Names(), ", ") + ".\n" +
 			"Topics render the same markdown the docs site (#35) serves — one source of truth.",
 		SilenceUsage: true,
+		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			var out []string
+			for _, t := range Names() {
+				if strings.HasPrefix(t, toComplete) {
+					out = append(out, t)
+				}
+			}
+			return out, cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(c *cobra.Command, args []string) error {
 			root := c.Root()
 			switch {

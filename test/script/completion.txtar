@@ -1,0 +1,54 @@
+# The completion surface (issue §3): the completion command emits scripts, the
+# __complete protocol answers for closed-enum flags, and a dead daemon completes
+# empty, silently, exit 0.
+
+# The completion command ships exactly the shells we test.
+messq completion bash
+stdout 'complete'
+messq completion zsh
+stdout '#compdef messq'
+messq completion fish
+stdout 'complete'
+
+exitcode 2 messq completion powershell
+stderr 'unknown shell'
+stderr 'bash'
+exitcode 2 messq completion
+stderr 'completion takes exactly one shell'
+
+# The __complete protocol: closed-enum flags complete from the same const
+# blocks the commands validate.
+messq __complete version --output ''
+stdout 'auto'
+stdout 'table'
+stdout 'json'
+stdout 'ndjson'
+stdout ':4'
+stdout ''
+stderr ''
+
+messq __complete version --output j
+stdout 'json'
+stdout ':4'
+
+messq __complete version --color ''
+stdout 'always'
+stdout ':4'
+
+# Prefix filtering on the protocol level: no match still exits 0 with the
+# NoFileComp directive and no candidates — the quiet answer.
+messq __complete version --output 'z'
+stdout ':4'
+
+# The help topics complete too.
+messq __complete help ''
+stdout 'concepts'
+stdout 'exit-codes'
+stdout ':4'
+
+# Completion commands of the tree itself.
+messq __complete completion ''
+stdout 'bash'
+stdout 'zsh'
+stdout 'fish'
+stdout ':4'
