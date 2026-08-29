@@ -120,7 +120,7 @@ func TestDoctorNDJSONFindingsThenSummaryLast(t *testing.T) {
 	if res.Exit != exit.Error {
 		t.Fatalf("exit = %d\nstderr:\n%s", res.Exit, res.Stderr)
 	}
-	lines := nonEmptyLines(res.Stdout)
+	lines := nonEmptyLinesDoctor(res.Stdout)
 	if len(lines) < 3 {
 		t.Fatalf("expected finding lines plus summary line:\n%s", res.Stdout)
 	}
@@ -228,7 +228,7 @@ func TestDoctorUnreachableDaemonNeverSix(t *testing.T) {
 
 // nonEmptyLines strips blank lines; ndjson writers never emit them but the
 // trailing newline of stdout would otherwise produce an empty tail entry.
-func nonEmptyLines(s string) []string {
+func nonEmptyLinesDoctor(s string) []string {
 	var out []string
 	for _, l := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
 		if strings.TrimSpace(l) != "" {
