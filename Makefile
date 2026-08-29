@@ -46,7 +46,7 @@ DIR ?= .
 
 .PHONY: help build build-all test cover cover-html cover-ratchet cover-ratchet-check lint \
         vuln vuln-strict seam-defaults fmt fmt-check fmt-list vet tidy-check dep-budget layers \
-        spdx gates-selftest fuzz static-check repro hooks ci clean
+        spdx docs docs-check gates-selftest fuzz static-check repro hooks ci clean
 
 help: ## Show this help.
 	@echo "messq $(VERSION)"
@@ -91,6 +91,18 @@ test-lite: ## Fast per-push gate: vet + no tests. Keep ci-core under its 10-minu
 # entry point instead of stretching the ten-minute `ci` budget.
 wirecheck: ## Run the wire-contract checks (issue #18).
 	CGO_ENABLED=1 go test -race -count=1 -shuffle=on ./internal/wirecheck/... ./internal/wirecode/...
+
+# Issue #26 §5: the .txtar golden suite. -race because every suite is; -count=1
+# so a green line is never the cache. The coverage bindings live in the same
+# package (TestEveryCommandHasAScript and friends) and run under the same gate.
+script: ## Run the testscript (.txtar) golden suite with its coverage bindings.
+	CGO_ENABLED=1 go test -race -count=1 ./test/script/...
+
+# The -update flow, as a gate input: cmpshape assertions must REFUSE this mode
+# (a shape change is a compatibility decision, not a golden refresh), which is
+# what row G43 of the sabotage matrix proves.
+script-update: ## Refresh the .txtar goldens (-update); cmpshape assertions refuse.
+	go test ./test/script -run TestScripts -update
 
 # -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
 # internal/queue is exercised by the reference model in internal/model and internal/store
@@ -261,6 +273,18 @@ layers: ## Fail when a package imports across a forbidden layer boundary.
 
 spdx: ## Fail when a source file is missing its SPDX licence header.
 	scripts/spdx.sh
+
+docs: ## Regenerate docs/cli/*.md, man/man1/*.1 and man/man8/messq.8 from the tree.
+	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) go -C tools/gendocs run . -root ../..
+
+docs-check: ## Fail when the generated docs are stale (the docs-generated CI job).
+	@$(MAKE) --no-print-directory docs
+	@if [[ -n "$$(git status --porcelain docs/cli man)" ]]; then \
+		echo "docs-check: generated docs are stale — run 'make docs' and commit" >&2; \
+		git status --porcelain docs/cli man >&2; \
+		exit 1; \
+	fi; \
+	echo "docs-check: generated docs are current"
 
 # Ordered, not just listed: under `make -j` an unordered prerequisite would run the assertion
 # before build-all has produced the binaries.

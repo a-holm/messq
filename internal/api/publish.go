@@ -64,8 +64,16 @@ func (s *Server) handlePublishMessage(w http.ResponseWriter, r *http.Request) {
 	// subject/size checks; GetStream also turns a missing stream into a 404.
 	info, err := s.store.GetStream(r.Context(), stream)
 	if err != nil {
-		s.writeError(w, err)
-		return
+		// serve --dev: a publish to a stream nobody created yet auto-creates it
+		// (issue #26 §2) instead of teaching the beginner a 404 on step one.
+		if !s.cfg.Dev || !isNotFound(err) {
+			s.writeError(w, err)
+			return
+		}
+		if info, err = s.devAutocreateStream(r.Context(), stream); err != nil {
+			s.writeError(w, err)
+			return
+		}
 	}
 	sc := info.Config()
 
@@ -268,8 +276,15 @@ func (s *Server) handlePublishBatch(w http.ResponseWriter, r *http.Request) {
 
 	info, err := s.store.GetStream(r.Context(), stream)
 	if err != nil {
-		s.writeError(w, err)
-		return
+		// serve --dev auto-create covers the batch face too (issue #26 §2).
+		if !s.cfg.Dev || !isNotFound(err) {
+			s.writeError(w, err)
+			return
+		}
+		if info, err = s.devAutocreateStream(r.Context(), stream); err != nil {
+			s.writeError(w, err)
+			return
+		}
 	}
 	sc := info.Config()
 

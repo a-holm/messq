@@ -1,0 +1,25 @@
+# messq version — the no-network command's three faces (issue §5: one script per
+# family; this one pins the server-group anchor every release runs first).
+
+# The table face on a pipe is json (auto mode), so the human face is requested.
+# The parenthesised tail carries the Go version and platform — asserted loosely,
+# since a committed golden must not pin the machine that rendered it.
+messq version --output table
+stdout '^messq \([0-9A-Za-z().,/ _+-]+\)$'
+
+# The machine face validates against the committed BuildInfo shape: a renamed
+# field is a compatibility decision, not a golden refresh.
+messq version --output json
+cmpshape stdout BuildInfo
+stdout '"version"'
+
+# ndjson on a scalar command emits the same document as one line.
+messq version --output ndjson
+stdout '"version"'
+stdout '"go_version"'
+
+exitcode 0 messq version
+
+# Plain `messq version` on a pipe resolves auto → json (not a TTY).
+messq version
+stdout '"version"'

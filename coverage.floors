@@ -34,3 +34,4 @@ internal/cli                       70.0    issue #24: the View contract and comm
 internal/janitor                   85.0    issue #27: housekeeping bounds and the disk-safety state machine
 internal/ops/backup                70.0    issue #30: the VACUUM INTO snapshot pipeline
 internal/doctor                    70.0    issue #30: pure checks over a collected snapshot
+internal/testutil/scriptenv        70.0    issue #26: the testscript harness (env, commands, shape check)

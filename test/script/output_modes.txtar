@@ -1,0 +1,21 @@
+# The --output contract: three modes, never a fourth (PLAN §8). `version` is the
+# cheapest command that carries all faces.
+
+# table is explicit; json and ndjson are the machine faces.
+messq version --output table
+stdout '^messq \([0-9A-Za-z().,/ _+-]+\)$'
+
+messq version --output json
+stdout '"version"'
+
+messq version --output ndjson
+stdout '"version"'
+
+# A fourth mode is refused with the closed list in the message.
+exitcode 2 messq version --output yaml
+stderr 'invalid --output "yaml"'
+stderr 'auto|table|json|ndjson'
+
+# The value is parsed before any command work happens.
+exitcode 2 messq version --output
+stderr 'flag needs an argument'

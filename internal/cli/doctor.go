@@ -72,8 +72,8 @@ func newDoctorCmd(env *Env) *cobra.Command {
 			"cannot see is reported as [skip] with a reason, never silently omitted. " +
 			"An unreachable daemon is itself a fail finding — doctor is designed to " +
 			"run when things are already broken, so it never exits 6.",
-		Example: "  messq doctor\n" +
-			"  messq doctor --data-dir /var/lib/messq --fail-on warn --quiet\n" +
+		Example: "  messq doctor # noexec: diagnoses the operator\u0027s real daemon (see the doctor family script)\n" +
+			"  messq doctor --data-dir /var/lib/messq --fail-on warn --quiet # noexec: names a machine-specific directory\n" +
 			"  messq doctor --list\n" +
 			"  messq doctor --explain storage.wal_size",
 		GroupID: "operate",

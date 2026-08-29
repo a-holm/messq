@@ -1,0 +1,31 @@
+# The root command's help face and the unknown-command teaching error.
+
+messq
+stdout 'Usage:'
+stdout 'messq is a lightweight, single-binary message queue for Linux'
+
+exitcode 0 messq --help
+stdout 'Hot path'
+stdout 'Inspect'
+stdout 'Manage'
+stdout 'Operate'
+stdout 'Server'
+
+# The error face on a pipe is json (auto mode), so quotes arrive escaped; the
+# assertions match the message body either way.
+exitcode 2 messq nosuchcommand
+stderr 'unknown command'
+stderr 'nosuchcommand'
+stderr 'messq --help'
+
+exitcode 2 messq verion
+stderr 'unknown command'
+stderr 'verion'
+
+# Root help lists every group; a command listing is exactly what the
+# command-coverage binding walks.
+messq --help
+stdout 'serve'
+stdout 'verify'
+stdout 'backup'
+stdout 'doctor'

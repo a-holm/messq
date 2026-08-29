@@ -1,0 +1,33 @@
+# Every documented exit code 0–7 is produced here by an exact `exitcode` line.
+# Exit 5 (empty/timeout) has no producer in the current tree — the reviewed
+# opt-out in testdata/no-exitcode.txt names the command wave that adds one.
+
+exitcode 0 messq version
+
+# 1: a generic failure — verify against a garbage store.
+exitcode 1 messq verify --data-dir $WORK/bad
+
+# 2: usage — unknown command and a bad flag value.
+exitcode 2 messq nosuchcommand
+exitcode 2 messq version --output yaml
+
+# 3: not found — a data dir that does not exist.
+exitcode 3 messq verify --data-dir $WORK/missing-dir
+
+# 4: conflict — an existing backup destination without --force.
+daemon start
+daemon stop
+messq backup $WORK/snap.db --data-dir $WORK/data
+exitcode 4 messq backup $WORK/snap.db --data-dir $WORK/data
+
+# 6: daemon unreachable — nothing is listening on this socket.
+exitcode 6 messq version --remote --addr unix://$WORK/dead.sock
+
+# 7: permission — a backup into an unwritable destination directory.
+# (Runs as a non-root user; root would write anywhere and must skip this script.)
+mkdir locked
+chmod 500 locked
+exitcode 7 messq backup $WORK/locked/snap.db --data-dir $WORK/data
+
+-- bad/messq.db --
+definitely not a database

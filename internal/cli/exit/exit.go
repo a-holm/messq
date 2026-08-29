@@ -23,6 +23,7 @@ package exit
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 
 	"github.com/a-holm/messq/internal/errs"
@@ -222,3 +223,47 @@ var names = map[int]string{
 // Name returns the snake_case contract name of a documented exit code, or "" for an
 // undocumented one (serve's sysexits render via their own overrides).
 func Name(code int) string { return names[code] }
+
+// meanings is the one-sentence operator meaning of each documented code. It lives
+// in the package (not the doc test) so the `exit-codes` help topic (issue #26 §4)
+// is generated from the same table: adding a code here without a meaning fails
+// TestExitCodeTopicMatchesCode and the generated docs test alike.
+var meanings = map[int]string{
+	OK:          "success",
+	Error:       "generic runtime failure, incl. a bug in the daemon",
+	Usage:       "bad flag, bad argument, request the daemon rejected as malformed",
+	NotFound:    "stream / consumer / message / seq does not exist",
+	Conflict:    "conflict, stale fence, precondition or limit refused the request",
+	Empty:       "a wait expired before the request was satisfied (zero rows is still 0)",
+	Unreachable: "no answer obtainable from the daemon",
+	Denied:      "authentication or authorization refused",
+}
+
+// Doc is one row of the documented exit-code contract.
+type Doc struct {
+	Code    int
+	Name    string
+	Meaning string
+}
+
+// Documented returns every documented exit code in code order. It panics on a
+// code that carries a name but no meaning (or the reverse): the two tables must
+// move together, and a topic generated from a half-row is a lie.
+func Documented() []Doc {
+	codes := make([]int, 0, len(names))
+	for c := range names {
+		if _, ok := meanings[c]; !ok {
+			panic("exit: code " + strconv.Itoa(c) + " has a name but no meaning")
+		}
+		codes = append(codes, c)
+	}
+	sort.Ints(codes)
+	out := make([]Doc, 0, len(codes))
+	for _, c := range codes {
+		out = append(out, Doc{Code: c, Name: names[c], Meaning: meanings[c]})
+	}
+	if len(out) != len(meanings) {
+		panic("exit: a meaning references an undocumented code")
+	}
+	return out
+}

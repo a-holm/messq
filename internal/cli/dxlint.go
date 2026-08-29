@@ -84,6 +84,13 @@ var (
 )
 
 func lintOne(cmd *cobra.Command) []string {
+	// Hidden helpers are not help surface: the DX rules below teach through
+	// help output a user never sees for a hidden command. The quickstart tour's
+	// demo worker (issue #26 §1) is the reason this exemption exists — its name
+	// is issue-mandated and its documentation lives in its own Long.
+	if cmd.Hidden {
+		return nil
+	}
 	var problems []string
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf("%s: %s", cmd.Name(), fmt.Sprintf(format, args...)))

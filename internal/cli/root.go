@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/a-holm/messq/internal/buildinfo"
+	"github.com/a-holm/messq/internal/cli/complete"
+	"github.com/a-holm/messq/internal/cli/help"
 	"github.com/a-holm/messq/internal/clock"
 
 	"github.com/a-holm/messq/internal/cli/conf"
@@ -94,7 +96,7 @@ func NewRoot(env *Env) *cobra.Command {
 		SilenceUsage:               true,
 		SilenceErrors:              true,
 		SuggestionsMinimumDistance: 2,
-		Example:                    "  messq version\n  messq serve --data-dir /var/lib/messq\n  messq verify --deep --data-dir /var/lib/messq",
+		Example:                    "  messq version\n  messq serve --data-dir /var/lib/messq # noexec: starts a long-running daemon\n  messq verify --deep --data-dir /var/lib/messq # noexec: names a machine-specific directory",
 		Version:                    buildinfo.Short(),
 		CompletionOptions:          cobra.CompletionOptions{DisableDefaultCmd: true},
 		Args:                       cobra.ArbitraryArgs,
@@ -143,8 +145,34 @@ func NewRoot(env *Env) *cobra.Command {
 	root.PersistentPreRunE = resolveInvocation(env, root)
 	assemble(root, env)
 
+	// Issue #26 §4: the help topics ride the tree as additional help topics, and
+	// the default help command is overridden so `messq help <topic>` renders and
+	// `messq help nosuchtopic` is a teaching usage error (exit 2, suggestions,
+	// the topic list) instead of cobra's bare exit-0 note.
+	te := topicEnvAdaptor{env: env}
+	root.SetHelpCommand(help.NewHelpCommand(te, root))
+	root.AddCommand(help.NewTopicCommands(te)...)
+
+	// Issue #26 §3: cobra's default completion command is disabled (see
+	// CompletionOptions); this one ships only the shells we test, and the
+	// closed-enum flags complete from the same const blocks the commands validate.
+	complete.RegisterFlagCompletion(root)
+	root.AddCommand(complete.NewCompletionCommand())
+
 	return root
 }
+
+// topicEnvAdaptor adapts cli.Env to help.TopicEnv without an import cycle in
+// the other direction (help never imports cli).
+type topicEnvAdaptor struct{ env *Env }
+
+func (t topicEnvAdaptor) Stdout() io.Writer { return t.env.stdoutOrDiscard() }
+
+// Colour for topics: topics are prose documentation, rendered plain unless a
+// human terminal asks — the colour resolution runs once per invocation and the
+// adaptor has no invocation at build time, so the safe default (plain) stands
+// and the renderer's TTY colour path is exercised through clitest.
+func (t topicEnvAdaptor) Colour() bool { return false }
 
 // resolveInvocation returns the root hook that applies the three config layers and
 // resolves the output contract once per execution. Running it in the ROOT hook (with

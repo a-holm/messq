@@ -474,6 +474,37 @@ func matrix() []gate {
 			want:    "TEST_COUNT is",
 			prepare: patch("Makefile", "TEST_COUNT ?= 1", "TEST_COUNT ?= 0"),
 		},
+		// G42–G44 are #26's script-suite gates (§5/§6): the golden suite bites on
+		// drift, -update cannot launder a shape break, and a command that joins
+		// the tree without a script is named. Per the #49 D rule, each row and
+		// the `script`/`script-update` targets it asserts share a commit.
+		{
+			id: "G42", name: "a mutated table golden", target: "script",
+			want: "want-hash.txt",
+			prepare: patch("test/script/auth_family.txtar",
+				"1ec1c26b50d5d3c58d9583181af8076655fe00756bf7285940ba3670f99fcba0",
+				"1ec1c26b50d5d3c58d9583181af8076655fe00756bf7285940ba3670f99fcbff"),
+		},
+		{
+			// The wire output drifts from the response type (the CLI emits a
+			// wrapped document where the BuildInfo shape expects the fields at
+			// the top level): cmpshape must refuse even under -update.
+			id: "G43", name: "a response type drifting from its wire output refuses -update", target: "script-update",
+			want: "does not match the committed shape",
+			prepare: patch("internal/cli/run.go",
+				"json.NewEncoder(out).Encode(buildinfo.Get())",
+				`json.NewEncoder(out).Encode(map[string]any{"wrapped": buildinfo.Get()})`),
+		},
+		{
+			id: "G44", name: "a command added without a script", target: "script",
+			want: "messq sneaky",
+			prepare: combine(
+				install("sneaky_cmd.go", "internal/cli/sneaky_cmd.go"),
+				patch("internal/cli/run.go",
+					"	)\n	// Issue #26 §1: the guided tour plus its hidden demo worker.\n	root.AddCommand(newQuickstartCmds(env)...)\n}",
+					"	)\n	root.AddCommand(newSneakyCmd(env))\n	// Issue #26 §1: the guided tour plus its hidden demo worker.\n	root.AddCommand(newQuickstartCmds(env)...)\n}"),
+			),
+		},
 	}
 }
 
@@ -944,6 +975,17 @@ func TestGatesSelftestParallelismWiring(t *testing.T) {
 		if !strings.Contains(out, "GATES_PARALLEL must be a positive integer") ||
 			!strings.Contains(out, bad) {
 			t.Fatalf("make gates-selftest GATES_PARALLEL=%s does not name the invalid value\n%s", bad, out)
+		}
+	}
+}
+
+// combine chains prepare functions: a sabotage that needs both a new file and a
+// registration edit uses this instead of growing a bespoke fixture.
+func combine(preps ...func(*testing.T, string)) func(*testing.T, string) {
+	return func(t *testing.T, root string) {
+		t.Helper()
+		for _, p := range preps {
+			p(t, root)
 		}
 	}
 }
