@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/a-holm/messq/internal/auth"
+	"github.com/a-holm/messq/internal/obs"
 	"github.com/a-holm/messq/internal/queue"
 )
 
@@ -16,10 +17,17 @@ import (
 // #16 asserts every Mutating route declares a required role against this list, and #18
 // iterates it for contract coverage; a checked-in golden (testdata/routes.golden)
 // turns any add/rename/remove into a reviewed diff.
+//
+// #28 adds the destructive-action discipline as registry data, not convention:
+// a route that deletes, duplicates or re-delivers data sets Destructive and must
+// then declare the Confirm target the operator names (?confirm=<name>, demanded
+// only when the plan's impact is non-empty) and the audit-class event its apply
+// commits — exactly one per execution, none on a dry run. TestDestructiveDiscipline
+// walks the registry so an undisciplined verb fails the build.
 type Route struct {
 	Method  string // "" on the catch-all, which answers every method
-	Pattern string
-	Name    string
+	Pattern string // the ServeMux pattern; wildcards are {name}
+	Name    string // stable handler name the golden and gates cite
 	// Mutating is true when the route can change stored state; it gates #16's
 	// role-completeness test (every mutating route declares a non-empty set).
 	Mutating bool
@@ -33,78 +41,98 @@ type Route struct {
 	// "consumer"); "" means the route takes no name confirmation. Missing confirm
 	// yields confirm_required, a mismatched one confirm_mismatch.
 	Confirm string
+	// Destructive is true when the route deletes, duplicates or re-delivers data (#28).
+	Destructive bool
+	// Audit is the audit-class event committed on apply (Destructive only; never KindInvalid).
+	Audit obs.Kind
 }
 
 // routes is the registry. Order is declaration order and part of the golden.
+// Rows are keyed literals: destructive verbs (#28/#29) carry Destructive,
+// Confirm and Audit, everything else stays positional-equivalent zero.
 func (*Server) routes() []Route {
 	return []Route{
-		{http.MethodGet, "/healthz", "healthz", false, rolesNone, false, ""},
-		{http.MethodGet, "/readyz", "readyz", false, rolesNone, false, ""},
-		{http.MethodGet, "/metrics", "metrics", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/info", "info", false, rolesAdmin, false, ""},
-		{http.MethodPost, "/v1/admin/log-level", "admin_log_level", true, rolesAdmin, false, ""},
+		{http.MethodGet, "/healthz", "healthz", false, rolesNone, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/readyz", "readyz", false, rolesNone, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/metrics", "metrics", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/info", "info", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodPost, "/v1/admin/log-level", "admin_log_level", true, rolesAdmin, false, "", false, obs.KindInvalid},
 
-		{http.MethodPost, "/v1/streams", "create_stream", true, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams", "list_streams", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams/{stream}", "get_stream", false, rolesAdmin, false, ""},
-		{http.MethodPatch, "/v1/streams/{stream}", "update_stream", true, rolesAdmin, false, ""}, // dry-run flips on with the narrowing Impact slice
-		{http.MethodDelete, "/v1/streams/{stream}", "delete_stream", true, rolesAdmin, false, "stream"},
+		{http.MethodPost, "/v1/streams", "create_stream", true, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams", "list_streams", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams/{stream}", "get_stream", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodPatch, "/v1/streams/{stream}", "update_stream", true, rolesAdmin, false, "", false, obs.KindInvalid}, // dry-run flips on with the narrowing Impact slice
+		{
+			http.MethodDelete, "/v1/streams/{stream}", "delete_stream", true,
+			rolesAdmin, true, "stream",
+			true, obs.StreamDelete, // #28: deletes the stream's data
+		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/purge", "purge_stream", true,
 			rolesAdmin, true, "",
+			true, obs.StreamPurge, // #28: drops messages in place
 		},
 
 		{
 			http.MethodPost, "/v1/streams/{stream}/messages", "publish_message", true,
 			auth.RoleSet(1 << auth.RolePublish), false, "",
+			false, obs.KindInvalid,
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/messages:batch", "publish_batch", true,
 			auth.RoleSet(1 << auth.RolePublish), false, "",
+			false, obs.KindInvalid,
 		},
-		{http.MethodGet, "/v1/streams/{stream}/messages", "list_messages", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}", "peek_message", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}/data", "peek_message_data", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/messages/{id}", "peek_by_id", false, rolesAdmin, false, ""},
+		{http.MethodGet, "/v1/streams/{stream}/messages", "list_messages", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}", "peek_message", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams/{stream}/messages/{seq}/data", "peek_message_data", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/messages/{id}", "peek_by_id", false, rolesAdmin, false, "", false, obs.KindInvalid},
 
-		{http.MethodPost, "/v1/streams/{stream}/consumers", "create_consumer", true, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams/{stream}/consumers", "list_consumers", false, rolesAdmin, false, ""},
-		{http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}", "get_consumer", false, rolesAdmin, false, ""},
+		{http.MethodPost, "/v1/streams/{stream}/consumers", "create_consumer", true, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams/{stream}/consumers", "list_consumers", false, rolesAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}", "get_consumer", false, rolesAdmin, false, "", false, obs.KindInvalid},
 		{
 			http.MethodPatch, "/v1/streams/{stream}/consumers/{consumer}", "update_consumer", true,
 			rolesAdmin, false, "",
+			false, obs.KindInvalid,
 		},
 		{
 			http.MethodDelete, "/v1/streams/{stream}/consumers/{consumer}", "delete_consumer", true,
-			rolesAdmin, false, "consumer",
+			rolesAdmin, true, "consumer",
+			true, obs.ConsumerDelete, // #28: deletes the consumer
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/pause", "pause_consumer", true,
 			rolesAdmin, false, "",
+			false, obs.KindInvalid,
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/resume", "resume_consumer", true,
 			rolesAdmin, false, "",
+			false, obs.KindInvalid,
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/seek", "seek_consumer", true,
 			rolesAdmin, true, "",
+			true, obs.ConsumerSeek, // #28: re-delivers from the moved cursor
 		},
 		{
 			http.MethodGet, "/v1/streams/{stream}/consumers/{consumer}/pending", "pending_list",
 			false, rolesAdmin, false, "",
+			false, obs.KindInvalid,
 		},
 		{
 			http.MethodPost, "/v1/streams/{stream}/consumers/{consumer}/fetch", "fetch_consumer", true,
 			rolesConsumeAndAdmin, false, "",
+			false, obs.KindInvalid,
 		},
 
-		{http.MethodPost, "/v1/ack", "ack", true, rolesConsumeAndAdmin, false, ""},
-		{http.MethodPost, "/v1/nak", "nak", true, rolesConsumeAndAdmin, false, ""},
-		{http.MethodPost, "/v1/term", "term", true, rolesConsumeAndAdmin, false, ""},
-		{http.MethodPost, "/v1/extend", "extend", true, rolesConsumeAndAdmin, false, ""},
+		{http.MethodPost, "/v1/ack", "ack", true, rolesConsumeAndAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodPost, "/v1/nak", "nak", true, rolesConsumeAndAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodPost, "/v1/term", "term", true, rolesConsumeAndAdmin, false, "", false, obs.KindInvalid},
+		{http.MethodPost, "/v1/extend", "extend", true, rolesConsumeAndAdmin, false, "", false, obs.KindInvalid},
 
-		{"", "/", "catch_all", false, rolesNone, false, ""},
+		{"", "/", "catch_all", false, rolesNone, false, "", false, obs.KindInvalid},
 	}
 }
 
