@@ -236,7 +236,7 @@ func newVersionCmd(env *Env) *cobra.Command {
 			"on a terminal, one JSON document otherwise. Add --remote to also ask\n" +
 			"the daemon at --addr for its build and report any skew between the\n" +
 			"two binaries.",
-		Example: "  messq version\n  messq version --output json | jq .commit",
+		Example: "  messq version\n  messq version --output json | jq .commit # noexec: piped to jq",
 		GroupID: "server",
 		Args:    exactArgsMessage,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -320,7 +320,7 @@ func newServeCmd(env *Env) *cobra.Command {
 			"data directory is locked by another daemon, and 78 when the\n" +
 			"configuration can never work — systemd's RestartPreventExitStatus\n" +
 			"depends on those values.",
-		Example:            "  messq serve --data-dir /var/lib/messq\n  messq serve --listen tcp://127.0.0.1:4390",
+		Example:            "  messq serve --data-dir /var/lib/messq # noexec: starts a long-running daemon\n  messq serve --listen tcp://127.0.0.1:4390 # noexec: starts a long-running daemon",
 		GroupID:            "server",
 		DisableFlagParsing: true, // #17's §8 flag set stays hand-parsed until #17 migrates it
 		Args:               cobra.ArbitraryArgs,
@@ -349,7 +349,7 @@ func newVerifyCmd(env *Env) *cobra.Command {
 			"and answers \"is my broker's state sound?\" in seconds. Its exit codes\n" +
 			"(0 clean, 1 violations found, 2 usage, 3 directory missing, 7 not\n" +
 			"permitted) are part of the crash-harness contract.",
-		Example:            "  messq verify --data-dir /var/lib/messq --deep",
+		Example:            "  messq verify --data-dir /var/lib/messq --deep # noexec: names a machine-specific directory",
 		GroupID:            "server",
 		DisableFlagParsing: true, // #8's §8 flag set stays hand-parsed until #8 migrates it
 		Args:               cobra.ArbitraryArgs,

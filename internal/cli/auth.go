@@ -51,9 +51,9 @@ func newAuthCmd(env *Env) *cobra.Command {
 			"machine, shown exactly once on stdout, and never accepted from argv or\n" +
 			"environment variables: a credential that entered shell history is a\n" +
 			"credential you must rotate.",
-		Example: "  messq auth add --auth-file /etc/messq/tokens --id ci --roles publish,consume --streams 'orders*'\n" +
-			"  messq auth ls --auth-file /etc/messq/tokens\n" +
-			"  printf '%s' \"$CRED\" | messq auth check --auth-file /etc/messq/tokens",
+		Example: "  messq auth add --auth-file /etc/messq/tokens --id ci --roles publish,consume --streams 'orders*' # noexec: writes to /etc/messq\n" +
+			"  messq auth ls --auth-file /etc/messq/tokens # noexec: names a machine-specific token file\n" +
+			"  printf '%s' \"$CRED\" | messq auth check --auth-file /etc/messq/tokens # noexec: shell pipeline carrying a credential",
 		GroupID: "manage",
 		Args:    exactArgsMessage,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -78,8 +78,8 @@ func newAuthAddCmd(env *Env) *cobra.Command {
 			"Roles are publish, consume and admin — plain sets, no hierarchy — scoped to\n" +
 			"comma-separated stream patterns ('orders' is exact, 'orders*' covers the\n" +
 			"family including orders.dlq).",
-		Example: "  messq auth add --auth-file /etc/messq/tokens \\\n" +
-			"      --id ci-worker --roles publish,consume --streams 'orders*,billing'",
+		Example: "  messq auth add --auth-file /etc/messq/tokens \\ # noexec: writes to /etc/messq\n" +
+			"      --id ci-worker --roles publish,consume --streams 'orders*,billing' # noexec: continuation of the line above",
 		Args:        noSurplusArgs,
 		Annotations: map[string]string{annExits: "0,2,4"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -162,8 +162,8 @@ func newAuthHashCmd(env *Env) *cobra.Command {
 			"stripped; everything else hashes byte-for-byte. That means `echo $cred`\n" +
 			"(which appends a newline) hashes DIFFERENTLY from `printf '%s' $cred`;\n" +
 			"tests pin both digests so scripts can rely on either stated recipe.",
-		Example: "  printf '%s' \"$MESSQ_TOKEN\" | messq auth hash\n" +
-			"  messq auth hash < token-copy.txt   # one trailing newline tolerated",
+		Example: "  printf '%s' \"$MESSQ_TOKEN\" | messq auth hash # noexec: shell pipeline\n" +
+			"  messq auth hash < token-copy.txt   # noexec: shell stdin redirection (one trailing newline tolerated)",
 		Args:        noSurplusArgs,
 		Annotations: map[string]string{annExits: "0,1,2"},
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -193,8 +193,8 @@ func newAuthLsCmd(env *Env) *cobra.Command {
 			"presented form, so listings prove nothing beyond WHAT each id may do.\n" +
 			"Editing grants means editing the file line; the daemon picks the change up\n" +
 			"when the reload seam lands with issue #17.",
-		Example: "  messq auth ls --auth-file /etc/messq/tokens\n" +
-			"  messq auth ls --output json | jq '.tokens[].id'",
+		Example: "  messq auth ls --auth-file /etc/messq/tokens # noexec: names a machine-specific token file\n" +
+			"  messq auth ls --output json | jq '.tokens[].id' # noexec: piped to jq",
 		Args:        noSurplusArgs,
 		Annotations: map[string]string{annExits: "0,2,3"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -260,7 +260,7 @@ func newAuthCheckCmd(env *Env) *cobra.Command {
 			"one trailing LF/CRLF stripped exactly like `messq auth hash`. A mismatch\n" +
 			"always names the usual suspects, including the DLQ nuance: an exact grant\n" +
 			"like 'orders' never covers 'orders.dlq', while a trailing 'orders*' does.",
-		Example:     "  printf '%s' \"$NEW_CRED\" | messq auth check --auth-file /etc/messq/tokens && echo rotate-ok",
+		Example:     "  printf '%s' \"$NEW_CRED\" | messq auth check --auth-file /etc/messq/tokens && echo rotate-ok # noexec: shell pipeline carrying a credential",
 		Args:        noSurplusArgs,
 		Annotations: map[string]string{annExits: "0,1,2"},
 		RunE: func(cmd *cobra.Command, _ []string) error {

@@ -25,8 +25,8 @@ messq [flags]
 
 ```
   messq version
-  messq serve --data-dir /var/lib/messq
-  messq verify --deep --data-dir /var/lib/messq
+  messq serve --data-dir /var/lib/messq # noexec: starts a long-running daemon
+  messq verify --deep --data-dir /var/lib/messq # noexec: names a machine-specific directory
 ```
 
 ### Options

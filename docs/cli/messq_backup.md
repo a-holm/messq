@@ -21,8 +21,8 @@ messq backup <dest> [flags]
 ### Examples
 
 ```
-  messq backup /var/backups/messq/$(date -u +%FT%H%MZ).db --data-dir /var/lib/messq
-  messq backup /tmp/snap.db --data-dir /var/lib/messq --verify full --force
+  messq backup /var/backups/messq/$(date -u +%FT%H%MZ).db --data-dir /var/lib/messq # noexec: shell substitution and machine-specific paths
+  messq backup /tmp/snap.db --data-dir /var/lib/messq --verify full --force # noexec: names machine-specific directories
 ```
 
 ### Options

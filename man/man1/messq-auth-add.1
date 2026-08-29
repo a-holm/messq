@@ -78,8 +78,8 @@ family including orders.dlq).
 
 .SH EXAMPLE
 .EX
-  messq auth add --auth-file /etc/messq/tokens \\
-      --id ci-worker --roles publish,consume --streams 'orders*,billing'
+  messq auth add --auth-file /etc/messq/tokens \\ # noexec: writes to /etc/messq
+      --id ci-worker --roles publish,consume --streams 'orders*,billing' # noexec: continuation of the line above
 .EE
 
 

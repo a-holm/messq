@@ -59,8 +59,8 @@ tests pin both digests so scripts can rely on either stated recipe.
 
 .SH EXAMPLE
 .EX
-  printf '%s' "$MESSQ_TOKEN" | messq auth hash
-  messq auth hash < token-copy.txt   # one trailing newline tolerated
+  printf '%s' "$MESSQ_TOKEN" | messq auth hash # noexec: shell pipeline
+  messq auth hash < token-copy.txt   # noexec: shell stdin redirection (one trailing newline tolerated)
 .EE
 
 

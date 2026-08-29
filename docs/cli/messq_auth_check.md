@@ -24,7 +24,7 @@ messq auth check [flags]
 ### Examples
 
 ```
-  printf '%s' "$NEW_CRED" | messq auth check --auth-file /etc/messq/tokens && echo rotate-ok
+  printf '%s' "$NEW_CRED" | messq auth check --auth-file /etc/messq/tokens && echo rotate-ok # noexec: shell pipeline carrying a credential
 ```
 
 ### Options

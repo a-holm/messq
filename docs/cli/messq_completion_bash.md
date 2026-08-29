@@ -23,7 +23,7 @@ messq completion bash [flags]
 ### Examples
 
 ```
-  source <(messq completion bash)
+  source <(messq completion bash) # noexec: sources in a shell
 ```
 
 ### Options

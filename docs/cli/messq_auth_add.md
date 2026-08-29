@@ -28,8 +28,8 @@ messq auth add [flags]
 ### Examples
 
 ```
-  messq auth add --auth-file /etc/messq/tokens \
-      --id ci-worker --roles publish,consume --streams 'orders*,billing'
+  messq auth add --auth-file /etc/messq/tokens \ # noexec: writes to /etc/messq
+      --id ci-worker --roles publish,consume --streams 'orders*,billing' # noexec: continuation of the line above
 ```
 
 ### Options

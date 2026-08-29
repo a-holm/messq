@@ -60,7 +60,7 @@ func NewCompletionCommand() *cobra.Command {
 				"flags, commands and help topics finish on TAB. The script itself is static; the\n" +
 				"live stream and consumer names it offers are fetched per keystroke on the\n" +
 				"resolver's 200ms budget, and a dead daemon simply completes nothing, silently.",
-			Example: "  source <(messq completion " + shell + ")",
+			Example: "  source <(messq completion " + shell + ") # noexec: sources in a shell",
 			Args:    cobra.NoArgs,
 			RunE: func(c *cobra.Command, _ []string) error {
 				out := c.OutOrStdout()

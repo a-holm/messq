@@ -23,7 +23,7 @@ messq completion zsh [flags]
 ### Examples
 
 ```
-  source <(messq completion zsh)
+  source <(messq completion zsh) # noexec: sources in a shell
 ```
 
 ### Options

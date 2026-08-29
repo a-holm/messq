@@ -23,9 +23,9 @@ messq auth [flags]
 ### Examples
 
 ```
-  messq auth add --auth-file /etc/messq/tokens --id ci --roles publish,consume --streams 'orders*'
-  messq auth ls --auth-file /etc/messq/tokens
-  printf '%s' "$CRED" | messq auth check --auth-file /etc/messq/tokens
+  messq auth add --auth-file /etc/messq/tokens --id ci --roles publish,consume --streams 'orders*' # noexec: writes to /etc/messq
+  messq auth ls --auth-file /etc/messq/tokens # noexec: names a machine-specific token file
+  printf '%s' "$CRED" | messq auth check --auth-file /etc/messq/tokens # noexec: shell pipeline carrying a credential
 ```
 
 ### Options

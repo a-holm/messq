@@ -1,6 +1,6 @@
 # Opt-outs of the command-coverage binding (TestEveryCommandHasAScript). Format:
 # command<TAB>reason. Reviewed like code; every entry names the change that
 # removes it.
-messq serve	hand-parsed §8 flag surface with a blocking RunE; its subproc-lane script (banner, SIGINT, drain) lands with slice 7's dev_mode script and the #17-owned cobra migration
+messq serve	hand-parsed §8 flag surface with a blocking RunE; --dev's process-level behaviour is covered by TestServeDev* and the full serve cobra migration belongs to #17
 messq quickstart	the engine is unit-covered (argv/echo equality, env sanitisation, reaper guards, socket ladder, Ctrl-C 130); the full-tour golden needs the delivery commands (stream/pub/sub/trace) that #13/#14 own and lands with their merge
 messq quickstart-handler	hidden demo worker, excluded from the binding by name per the issue; its attempt semantics are covered by TestQuickstartHandler in the quickstart package

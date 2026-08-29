@@ -92,6 +92,18 @@ test-lite: ## Fast per-push gate: vet + no tests. Keep ci-core under its 10-minu
 wirecheck: ## Run the wire-contract checks (issue #18).
 	CGO_ENABLED=1 go test -race -count=1 -shuffle=on ./internal/wirecheck/... ./internal/wirecode/...
 
+# Issue #26 §5: the .txtar golden suite. -race because every suite is; -count=1
+# so a green line is never the cache. The coverage bindings live in the same
+# package (TestEveryCommandHasAScript and friends) and run under the same gate.
+script: ## Run the testscript (.txtar) golden suite with its coverage bindings.
+	CGO_ENABLED=1 go test -race -count=1 ./test/script/...
+
+# The -update flow, as a gate input: cmpshape assertions must REFUSE this mode
+# (a shape change is a compatibility decision, not a golden refresh), which is
+# what row G43 of the sabotage matrix proves.
+script-update: ## Refresh the .txtar goldens (-update); cmpshape assertions refuse.
+	go test ./test/script -run TestScripts -update
+
 # -covermode=atomic is mandatory under -race. -coverpkg spans the whole tree because
 # internal/queue is exercised by the reference model in internal/model and internal/store
 # through the API and the crash harness; a per-package profile would undercount both and push

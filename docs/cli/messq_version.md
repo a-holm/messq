@@ -25,7 +25,7 @@ messq version [flags]
 
 ```
   messq version
-  messq version --output json | jq .commit
+  messq version --output json | jq .commit # noexec: piped to jq
 ```
 
 ### Options

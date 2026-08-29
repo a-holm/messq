@@ -21,8 +21,8 @@ messq doctor [flags]
 ### Examples
 
 ```
-  messq doctor
-  messq doctor --data-dir /var/lib/messq --fail-on warn --quiet
+  messq doctor # noexec: diagnoses the operator's real daemon (see the doctor family script)
+  messq doctor --data-dir /var/lib/messq --fail-on warn --quiet # noexec: names a machine-specific directory
   messq doctor --list
   messq doctor --explain storage.wal_size
 ```

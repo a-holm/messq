@@ -25,8 +25,8 @@ messq auth hash [flags]
 ### Examples
 
 ```
-  printf '%s' "$MESSQ_TOKEN" | messq auth hash
-  messq auth hash < token-copy.txt   # one trailing newline tolerated
+  printf '%s' "$MESSQ_TOKEN" | messq auth hash # noexec: shell pipeline
+  messq auth hash < token-copy.txt   # noexec: shell stdin redirection (one trailing newline tolerated)
 ```
 
 ### Options

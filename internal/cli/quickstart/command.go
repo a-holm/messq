@@ -34,9 +34,9 @@ func NewQuickstartCmd(deps Deps, executeStep func(ctx context.Context, argv []st
 			"Nothing outside the tour's own directory is touched, and every MESSQ_*\n" +
 			"variable from your environment is ignored: the tour never talks to your\n" +
 			"real daemon. No config file, no --data-dir, no setup — that is the point.",
-		Example: "  messq quickstart\n" +
-			"  messq quickstart --output ndjson   # one record per step, for machines\n" +
-			"  messq quickstart --keep            # keep the data dir and say where it is",
+		Example: "  messq quickstart # noexec: the full tour needs the delivery commands (#13/#14)\n" +
+			"  messq quickstart --output ndjson # noexec: one record per step, for machines; same dependency\n" +
+			"  messq quickstart --keep # noexec: keeps a data dir; same dependency",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return nil

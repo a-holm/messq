@@ -24,8 +24,8 @@ messq auth ls [flags]
 ### Examples
 
 ```
-  messq auth ls --auth-file /etc/messq/tokens
-  messq auth ls --output json | jq '.tokens[].id'
+  messq auth ls --auth-file /etc/messq/tokens # noexec: names a machine-specific token file
+  messq auth ls --output json | jq '.tokens[].id' # noexec: piped to jq
 ```
 
 ### Options

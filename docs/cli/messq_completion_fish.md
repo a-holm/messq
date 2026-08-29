@@ -23,7 +23,7 @@ messq completion fish [flags]
 ### Examples
 
 ```
-  source <(messq completion fish)
+  source <(messq completion fish) # noexec: sources in a shell
 ```
 
 ### Options

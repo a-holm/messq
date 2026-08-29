@@ -146,8 +146,8 @@ func newBackupCmd(env *Env) *cobra.Command {
 			"to a private temp directory, and renamed into place only after its own " +
 			"self-check passes. Provenance is stamped into the file itself so it " +
 			"explains its origin to whoever restores it later.",
-		Example: "  messq backup /var/backups/messq/$(date -u +%FT%H%MZ).db --data-dir /var/lib/messq\n" +
-			"  messq backup /tmp/snap.db --data-dir /var/lib/messq --verify full --force",
+		Example: "  messq backup /var/backups/messq/$(date -u +%FT%H%MZ).db --data-dir /var/lib/messq # noexec: shell substitution and machine-specific paths\n" +
+			"  messq backup /tmp/snap.db --data-dir /var/lib/messq --verify full --force # noexec: names machine-specific directories",
 		GroupID: "operate",
 		Args:    exactlyOneBackupDest,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -26,9 +26,9 @@ messq quickstart [flags]
 ### Examples
 
 ```
-  messq quickstart
-  messq quickstart --output ndjson   # one record per step, for machines
-  messq quickstart --keep            # keep the data dir and say where it is
+  messq quickstart # noexec: the full tour needs the delivery commands (#13/#14)
+  messq quickstart --output ndjson # noexec: one record per step, for machines; same dependency
+  messq quickstart --keep # noexec: keeps a data dir; same dependency
 ```
 
 ### Options

@@ -25,7 +25,7 @@ messq verify [flags]
 ### Examples
 
 ```
-  messq verify --data-dir /var/lib/messq --deep
+  messq verify --data-dir /var/lib/messq --deep # noexec: names a machine-specific directory
 ```
 
 ### Options
