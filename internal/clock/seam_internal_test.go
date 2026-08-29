@@ -34,6 +34,9 @@ var wallClockCallers = map[string]string{
 	"internal/cli/serve_auth_test.go": "issue #16's token-rotation test runs inside a testing/synctest bubble: " +
 		"time.Sleep advances VIRTUAL time (every goroutine in the bubble waits together), so the " +
 		"rotation windows pass instantly without touching the real wall clock",
+	"tools/gendocs/main.go": "a docs-generating command, not the daemon: it stamps the generated " +
+		"reference's generated-at line with the build machine's wall clock, exactly like a " +
+		"build-gate (same class as internal/tools/vulngate/main.go)",
 }
 
 // skipDirs are not source. testdata holds fixtures, which are inputs to the sabotage matrix and
