@@ -37,17 +37,7 @@ func renderGeneratedDoc() string {
 	sort.Ints(codes)
 	fmt.Fprint(&b, "| Exit | Name | Meaning |\n|---|---|---|\n")
 	for _, c := range codes {
-		meaning := map[int]string{
-			OK:          "success",
-			Error:       "generic runtime failure, incl. a bug in the daemon",
-			Usage:       "bad flag, bad argument, request the daemon rejected as malformed",
-			NotFound:    "stream / consumer / message / seq does not exist",
-			Conflict:    "conflict, stale fence, precondition or limit refused the request",
-			Empty:       "a wait expired before the request was satisfied (zero rows is still 0)",
-			Unreachable: "no answer obtainable from the daemon",
-			Denied:      "authentication or authorization refused",
-		}[c]
-		fmt.Fprintf(&b, "| %d | `%s` | %s |\n", c, names[c], meaning)
+		fmt.Fprintf(&b, "| %d | `%s` | %s |\n", c, names[c], meanings[c])
 	}
 
 	fmt.Fprint(&b, "\n## Wire-code mapping\n\n")

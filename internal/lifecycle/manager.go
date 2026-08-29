@@ -84,6 +84,28 @@ var legalMoves = map[State][]State{
 	Fatal:      {},
 }
 
+// Transition is one legal move of the daemon state machine, exported so the
+// `lifecycle` help topic (issue #26 §4) is generated from this table instead of
+// from prose that can drift: an unmentioned transition fails
+// TestLifecycleTopicCoversEveryTransition.
+type Transition struct {
+	From State
+	To   State
+}
+
+// Transitions returns every legal move in stable order. The table itself stays
+// private (the manager's compare-and-swap reads it); this is the read-only view
+// for docs and tests.
+func Transitions() []Transition {
+	var out []Transition
+	for _, from := range []State{Starting, Recovering, Ready, Draining, Stopped, Fatal} {
+		for _, to := range legalMoves[from] {
+			out = append(out, Transition{From: from, To: to})
+		}
+	}
+	return out
+}
+
 func transitionLegal(from, to State) bool {
 	for _, next := range legalMoves[from] {
 		if next == to {

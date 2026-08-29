@@ -1,0 +1,65 @@
+# The help topics (issue §4): every topic renders, the generated exit-codes
+# table matches the code, and an unknown topic is a teaching usage error.
+
+# Every topic renders. The generated exit-codes topic must name the whole
+# documented table — TestExitCodeTopicMatchesCode pins the same rows from the
+# other side, so a new code without a meaning fails the build AND this script.
+messq help concepts
+stdout 'Stream'
+
+messq help lifecycle
+stdout 'STARTING'
+stdout 'RECOVERING'
+stdout 'DRAINING'
+stdout 'FATAL'
+
+messq help durability
+stdout 'synchronous=FULL'
+
+messq help exit-codes
+stdout 'not_found'
+stdout '128\+SIGINT'
+stdout '`74`'
+
+messq help scripting
+stdout 'EX_TEMPFAIL'
+
+messq help subjects
+stdout 'orders.created'
+
+messq help output
+stdout 'ndjson'
+
+# A topic invoked directly shows the same rendered text via its Long — one
+# assertion per topic, which is also the command-coverage binding for the seven
+# additional-help-topic commands.
+messq concepts
+stdout 'vocabulary'
+messq durability
+stdout 'durability'
+messq exit-codes
+stdout 'unreachable'
+messq lifecycle
+stdout 'RECOVERING'
+messq output
+stdout 'auto'
+messq scripting
+stdout 'MESSQ'
+messq subjects
+stdout 'wildcard'
+
+# Topics appear as additional help topics in the root help.
+messq --help
+stdout 'Additional help topics'
+stdout 'exit-codes'
+
+# An unknown topic is a teaching usage error: exit 2, the suggestion, and the
+# full topic list.
+exitcode 2 messq help nosuchtopic
+stderr 'unknown help topic'
+stderr 'concepts'
+stdout ''
+
+# The unknown-topic suggestion names a real topic.
+exitcode 2 messq help concept
+stderr 'concept'
