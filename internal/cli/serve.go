@@ -75,6 +75,37 @@ var serveFlagNames = map[string]struct{}{
 	"--vacuum-pages-per-tick": {},
 	"--lag-report-threshold":  {},
 	"--lag-report-interval":   {},
+	// Issue #26 §2: the composite dev flag. Boolean: it takes no value.
+	"--dev": {},
+}
+
+// serveBoolFlags take no value: their presence in the argv map is the truth.
+var serveBoolFlags = map[string]struct{}{
+	"--dev": {},
+}
+
+// devDrainTimeout is --dev's implication on --drain-timeout: Ctrl-C is instant
+// in a throwaway daemon (issue #26 §2; #17 owns the flag, this composition).
+const devDrainTimeout = 2 * time.Second
+
+// devBanner renders the unmissable development-mode banner (issue #26 §2). It
+// names the data dir and the deletion (or the keep), the instant Ctrl-C, and the
+// line that starts the daemon an operator actually keeps. The box width is
+// fixed; COLUMNS rendering is #19's log surface, not this banner's.
+func devBanner(dataDir string, drain time.Duration, kept bool) string {
+	var b strings.Builder
+	fmt.Fprint(&b, "╭─ DEVELOPMENT MODE "+strings.Repeat("─", 49)+"╮\n")
+	if kept {
+		fmt.Fprintf(&b, "│ data dir %s\n", dataDir)
+		fmt.Fprint(&b, "│ is KEPT when this process exits (explicit --data-dir)\n")
+	} else {
+		fmt.Fprintf(&b, "│ data dir %s\n", dataDir)
+		fmt.Fprint(&b, "│ is DELETED when this process exits\n")
+	}
+	fmt.Fprint(&b, "│ streams and consumers are auto-created · drain "+drain.String()+"\n")
+	fmt.Fprint(&b, "│ for anything you care about:  messq serve --data-dir /var/lib/messq\n")
+	fmt.Fprint(&b, "╰"+strings.Repeat("─", 69)+"╯\n")
+	return b.String()
 }
 
 // serveConfig is the fully resolved serve configuration, one field per §8 flag. It is
@@ -127,6 +158,16 @@ type serveConfig struct {
 	vacuumPagesPerTick  int64         // --vacuum-pages-per-tick
 	lagReportThreshold  int64         // --lag-report-threshold
 	lagReportInterval   time.Duration // --lag-report-interval
+
+	// dev is --dev (issue #26 §2): the composite flag. data-dir and drain-timeout
+	// implications were applied at parse time; this flag turns on auto-create and
+	// the "dev":true self-report in the daemon.
+	dev bool
+	// devEphemeral records that --dev implied the data dir: runServe creates a
+	// temp dir, prints it in the banner, and removes it at exit. An explicit
+	// --data-dir (or MESSQ_DATA_DIR... no: dev beats env) leaves this false and
+	// the directory is never removed.
+	devEphemeral bool
 }
 
 // storeOptions maps the serve configuration onto the store's Options. The process-wide
@@ -166,6 +207,19 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 		if _, ok := serveFlagNames[name]; !ok {
 			return serveConfig{}, fmt.Errorf("unknown flag %q", name)
 		}
+		if _, boolFlag := serveBoolFlags[name]; boolFlag {
+			// A boolean flag's presence is its truth; `--dev=false` stays legal
+			// for scripting symmetry.
+			switch val {
+			case "", "true":
+				flags[name] = "true"
+			case "false":
+				flags[name] = "false"
+			default:
+				return serveConfig{}, fmt.Errorf("%s takes no value (want nothing, true or false)", name)
+			}
+			continue
+		}
 		if !hasEq {
 			if len(args) == 0 {
 				return serveConfig{}, fmt.Errorf("%s needs a value", name)
@@ -176,7 +230,9 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 		flags[name] = val
 	}
 
-	// resolve resolves flag → env → default for one setting.
+	// resolve resolves flag → env → default for one setting. For the settings
+	// --dev implies, parseServeFlags handles the layering itself (flag > dev >
+	// env); everything else keeps this classic ladder.
 	resolve := func(name, envName, def string) string {
 		if v, ok := flags[name]; ok {
 			return v
@@ -189,7 +245,24 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 
 	cfg := serveConfig{}
 
-	if cfg.dataDir = resolve("--data-dir", "MESSQ_DATA_DIR", ""); cfg.dataDir == "" {
+	// Issue #26 §2: --dev is a composite whose implications apply ONLY where the
+	// operator did not set the flag explicitly — an explicit flag always wins.
+	// Env fallbacks sit BELOW the dev implication: dev is by definition a
+	// throwaway mode, so a MESSQ_DATA_DIR pointing at production must not be
+	// silently adopted by `messq serve --dev`.
+	dev := flags["--dev"] == "true"
+	if dev {
+		cfg.dev = true
+	}
+
+	// --data-dir: explicit flag > dev ephemeral > env > error. The ephemeral dir
+	// is created by runServe (so the banner can print the real path); the parser
+	// only records the decision.
+	if v, ok := flags["--data-dir"]; ok {
+		cfg.dataDir = v
+	} else if dev {
+		cfg.devEphemeral = true
+	} else if cfg.dataDir = getenv("MESSQ_DATA_DIR"); cfg.dataDir == "" {
 		return serveConfig{}, errors.New("--data-dir is required (or set MESSQ_DATA_DIR)")
 	}
 
@@ -227,6 +300,13 @@ func parseServeFlags(args []string, getenv func(string) string) (serveConfig, er
 	// it at runtime, the register stays the source of truth (brief-17 §8 Q1 ruling).
 	if cfg.drainTimeout, err = time.ParseDuration(resolve("--drain-timeout", "MESSQ_DRAIN_TIMEOUT", "10s")); err != nil {
 		return serveConfig{}, fmt.Errorf("--drain-timeout: %w", err)
+	}
+	// --dev implication (issue #26 §2): an explicit --drain-timeout flag beats the
+	// dev default, but the env fallback does not — dev replaces env.
+	if dev {
+		if _, explicit := flags["--drain-timeout"]; !explicit {
+			cfg.drainTimeout = devDrainTimeout
+		}
 	}
 
 	// Issue #14 §9 transport bounds: flag → MESSQ_* env → default.
@@ -681,6 +761,23 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		return usageError(stderr, err.Error())
 	}
 
+	// Issue #26 §2: --dev with no --data-dir runs on a throwaway directory that is
+	// removed at exit. The dir is created HERE (not by the parser) so the banner
+	// can print the path that will really be deleted.
+	if cfg.devEphemeral {
+		dir, mkErr := os.MkdirTemp("", "messq-dev-")
+		if mkErr != nil {
+			fmt.Fprintf(stderr, "messq: cannot create ephemeral data dir: %v\n", mkErr)
+			return exitError
+		}
+		cfg.dataDir = dir
+		defer func() {
+			if rmErr := os.RemoveAll(dir); rmErr != nil {
+				fmt.Fprintf(stderr, "messq: remove ephemeral data dir %s: %v\n", dir, rmErr)
+			}
+		}()
+	}
+
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -706,6 +803,13 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "%s\n", adm.refuse)
 		logRefusedStartup(logger, cfg.listen, refuseStableSentence)
 		return exitcode.CONFIG
+	}
+
+	// The dev banner (issue §2): unmissable, names what it costs, and printed only
+	// after admission so a refused --dev never advertises itself. Narration goes
+	// to stderr; a dev daemon's stdout stays data-free for pipelines.
+	if cfg.dev {
+		fmt.Fprint(stderr, devBanner(cfg.dataDir, cfg.drainTimeout, !cfg.devEphemeral))
 	}
 
 	clk := clock.System{}
@@ -827,6 +931,7 @@ func runServe(args []string, getenv func(string) string, stdout, stderr io.Write
 		Store:                 st,
 		Clock:                 clk,
 		Logger:                logger,
+		Dev:                   cfg.dev,
 		SweepEvery:            cfg.dedupSweepInterval,
 		Limits:                opt.Limits,
 		MaxBatchBytes:         cfg.maxBatchBytes,

@@ -8,6 +8,7 @@
   },
   "db_bytes": "<bytes>",
   "degraded": [],
+  "dev": false,
   "disk_free_bytes": "<bytes>",
   "durability": "full",
   "go_version": "<go-version>",

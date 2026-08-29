@@ -23,6 +23,10 @@ import (
 // process. A real daemon is never required — the child is this same test binary.
 const helperServeEnv = "MESSQ_TEST_HELPER_SERVE"
 
+// helperServeArgsEnv optionally carries the child's argv (strings.Fields split).
+// The dev-mode tests use it to run `serve --dev` with no --data-dir.
+const helperServeArgsEnv = "MESSQ_TEST_SERVE_ARGS"
+
 // TestHelperServeProcess is the re-exec entry point. It is a no-op for the parent test run
 // (MESSQ_TEST_HELPER_SERVE is unset) and a real `messq serve` for the child.
 func TestHelperServeProcess(t *testing.T) {
@@ -30,7 +34,7 @@ func TestHelperServeProcess(t *testing.T) {
 		t.Skip("helper process only")
 	}
 	// The child IS the command entry point: runServe's exit code becomes the process exit.
-	os.Exit(runServe(nil, os.Getenv, os.Stdout, os.Stderr)) //nolint:forbidigo // re-exec child's process boundary, not a Run-style mapping
+	os.Exit(runServe(strings.Fields(os.Getenv(helperServeArgsEnv)), os.Getenv, os.Stdout, os.Stderr)) //nolint:forbidigo // re-exec child's process boundary, not a Run-style mapping
 }
 
 // startServe re-executes this test binary as `messq serve` on dataDir and sock, waits until
@@ -78,7 +82,7 @@ func startServe(t *testing.T, dataDir, sock string, extraEnv ...string) *exec.Cm
 // deadline is a hang backstop, not a latency assertion — same rationale as the crash
 // harness's readinessDeadline: under full make-cover parallel load starved startups blew
 // past a 10s cap although healthy.
-func waitForServe(t *testing.T, sock string, stderr *bytes.Buffer) {
+func waitForServe(t *testing.T, sock string, stderr interface{ String() string }) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

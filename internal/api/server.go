@@ -108,6 +108,12 @@ type Config struct {
 	// PendingMaxLimit is --pending-max-limit (issue #15 §10, default 1000): the cap
 	// the pending listing clamps ?limit to while echoing the effective value.
 	PendingMaxLimit int
+
+	// Dev is serve --dev (issue #26 §2): streams are auto-created on publish and
+	// consumers on fetch with actor=dev-autocreate, and /v1/info carries "dev":true.
+	// It changes NO admission or auth behaviour — the #16 public-bind refusal is
+	// evaluated before this flag exists to the daemon.
+	Dev bool
 }
 
 // The §9 defaults for zero Config fields.
@@ -369,6 +375,9 @@ type infoResponse struct {
 	State         string        `json:"state"`
 	Degraded      []Degradation `json:"degraded"`
 	Restored      *restoredInfo `json:"restored,omitempty"`
+	// Dev is additive under #18's classifier (issue #26 §2): serve --dev reports
+	// itself so doctor (#30) and operators can key off the mode.
+	Dev bool `json:"dev"`
 }
 
 // restoredInfo is the optional provenance object: present exactly when the
@@ -467,6 +476,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Listeners:     orEmptyStrings(s.cfg.Listeners),
 		State:         state,
 		Degraded:      orEmptyDegraded(s.health.Degraded()),
+		Dev:           s.cfg.Dev,
 	}
 	if prov := s.store.Provenance(); prov != nil {
 		resp.Restored = &restoredInfo{

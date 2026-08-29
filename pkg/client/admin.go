@@ -151,6 +151,9 @@ type Info struct {
 	Synchronous int    `json:"synchronous"`
 	DBBytes     int64  `json:"db_bytes"`
 	NodeID      string `json:"node_id"`
+	// Dev is serve --dev's self-report (issue #26 §2), additive under #18's
+	// classifier: doctor (#30) keys off it.
+	Dev bool `json:"dev"`
 	// Restored is present exactly when this data dir was restored from a
 	// backup snapshot (#30 §5); clients treating provenance as optional may
 	// ignore it safely.

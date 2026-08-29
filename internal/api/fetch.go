@@ -75,9 +75,21 @@ func (s *Server) handleFetchConsumer(w http.ResponseWriter, r *http.Request) {
 	// The consumer must exist (404 otherwise) and its filters are the wake snapshot.
 	info, err := s.store.GetConsumer(r.Context(), stream, consumer)
 	if err != nil {
-		s.writeError(w, errs.WithNext(err,
-			"messq consumer add "+stream+" <name>"))
-		return
+		// serve --dev: fetching from a consumer nobody created yet auto-creates
+		// it with schema defaults (issue #26 §2).
+		if !s.cfg.Dev || !isNotFound(err) {
+			s.writeError(w, errs.WithNext(err,
+				"messq consumer add "+stream+" <name>"))
+			return
+		}
+		if aErr := s.devAutocreateConsumer(r.Context(), stream, consumer); aErr != nil {
+			s.writeError(w, aErr)
+			return
+		}
+		if info, err = s.store.GetConsumer(r.Context(), stream, consumer); err != nil {
+			s.writeError(w, err)
+			return
+		}
 	}
 	filters, ferr := subject.ParseSet(info.Filters)
 	if ferr != nil {
