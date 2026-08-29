@@ -136,7 +136,7 @@ func TestSeekClampsReportedNotSilent(t *testing.T) {
 	if eb["code"] != "bad_request" {
 		t.Errorf("refusal code = %v, want bad_request", eb["code"])
 	}
-	msg, _ := eb["message"].(string)
+	msg, _ := eb["message"].(string) //nolint:errcheck // absent message fails the Contains assert below
 	if !strings.Contains(msg, "below the stream's first_seq") {
 		t.Errorf("refusal message should name the first_seq floor, got %q", msg)
 	}
