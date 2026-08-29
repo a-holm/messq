@@ -135,7 +135,15 @@ type State struct {
 }
 
 func stateFrom(ts *testscript.TestScript) *State {
-	st, ok := ts.Value(stateKey{}).(*State)
+	return mustState(ts.Value(stateKey{}))
+}
+
+// mustState is stateFrom's core over the raw stored value, split out so the
+// missing-state guard is unit-testable without a TestScript: Setup always
+// installs the state in a real run, so the panic arm is reachable only from a
+// mis-wired suite.
+func mustState(v any) *State {
+	st, ok := v.(*State)
 	if !ok || st == nil {
 		panic("scriptenv: per-script state missing — Params().Setup not installed?")
 	}

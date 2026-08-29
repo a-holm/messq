@@ -73,48 +73,74 @@ func Shapes() map[string]any {
 
 // ---- daemon ----
 
+// cmdDaemon adapts the TestScript command to [runDaemon]: stateFrom pulls the
+// per-script state, and the TestScript's Fatalf/Setenv become the injected
+// surface the unit tests stand in for.
 func cmdDaemon(ts *testscript.TestScript, _ bool, args []string) {
+	runDaemon(stateFrom(ts), args, StartDaemon, ts.Fatalf, ts.Setenv)
+}
+
+// runDaemon is the daemon command's dispatch over an injected surface: fatalf
+// and setenv stand in for the TestScript, and start stands in for [StartDaemon]
+// so a unit test can walk every arm — including the double-start, not-started
+// and start-failure arms the golden scripts cannot fail into — without building
+// a daemon. ts.Fatalf panics and never returns; the unit tests' recorder does
+// return, so every fatalf call here is followed by a return and the dispatch
+// never acts on an arm after reporting it.
+func runDaemon(
+	st *State,
+	args []string,
+	start func(workDir string, clk *clock.Fake) (*Daemon, error),
+	fatalf func(format string, args ...any),
+	setenv func(key, value string),
+) {
 	if len(args) == 0 {
-		ts.Fatalf("daemon: want start|stop|kill|restart")
+		fatalf("daemon: want start|stop|kill|restart")
+		return
 	}
-	st := stateFrom(ts)
 	switch args[0] {
 	case "start":
 		if st.daemon != nil {
-			ts.Fatalf("daemon: already started")
+			fatalf("daemon: already started")
+			return
 		}
-		d, err := StartDaemon(st.workDir, st.clk)
+		d, err := start(st.workDir, st.clk)
 		if err != nil {
-			ts.Fatalf("daemon start: %v", err)
+			fatalf("daemon start: %v", err)
+			return
 		}
 		st.daemon = d
-		ts.Setenv("MESSQ_ADDR", d.Addr())
+		setenv("MESSQ_ADDR", d.Addr())
 	case "stop":
 		if st.daemon == nil {
-			ts.Fatalf("daemon: not started")
+			fatalf("daemon: not started")
+			return
 		}
 		st.daemon.Stop(true)
 		st.daemon = nil
 	case "kill":
 		if st.daemon == nil {
-			ts.Fatalf("daemon: not started")
+			fatalf("daemon: not started")
+			return
 		}
 		st.daemon.Stop(false)
 		st.daemon = nil
 	case "restart":
 		if st.daemon == nil {
-			ts.Fatalf("daemon: not started")
+			fatalf("daemon: not started")
+			return
 		}
 		st.daemon.Stop(true)
-		d, err := StartDaemon(st.workDir, st.clk)
+		d, err := start(st.workDir, st.clk)
 		if err != nil {
 			st.daemon = nil
-			ts.Fatalf("daemon restart: %v", err)
+			fatalf("daemon restart: %v", err)
+			return
 		}
 		st.daemon = d
-		ts.Setenv("MESSQ_ADDR", d.Addr())
+		setenv("MESSQ_ADDR", d.Addr())
 	default:
-		ts.Fatalf("daemon: unknown subcommand %q (want start|stop|kill|restart)", args[0])
+		fatalf("daemon: unknown subcommand %q (want start|stop|kill|restart)", args[0])
 	}
 }
 
