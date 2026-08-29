@@ -204,7 +204,10 @@ func (s *Store) CreateConsumer(ctx context.Context, stream string, cfg queue.Con
 	if err != nil {
 		return ConsumerCreateResult{}, err
 	}
-	return ConsumerCreateResult{Info: cr.info, Warnings: warnings, Created: cr.created, Updated: cr.updated}, nil
+	return ConsumerCreateResult{
+		Info: cr.info, Warnings: append(warnings, cr.warnings...),
+		Created: cr.created, Updated: cr.updated,
+	}, nil
 }
 
 // UpdateConsumer applies a sparse patch to one consumer. Changing a field re-validates
@@ -343,9 +346,10 @@ type createConsumerCmd struct {
 }
 
 type consumerCreateResult struct {
-	info    ConsumerInfo
-	created bool
-	updated bool
+	info     ConsumerInfo
+	created  bool
+	updated  bool
+	warnings queue.Warnings // resolution findings, e.g. the below-floor clamp (#28)
 }
 
 func (c createConsumerCmd) Kind() CmdKind { return kindCreateConsumer }
@@ -370,7 +374,7 @@ func (c createConsumerCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time)
 		c.stream, c.cfg.Name))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return c.applyInsert(ctx, tx, ts)
+		return c.applyInsert(ctx, tx, now)
 	case err != nil:
 		return nil, nil, fmt.Errorf("read existing consumer: %w", err)
 	}
@@ -394,10 +398,19 @@ func (c createConsumerCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time)
 }
 
 // applyInsert writes a fresh consumer row and its consumer.create event.
-func (c createConsumerCmd) applyInsert(ctx context.Context, tx *sql.Tx, ts int64) (Result, []obs.Event, error) {
-	cursor, err := resolveStartPosition(ctx, tx, c.stream, c.start)
+func (c createConsumerCmd) applyInsert(ctx context.Context, tx *sql.Tx, now time.Time) (Result, []obs.Event, error) {
+	ts := now.UnixMilli()
+	cursor, clamped, err := resolveStartPosition(ctx, tx, c.stream, c.start, now)
 	if err != nil {
 		return nil, nil, maybeCmdErr(err)
+	}
+	var warns queue.Warnings
+	if clamped {
+		warns = append(warns, queue.Warning{
+			Code: queue.WarningStartClamped,
+			Message: fmt.Sprintf("start %q predates the oldest retained message of %q: clamped to seq %d",
+				c.start.String(), c.stream, cursor),
+		})
 	}
 	if _, xErr := tx.ExecContext(ctx, `INSERT INTO consumers
 		(stream, name, filters, ack_wait_ms, max_deliver, max_ack_pending, backoff_ms,
@@ -431,7 +444,7 @@ func (c createConsumerCmd) applyInsert(ctx context.Context, tx *sql.Tx, ts int64
 		CursorSeq: cursor, Generation: 1, CreatedAt: ts,
 		RetryHorizonMS: queue.RetryHorizon(c.cfg).Milliseconds(),
 	}
-	return consumerCreateResult{info: info, created: true}, []obs.Event{ev}, nil
+	return consumerCreateResult{info: info, created: true, warnings: warns}, []obs.Event{ev}, nil
 }
 
 // checkStartImmutable refuses a re-POST whose start differs from the recorded creation
@@ -726,23 +739,35 @@ func (c setPausedCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Res
 
 // resolveStartPosition maps a creation-time start position to a cursor_seq, clamped to
 // [first_seq, stream_seq.next]. first_seq is the stream's oldest live message (its
-// stream_seq.next when empty).
-func resolveStartPosition(ctx context.Context, tx *sql.Tx, stream string, start queue.StartPosition) (int64, error) {
+// stream_seq.next when empty). Relative time offsets ("time:-2h") are resolved against
+// now — the writer's batch clock, never a client's wall clock (#28 Decision 1). The
+// second return reports a below-floor clamp: true only when live data was skipped
+// past, so the caller can warn instead of moving the anchor silently.
+func resolveStartPosition(ctx context.Context, tx *sql.Tx, stream string, start queue.StartPosition, now time.Time) (int64, bool, error) {
 	first, next, err := streamBounds(ctx, tx, stream)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	switch start.Kind {
 	case queue.StartFirst:
-		return first, nil
+		return first, false, nil
 	case queue.StartNew:
-		return next, nil
+		return next, false, nil
 	case queue.StartSeq:
-		return clampCursor(start.Seq, first, next), nil
+		cursor := clampCursor(start.Seq, first, next)
+		// Below-floor only: seq above head resolves to next without a
+		// clamp report (nothing was lost), and an empty stream has no floor
+		// to fall below (first == next there).
+		clamped := first < next && start.Seq < cursor
+		return cursor, clamped, nil
 	case queue.StartTime:
-		return resolveTimeStart(ctx, tx, stream, start.Time, next)
+		t := start.Time
+		if start.Rel != 0 {
+			t = now.Add(start.Rel).UnixMilli()
+		}
+		return resolveTimeStart(ctx, tx, stream, t, next)
 	default:
-		return 0, errs.E(errs.ErrBadRequest, "", "start kind %q is not known", start.Kind)
+		return 0, false, errs.E(errs.ErrBadRequest, "", "start kind %q is not known", start.Kind)
 	}
 }
 
@@ -779,18 +804,27 @@ func clampCursor(seq, first, next int64) int64 {
 }
 
 // resolveTimeStart finds the first sequence published at or after t via the
-// messages_age index; a t past the head yields stream_seq.next.
-func resolveTimeStart(ctx context.Context, tx *sql.Tx, stream string, t, next int64) (int64, error) {
+// messages_age index; a t past the head yields stream_seq.next. The reported
+// clamp is true exactly when t predates the oldest retained message — the
+// anchor pointed into deleted history and was moved up to first_seq.
+func resolveTimeStart(ctx context.Context, tx *sql.Tx, stream string, t, next int64) (int64, bool, error) {
 	var seq sql.Null[int64]
 	if err := tx.QueryRowContext(ctx,
 		`SELECT seq FROM messages WHERE stream = ? AND published_at >= ?
 		 ORDER BY published_at, seq LIMIT 1`, stream, t).Scan(&seq); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("resolve time start of %q: %w", stream, err)
+		return 0, false, fmt.Errorf("resolve time start of %q: %w", stream, err)
 	}
 	if !seq.Valid {
-		return next, nil
+		// Empty stream or t after every retained stamp: nothing was skipped.
+		return next, false, nil
 	}
-	return seq.V, nil
+	var minPub sql.Null[int64]
+	if err := tx.QueryRowContext(ctx,
+		`SELECT min(published_at) FROM messages WHERE stream = ?`, stream).Scan(&minPub); err != nil {
+		return 0, false, fmt.Errorf("read oldest published_at of %q: %w", stream, err)
+	}
+	clamped := minPub.Valid && t < minPub.V
+	return seq.V, clamped, nil
 }
 
 // consumerConfigDiff names every config field where two configurations disagree.

@@ -7,8 +7,8 @@ POST /v1/streams create_stream mutating
 GET /v1/streams list_streams readonly
 GET /v1/streams/{stream} get_stream readonly
 PATCH /v1/streams/{stream} update_stream mutating
-DELETE /v1/streams/{stream} delete_stream mutating
-POST /v1/streams/{stream}/purge purge_stream mutating
+DELETE /v1/streams/{stream} delete_stream mutating destructive confirm=stream audit=stream.delete
+POST /v1/streams/{stream}/purge purge_stream mutating destructive confirm=stream audit=stream.purge
 POST /v1/streams/{stream}/messages publish_message mutating
 POST /v1/streams/{stream}/messages:batch publish_batch mutating
 GET /v1/streams/{stream}/messages list_messages readonly
@@ -19,10 +19,10 @@ POST /v1/streams/{stream}/consumers create_consumer mutating
 GET /v1/streams/{stream}/consumers list_consumers readonly
 GET /v1/streams/{stream}/consumers/{consumer} get_consumer readonly
 PATCH /v1/streams/{stream}/consumers/{consumer} update_consumer mutating
-DELETE /v1/streams/{stream}/consumers/{consumer} delete_consumer mutating
+DELETE /v1/streams/{stream}/consumers/{consumer} delete_consumer mutating destructive confirm=consumer audit=consumer.delete
 POST /v1/streams/{stream}/consumers/{consumer}/pause pause_consumer mutating
 POST /v1/streams/{stream}/consumers/{consumer}/resume resume_consumer mutating
-POST /v1/streams/{stream}/consumers/{consumer}/seek seek_consumer mutating
+POST /v1/streams/{stream}/consumers/{consumer}/seek seek_consumer mutating destructive confirm=consumer audit=consumer.seek
 GET /v1/streams/{stream}/consumers/{consumer}/pending pending_list readonly
 POST /v1/streams/{stream}/consumers/{consumer}/fetch fetch_consumer mutating
 POST /v1/ack ack mutating

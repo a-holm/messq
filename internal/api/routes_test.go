@@ -36,6 +36,14 @@ func TestRouteRegistryGolden(t *testing.T) {
 		} else {
 			b.WriteString("readonly")
 		}
+		// Destructive rows carry their discipline inline so the golden diff
+		// shows a verb going destructive as a reviewed change (#28).
+		if rt.Destructive {
+			b.WriteString(" destructive confirm=")
+			b.WriteString(rt.Confirm)
+			b.WriteString(" audit=")
+			b.WriteString(rt.Audit.String())
+		}
 		b.WriteByte('\n')
 	}
 

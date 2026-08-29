@@ -63,7 +63,7 @@ func (c seekCmd) Bytes() int    { return 0 }
 
 type seekResult struct{ r SeekResult }
 
-func (c seekCmd) Apply(ctx context.Context, tx *sql.Tx, _ time.Time) (Result, []obs.Event, error) {
+func (c seekCmd) Apply(ctx context.Context, tx *sql.Tx, now time.Time) (Result, []obs.Event, error) {
 	row := tx.QueryRowContext(ctx,
 		`SELECT cursor_seq, generation FROM consumers WHERE stream = ? AND name = ?`,
 		c.stream, c.consumer)
@@ -76,9 +76,15 @@ func (c seekCmd) Apply(ctx context.Context, tx *sql.Tx, _ time.Time) (Result, []
 		return nil, nil, fmt.Errorf("seek %s/%s: read consumer: %w", c.stream, c.consumer, err)
 	}
 
-	target, rErr := resolveStartPosition(ctx, tx, c.stream, c.to)
+	// #28: relative time starts resolve against the writer's batch clock at the
+	// seek's own execution instant — the store clock seam, never a client wall.
+	target, clamped, rErr := resolveStartPosition(ctx, tx, c.stream, c.to, now)
 	if rErr != nil {
 		return nil, nil, maybeCmdErr(rErr)
+	}
+	if clamped {
+		return nil, nil, maybeCmdErr(errs.E(errs.ErrBadRequest, "store.Seek",
+			"seek start position resolves below the stream's first_seq and was refused"))
 	}
 
 	var pending, inflight int64
@@ -103,7 +109,10 @@ func (c seekCmd) Apply(ctx context.Context, tx *sql.Tx, _ time.Time) (Result, []
 
 	// Clamp reporting (never silent): the resolver folds targets into
 	// [first, next], so clamped == "the raw request maps to a different cursor".
-	clamped := false
+	// The resolver already reports the below-floor clamp; recompute only the
+	// exactness fold for seq/time kinds, preserving the resolver's verdict when it
+	// made no adjustment.
+	// clamped := false (resolver-owned; fold-exactness only sharpens it)
 	switch c.to.Kind {
 	case queue.StartSeq:
 		clamped = c.to.Seq != target && target == clampCursor(c.to.Seq, first, next)
