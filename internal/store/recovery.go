@@ -53,6 +53,17 @@ type RecoveryReport struct {
 	DBBytes         int64
 	WALBytes        int64
 	Duration        time.Duration
+	// Restored carries the snapshot provenance when Open detected a restored
+	// backup stamp (issue #30 step 4.5); nil on every other start.
+	Restored *Provenance
+}
+
+// Provenance reports where a restored data directory came from, or nil when it
+// was never restored. The record survives every later restart.
+func (s *Store) Provenance() *Provenance {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prov
 }
 
 // reclaimSQL flips every INFLIGHT lease back to READY. attempts is deliberately not in the

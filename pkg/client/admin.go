@@ -151,6 +151,19 @@ type Info struct {
 	Synchronous int    `json:"synchronous"`
 	DBBytes     int64  `json:"db_bytes"`
 	NodeID      string `json:"node_id"`
+	// Restored is present exactly when this data dir was restored from a
+	// backup snapshot (#30 §5); clients treating provenance as optional may
+	// ignore it safely.
+	Restored *RestoredInfo `json:"restored,omitempty"`
+}
+
+// RestoredInfo mirrors /v1/info's restored object.
+type RestoredInfo struct {
+	RestoredAt   string           `json:"restored_at"`
+	SnapshotAt   string           `json:"snapshot_at"`
+	SourceNodeID string           `json:"source_node_id"`
+	StreamHeads  map[string]int64 `json:"stream_heads,omitempty"`
+	ToolVersion  string           `json:"tool_version,omitempty"`
 }
 
 // ListOptions narrows a message listing; zero fields take server defaults.

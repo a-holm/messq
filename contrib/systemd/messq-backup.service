@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# One backup run: snapshot the data directory into MESSQ_BACKUP_DIR with a
+# timestamped filename, then let `messq doctor --backup-dir` watch freshness.
+#
+# The oneshot service reads its configuration from the environment drop-in:
+#
+#   systemctl edit messq-backup.service
+#     [Service]
+#     Environment=MESSQ_DATA_DIR=/var/lib/messq
+#     Environment=MESSQ_BACKUP_DIR=/var/backups/messq
+#
+# Exit codes follow the documented contract, so systemd's OnFailure hooks and
+# cron-style alerting see a real failure instead of a 0 that lies.
+
+[Unit]
+Description=messq consistent snapshot (VACUUM INTO)
+Documentation=https://github.com/a-holm/messq/blob/main/docs/backup-restore.md
+ConditionPathIsDirectory=%h/data
+
+[Service]
+Type=oneshot
+User=messq
+Group=messq
+Environment=MESSQ_DATA_DIR=/var/lib/messq
+Environment=MESSQ_BACKUP_DIR=/var/backups/messq
+ExecStart=/bin/sh -c 'messq backup "${MESSQ_BACKUP_DIR}/$(date -u +%%FT%%H%%MZ).db" --data-dir "${MESSQ_DATA_DIR}"'
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/messq /var/backups/messq
