@@ -70,6 +70,56 @@ func renderGeneratedDoc() string {
 	return b.String()
 }
 
+// recoverDocumented runs Documented and returns its panic message, or "" when it
+// returned normally. The half-row guards are the only paths that panic; the empty
+// string is therefore the "guard did not fire" answer the tests assert on.
+func recoverDocumented() (msg string) {
+	defer func() {
+		if r := recover(); r != nil {
+			msg = fmt.Sprint(r)
+		}
+	}()
+	Documented()
+	return ""
+}
+
+// TestDocumentedRejectsHalfRow exercises the two panic guards the happy table can
+// never reach: a code that carries a name but no meaning, and a meaning that
+// references an undocumented code. The tables are package globals, so the tests
+// mutate one row, restore it via defer, and never run in parallel — a half row may
+// exist only inside the test, never between two calls in the same process.
+func TestDocumentedRejectsHalfRow(t *testing.T) {
+	t.Run("name without meaning", func(t *testing.T) {
+		orig := meanings[OK]
+		defer func() { meanings[OK] = orig }()
+		delete(meanings, OK)
+
+		msg := recoverDocumented()
+		meanings[OK] = orig // restored before the sanity re-check below
+		if !strings.Contains(msg, "code 0 has a name but no meaning") {
+			t.Fatalf("Documented() with a nameless meaning = %q, want the half-row panic", msg)
+		}
+		if got := recoverDocumented(); got != "" {
+			t.Errorf("Documented() after restoring the table panicked: %q", got)
+		}
+	})
+
+	t.Run("meaning without code", func(t *testing.T) {
+		const ghost = 99 // outside 0–7; nothing in names maps to it
+		meanings[ghost] = "a meaning with no documented code"
+		defer delete(meanings, ghost)
+
+		msg := recoverDocumented()
+		delete(meanings, ghost)
+		if !strings.Contains(msg, "a meaning references an undocumented code") {
+			t.Fatalf("Documented() with a ghost meaning = %q, want the undocumented-code panic", msg)
+		}
+		if got := recoverDocumented(); got != "" {
+			t.Errorf("Documented() after removing the ghost panicked: %q", got)
+		}
+	})
+}
+
 // TestGeneratedExitCodesDocIsCurrent fails when the checked-in document differs from
 // what the tables generate; -update rewrites it. CI drift-fails here exactly like
 // #3's subject-rules gate.
