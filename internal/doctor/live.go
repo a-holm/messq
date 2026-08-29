@@ -47,6 +47,19 @@ func (l LiveCollector) Collect(ctx context.Context) (*Snapshot, error) {
 		Synchronous:    info.Synchronous,
 		UptimeMS:       info.UptimeMS,
 	}
+	if info.Restored != nil {
+		snapshotAt, pErr := time.Parse(time.RFC3339, info.Restored.SnapshotAt)
+		if pErr != nil {
+			snapshotAt = time.Time{} // epoch 0 stamps unparseable input honestly
+		}
+		if snap.Restored == nil {
+			snap.Restored = &RestoredProvenance{}
+		}
+		snap.Restored.SnapshotAtMS = snapshotAt.UnixMilli()
+		snap.Restored.SourceNodeID = info.Restored.SourceNodeID
+		snap.Restored.StreamHeads = info.Restored.StreamHeads
+		snap.Restored.ToolVersion = info.Restored.ToolVersion
+	}
 
 	streams, sErr := cl.ListStreams(ctx)
 	if sErr != nil {

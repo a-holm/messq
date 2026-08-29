@@ -344,11 +344,13 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// infoResponse is the extended /v1/info wire shape (issue #15 §2). The original
+// infoResponse is the extended /v1/info wire shape (issue #15 §2 + #30 §5). The original
 // top-level fields stay byte-compatible for #22's decoded subset; schema_version,
 // started_at_ms, wal_bytes, disk_free_bytes, counts, listeners, state and degraded[]
 // extend it additively. uptime_ms and state are computed per request and NEVER cached;
-// the syscall/count block obeys --info-cache via infoSnapshot below.
+// the syscall/count block obeys --info-cache via infoSnapshot below. Restored is the
+// optional provenance object from #30: present exactly when the store carries
+// restored_* rows, so "was this data dir restored?" has one greppable answer.
 type infoResponse struct {
 	Version       string        `json:"version"`
 	UptimeMS      int64         `json:"uptime_ms"`
@@ -366,6 +368,18 @@ type infoResponse struct {
 	Listeners     []string      `json:"listeners"`
 	State         string        `json:"state"`
 	Degraded      []Degradation `json:"degraded"`
+	Restored      *restoredInfo `json:"restored,omitempty"`
+}
+
+// restoredInfo is the optional provenance object: present exactly when the
+// store carries restored_* rows, so "was this data dir restored?" has one
+// greppable answer.
+type restoredInfo struct {
+	RestoredAt   string           `json:"restored_at"` // RFC3339 UTC
+	SnapshotAt   string           `json:"snapshot_at"` // RFC3339 UTC of the backup's read tx
+	SourceNodeID string           `json:"source_node_id"`
+	StreamHeads  map[string]int64 `json:"stream_heads,omitempty"`
+	ToolVersion  string           `json:"tool_version,omitempty"`
 }
 
 // InfoCounts re-exports the store census type's name in json docs; the handler embeds
@@ -453,6 +467,15 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Listeners:     orEmptyStrings(s.cfg.Listeners),
 		State:         state,
 		Degraded:      orEmptyDegraded(s.health.Degraded()),
+	}
+	if prov := s.store.Provenance(); prov != nil {
+		resp.Restored = &restoredInfo{
+			RestoredAt:   prov.RestoredAt.UTC().Format(time.RFC3339),
+			SnapshotAt:   prov.SnapshotAt.UTC().Format(time.RFC3339),
+			SourceNodeID: prov.SourceNodeID,
+			StreamHeads:  prov.StreamHeads,
+			ToolVersion:  prov.ToolVersion,
+		}
 	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
