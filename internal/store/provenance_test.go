@@ -76,10 +76,6 @@ func plantSnapshotProvenance(t *testing.T, dataDir string, takenAt time.Time, he
 	}
 }
 
-func formatMillis(t time.Time) string {
-	return strconv.FormatInt(t.UnixMilli(), 10)
-}
-
 func TestOpenConvertsSnapshotProvenance(t *testing.T) {
 	ctx := context.Background()
 	dir := openWithStoreDir(t)
