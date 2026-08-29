@@ -1,0 +1,4 @@
+# Opt-outs of the command-coverage binding (TestEveryCommandHasAScript). Format:
+# command<TAB>reason. Reviewed like code; every entry names the change that
+# removes it.
+messq serve	hand-parsed §8 flag surface with a blocking RunE; its subproc-lane script (banner, SIGINT, drain) lands with slice 7's dev_mode script and the #17-owned cobra migration

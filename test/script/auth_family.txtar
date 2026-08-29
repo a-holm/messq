@@ -1,0 +1,92 @@
+# The auth family — file-based token management with its exact exit codes.
+# stdin arrives through the `stdin` builtin (testscript has no shell redirection).
+
+# auth hash is pure: SHA-256 over the presented bytes, one trailing LF stripped.
+stdin cred.txt
+messq auth hash
+cmp stdout want-hash.txt
+
+# The newline rule is contract: one trailing LF is tolerated and stripped.
+stdin cred-lf.txt
+messq auth hash
+cmp stdout want-hash.txt
+
+# Empty stdin is a usage error with the recipe in the message.
+stdin empty.txt
+exitcode 2 messq auth hash
+stderr 'no credential on stdin'
+
+# auth add mints a credential (random secret — only its msq1_<id>_ prefix is
+# asserted), stores the hash line, and narrates on stderr.
+messq auth add --auth-file tokens --id ci --roles publish,consume --streams 'orders*,billing'
+stdout 'msq1_ci_'
+stderr 'stored sha256 line for id "ci"'
+stderr 'nobody can print this credential again'
+exists tokens
+
+# A duplicate id is refused before anything is written (exit 4).
+exitcode 4 messq auth add --auth-file tokens --id ci --roles admin --streams '*'
+stderr 'duplicate token id'
+
+# auth check against a file built from a known credential. The credential and its
+# hash are a committed fixture pair: hash(cred) is exactly the stored line, which
+# is the free assertion that the checker hashes the presented bytes verbatim.
+stdin known-cred.txt
+messq auth check --auth-file known-tokens
+stdout 'ok ci'
+stdout 'roles=publish,consume'
+
+# A mismatch is exit 1 and names the DLQ nuance.
+stdin bad-cred.txt
+exitcode 1 messq auth check --auth-file known-tokens
+stderr 'does not match any entry'
+
+# auth ls never shows hashes. On a pipe auto mode resolves to json, so the table
+# face is requested explicitly — which is itself the assertion that #23's
+# auto-detection defaults to the machine face in scripts.
+messq auth ls --auth-file known-tokens --output table
+cmp stdout want-ls.txt
+
+# The JSON face of the same listing.
+messq auth ls --auth-file known-tokens --output json
+cmpjson stdout want-ls.json
+
+# A missing auth file is exit 3 with the next command.
+exitcode 3 messq auth ls --auth-file $WORK/nope
+stderr 'nope'
+
+-- cred.txt --
+s3cret
+-- cred-lf.txt --
+s3cret
+-- empty.txt --
+
+-- bad-cred.txt --
+wrong
+
+-- known-tokens --
+ci e24cda2a978fc29e6f9c4647f740c00f940cc71a4aafedb407ecec892a8ccecf publish,consume orders*,billing
+
+-- known-cred.txt --
+msq1_ci_0GG7NVSQRTJBDKVXX34DMHKCJT1Z5PS0HBYSVPH95M0RPWA1BH6E
+-- want-hash.txt --
+1ec1c26b50d5d3c58d9583181af8076655fe00756bf7285940ba3670f99fcba0
+-- want-ls.txt --
+ID  ROLES            STREAMS
+ci  publish,consume  orders*,billing
+-- want-ls.json --
+{
+  "tokens": [
+    {
+      "id": "ci",
+      "roles": [
+        "publish",
+        "consume"
+      ],
+      "streams": [
+        "orders*",
+        "billing"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# messq backup — VACUUM INTO snapshot with its refusal faces. The success face
+# asserts shape, not bytes: a snapshot's size is storage-dependent.
+
+daemon start
+daemon stop
+
+messq backup $WORK/snap.db --data-dir $WORK/data
+stdout 'backup'
+exists $WORK/snap.db
+
+# Overwriting an existing destination without --force is exit 4 with the reason.
+exitcode 4 messq backup $WORK/snap.db --data-dir $WORK/data
+stderr 'destination_exists'
+stderr '--force'
+
+# A snapshot inside the data dir is refused before anything is written.
+exitcode 2 messq backup $WORK/data/inner.db --data-dir $WORK/data
+stderr 'inside'
+
+# Missing destination argument is usage.
+exitcode 2 messq backup
+stderr 'missing destination path'

@@ -1,0 +1,4 @@
+# Opt-outs of the exit-code binding (TestEveryExitCodeIsExercised). Format:
+# code<TAB>reason. Reviewed like code; every entry names the change that removes
+# it.
+5	no current command waits until empty/timeout (exit.Empty); the delivery commands of #13/#14 (sub --wait, pending) produce it and delete this entry

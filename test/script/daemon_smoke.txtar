@@ -1,0 +1,21 @@
+# The inproc lane's smoke: a real daemon on a unix socket under $WORK, driven by
+# the real CLI through testscript's re-exec. This script is the harness proving
+# itself: start, talk, stop, prove it is gone, prove the exit-6 face.
+
+daemon start
+waitfor healthz
+
+# --remote asks the daemon for its build and reports skew. Same binary here, so
+# no skew warning may appear on stderr. The remote rows render on the table face
+# only; the machine face stays the frozen local document.
+messq version --remote --output table
+stdout 'durability  full'
+stdout 'db_bytes'
+! stderr 'consider upgrading'
+
+daemon stop
+waitfor gone
+
+# Nothing is listening: exit 6 (daemon unreachable), naming the fix.
+exitcode 6 messq version --remote
+stderr 'unreachable|connect|refused|dial'

@@ -1,0 +1,32 @@
+# messq verify — the offline invariant checker over a real data dir from the
+# inproc lane's daemon, plus its teaching error faces.
+#
+# verify runs against the LIVE dir: a cleanly stopped daemon checkpoints its WAL
+# away, and the checker deliberately refuses a dir whose meta claims a WAL should
+# exist (edge case 15 — phantom loss). Live-dir verification is the supported
+# shape; the stopped-dir story is #30's.
+
+# A daemon-built data dir verifies clean while the daemon runs.
+daemon start
+
+messq verify --data-dir $WORK/data
+stdout '"violations"'
+
+messq verify --data-dir $WORK/data --output table
+stdout 'ok'
+
+daemon stop
+
+# A missing directory is exit 3 with a sentence naming the path.
+exitcode 3 messq verify --data-dir $WORK/missing
+stderr 'does not exist'
+
+# A garbage store is a generic failure (exit 1), not a crash.
+exitcode 1 messq verify --data-dir $WORK/bad
+
+# Surplus arguments are a usage error.
+exitcode 2 messq verify --data-dir $WORK/data extra
+stderr 'unexpected argument'
+
+-- bad/messq.db --
+definitely not a database
