@@ -222,6 +222,8 @@ func assemble(root *cobra.Command, env *Env) {
 		newBackupCmd(env),
 		newDoctorCmd(env),
 	)
+	// Issue #26 §1: the guided tour plus its hidden demo worker.
+	root.AddCommand(newQuickstartCmds(env)...)
 }
 
 func newVersionCmd(env *Env) *cobra.Command {
